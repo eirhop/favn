@@ -9,16 +9,18 @@
 | Pull request | Pending implementation workflow |
 | Related work | [#704 retention](https://github.com/eirhop/favn/issues/704); [#705 normalization](https://github.com/eirhop/favn/issues/705) |
 | Affected areas | favn_orchestrator, favn_storage_postgres, shared log DTOs in favn_core, log consumers in favn_view |
-| Approved plan commit | Not established; record reviewed locally, publication precedes implementation |
+| Prior reviewed plan commit | `89705bd493da5722d0e974884db7951ee8fd93ad`; superseded by the reset-only scope below |
+| Revised plan baseline | Independently reviewed locally; publish before implementation |
 | Last updated | 2026-09-15 |
 
 ## One-minute summary
 
 Every routine step transition already has an authoritative run event, but Favn
 also writes a lifecycle log, a log batch and another outbox row. New transitions
-will render their lifecycle message from the event instead. Existing lifecycle
-logs remain readable, and independent diagnostics keep their existing storage
-path. Reuse the existing log facade, PostgreSQL queries and publication sequencer;
+will render their lifecycle message from the event instead. All environments
+start from a reset baseline, so there is no legacy lifecycle representation to
+support. Independent diagnostics keep their existing storage path. Reuse the
+existing log facade, PostgreSQL queries and publication sequencer;
 this change does not need another logging service or materialized timeline.
 
 ## Impact
@@ -34,15 +36,18 @@ can fail. Actual retained-byte savings and read cost must be measured.
 ### Assumptions
 
 - Source baseline is origin/main at `046f59d5733125e97525b06cf8ef0f8f3231f0a3`.
-- This request authorizes a planning record in a separate worktree. Runtime
-  implementation, deployment and historical data repair have not started.
+- This request updates the record in its separate worktree. Runtime implementation,
+  deployment and environment resets have not started. The user will reset the
+  environments; permission to design for a reset is not an instruction to perform it.
 - Preserve existing lifecycle wording, severity and execution meaning. In
   particular, submitted work is not yet running, and cancellation does not prove
   an external write stopped safely.
-- Support a coordinated stop/start upgrade of the control plane and View. Mixed
-  old/new control-plane binaries and transparent downgrade are not requirements.
-- Existing historical logs remain their original representation. Reconstructing
-  historical logs that previously failed or expired is separate repair work.
+- On 2026-09-15 the user explicitly removed backward compatibility: there are no
+  production users, and every environment can be reset for this change. Require a
+  fresh database/runtime baseline rather than preserving old-format history.
+- No in-place data conversion, old command/cursor support, mixed-version runtime
+  or old-data restore is supported. Ordinary history and recovery within the new
+  build remain required.
 - The user selected lifecycle retention with run history on 2026-09-15. A shared
   log/event visibility cutoff is a different policy requiring additional design.
 - The local Tidewave endpoint returned 404 during investigation. Findings are
@@ -70,53 +75,39 @@ flowchart LR
     C -->|Failure| F[Event exists but lifecycle log is missing]
 ```
 
-## Approved plan
+## Revised plan
 
-Independent reviewer `review_706_plan` approved this scoped plan after recheck on
-2026-09-15. Approval covers the plan, not implementation or full issue acceptance.
+The user superseded the compatibility requirement on 2026-09-15. The original
+reviewed record is preserved in commit `89705bd493da5722d0e974884db7951ee8fd93ad`.
+Independent reviewer `review_706_plan` approved this reset-only revision on
+2026-09-15. It is the active plan; the original remains available for comparison.
 
-### 1. Make historical and new sources disjoint
+### 1. Derive every step lifecycle message from its event
 
-Add one small, explicit versioned lifecycle descriptor to newly created step
-events. Version 1 identifies an event-backed lifecycle message and carries only
-the canonical log identities that the existing event fields cannot safely
-reproduce after JSON encoding. Store the descriptor inside the existing event
-payload and hash, in the same transaction as the event. Do not store formatted
-message text, another copy of the error, or a whole log entry in the descriptor.
+Every persisted step event in the fresh environment supplies its lifecycle entry.
+Delete the routine transition-log write. Stored log rows are reserved for
+independent diagnostics. There is no lifecycle mode, version marker, cutover
+flag, legacy fallback, historical matching or dual-write period.
 
-Create it before lossy serialization, using the existing identity normalizers.
-Keep raw node data intact for other consumers. Reuse existing event fields for
-run, step, task, attempt, time, stage, status and error/reason context. Test that
-all required descriptor fields survive the bounded event codec.
+Reuse existing event fields for run, step, task, attempt, time, stage, status and
+error/reason context. Persist only the missing canonical node/asset identity
+strings needed for correct filters, using the existing identity normalizers
+before lossy JSON conversion. Keep raw node data intact for other consumers.
+Do not add a versioned descriptor, formatted message text, another copy of the
+error, or a whole log entry. Prove that these small identity fields survive the
+bounded event codec and produce the same public identities after restart.
 
-- Unmarked historical event: read its stored lifecycle log; never derive a
-  second entry from that event.
-- New marked event: derive its lifecycle entry; never write its routine log.
-- A run may contain both kinds of event. The mode belongs to the individual
-  immutable event, not the run, deployment timestamp or current presence of logs.
-- A replayed command retains the event originally committed. Do not add a marker
-  to an old event during replay, change its hash or produce a new log.
-
-Choose the representation at the existing durable new-write/replay boundary.
-The current run store compares event hashes during replay: adding a descriptor
-before that comparison would incorrectly conflict with an old committed event.
-Prepare canonical identities before JSON conversion, but include the descriptor
-in the persisted encoding only for a new event. For a replay, build the comparison
-candidate using the stored representation and retain all existing event, snapshot,
-command-identity and changed-content conflict checks. Do not bypass validation or
-accept changed semantic content merely because a command ID already exists.
-
-The coordinated writer cutover makes the two sources disjoint. Consequently this
-plan does not add legacy matching, text-based deduplication, a backfill, or an
-anti-join over all historical logs. If implementation finds a real supported
-path producing both representations for one event, resolve that write path or
-obtain a reviewed plan deviation before adding reconciliation machinery.
+Identity fields commit and hash with their event through the existing persistence
+path. Keep exact replay and changed-content conflict checks for commands created
+by the new build. There is no representation selection or special handling for
+commands written before the reset. Existing event-codec validation/versioning
+remains in place; do not introduce a separate lifecycle compatibility protocol.
 
 ### 2. Extract one pure lifecycle renderer
 
-Use one small orchestrator module, `Logs.Lifecycle`, for the descriptor contract,
-event-to-entry mapping and event-type/severity classification. SQL filters can
-use its event-type sets rather than independently duplicating severity rules.
+Use one small orchestrator module, `Logs.Lifecycle`, for event-to-entry mapping
+and event-type/severity classification. SQL filters can use its event-type sets
+rather than independently duplicating severity rules.
 
 | Event types | Level | Behavior |
 | --- | --- | --- |
@@ -125,9 +116,9 @@ use its event-type sets rather than independently duplicating severity rules.
 | `step_retry_scheduled` | Warning | Preserve retry and attempt context |
 | `step_failed`, `step_timed_out`, `step_cancelled`, `step_blocked` | Error | Preserve existing severity and bounded error/reason context |
 
-Retain the current generic step-event fallback for version 1 rather than silently
-dropping an otherwise valid step event. Unknown descriptor versions or malformed
-required data return an explicit bounded read error with stable event identity.
+Retain the current generic step-event message fallback rather than silently
+dropping an otherwise valid step event. Malformed required event data returns an
+explicit bounded read error with stable event identity.
 Keep warnings/errors with independent information persisted. Similar text from
 a runner is not proof that it duplicates a control-plane event.
 
@@ -147,18 +138,17 @@ facade. Extend the existing persistence log-page contract to return tagged store
 log or lifecycle-event rows; a derived row must not fabricate a log ID or batch.
 The orchestrator renders those rows into the existing public entry shape.
 
-Use one SQL statement/snapshot combining stored log rows and marked step events
+Use one SQL statement/snapshot combining stored diagnostic logs and step events
 with `UNION ALL`. Apply workspace, run, step, runner task, node, asset, level,
 source, stream, time and cursor predicates before bounded branch limits, then
 apply the final ordered limit. Keep the existing default of 200 and maximum of
 500 entries; fetch one additional matching row to determine `has_more?`.
 Do not fetch two arbitrary pages and then filter or sort an unbounded history.
 
-Treat a missing stored stream as `system` in query predicates, matching the
-existing public-entry normalization. Historical lifecycle rows currently have a
-NULL stream column; literal equality would exclude them while including derived
-entries under the same system-stream filter. This is a narrow read correction,
-not a data backfill or change to stdout/stderr semantics.
+Normalize an omitted diagnostic stream to `system` on new writes, matching the
+public entry default and derived lifecycle stream. Use that same meaning in
+filters. This remains necessary for new diagnostic inputs; it is not a legacy-row
+backfill or a change to stdout/stderr semantics.
 
 - Historical key: occurrence time, source discriminator and stable row identity.
   The historical cursor also retains the snapshot publication upper bound.
@@ -174,11 +164,12 @@ not a data backfill or change to stdout/stderr semantics.
   the captured watermark. Never advance past matching entries not yet returned.
 - `replay_logs` changes from a bare list to a bounded page carrying entries,
   continuation and `has_more?`. Update its types, docs and callers together.
-  Historical cursors need a versioned new shape; reject incompatible cursors
-  with a reload result. Keep publication IDs as the existing replay primitive.
+  Replace the old historical cursor shape directly and validate the current
+  shape only; no legacy parser or translation layer. Discard existing browser
+  sessions/cursors during reset. Keep publication IDs as the replay primitive.
 
 Add only indexes needed by these queries. Prefer partial expression indexes over
-the small descriptor/existing fields before adding duplicate filter columns.
+the required event identity fields before adding duplicate filter columns.
 Measure real query plans for workspace, run, step and selective identity filters;
 introduce scalar columns only if the measured query or codec contract requires
 them. Neither a generic JSON index nor a new projection table is the default.
@@ -206,10 +197,10 @@ GenServer, a new dispatcher, or a new SSE endpoint.
 
 ```mermaid
 flowchart LR
-    A[New step transition] --> B[Commit marked event and existing event outbox]
+    A[Step transition] --> B[Commit event and existing event outbox]
     B --> C[Existing publication sequencer and wakeup]
     C --> D[Authorized combined log query]
-    H[Historical logs and independent diagnostics] --> D
+    H[Persisted independent diagnostics] --> D
     B --> D
     D --> E[Pure lifecycle renderer]
     E --> F[Existing operator log views]
@@ -217,12 +208,13 @@ flowchart LR
 
 ### Scope and complexity limits
 
-Included: event-backed lifecycle rendering, historical compatibility, bounded
-combined reads, required identity/index migration, live handoff and documentation.
+Included: event-backed lifecycle rendering, history within the new build, bounded
+combined reads, fresh-schema identity/index changes, live handoff and documentation.
 
 Explicit non-goals: a timeline table, generic projection engine, new background
-worker, configurable formatter registry, historical event/log rewrite, dual-write
-rollout, arbitrary producer deduplication, runner transport redesign, new logging
+worker, configurable formatter registry, lifecycle representation markers, legacy
+readers or cursor adapters, historical event/log conversion, dual-write rollout,
+arbitrary producer deduplication, runner transport redesign, new logging
 API for user code, SQL/result normalization, recovery changes, or scheduled
 retention. Preserve `LogWriter` for independent logs; remove its routine transition
 call and replace the private transition formatter with the single renderer.
@@ -231,22 +223,25 @@ call and replace the private transition formatter with the single renderer.
 
 | Slice | Outcome | Owner | Depends on |
 | --- | --- | --- | --- |
-| 1 | Event descriptor, renderer and removal of routine log writes | Orchestrator and event persistence boundary | Reviewed plan; activate only with slices 2-3 |
+| 1 | Canonical event identities, renderer and removal of routine log writes | Orchestrator and event persistence boundary | Reviewed plan; activate only with slices 2-3 |
 | 2 | Combined history/replay page and required indexes | Orchestrator log contract; PostgreSQL; shared DTOs | 1 |
 | 3 | Existing log views follow event publications without gaps | Orchestrator facade/subscriptions; View | 2 |
-| 4 | Behavior, migration and performance evidence; canonical docs | Owning app tests and documentation | 1-3 |
+| 4 | Behavior, fresh-bootstrap and performance evidence; canonical docs | Owning app tests and documentation | 1-3 |
 
 ### Complexity budget
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Reason |
 | --- | ---: | ---: | ---: | ---: | --- |
-| 1 | 120-200 | 75-115 | 160-240 | 0-20 | Small descriptor and extracted renderer |
-| 2 | 260-420 | 40-100 | 300-460 | 20-60 | Two-source SQL, indexes and page DTO |
-| 3 | 100-180 | 60-120 | 160-260 | 20-60 | Snapshot/replay handoff and existing consumers |
-| 4 | 0-40 | 0-10 | 220-340 | 0-20 | Measurement fixture and canonical documentation |
-| **Total** | **480-840** | **175-345** | **840-1,300** | **40-160** | Reuse current storage and publication machinery |
+| 1 | 80-140 | 75-115 | 100-170 | 0-20 | Identity fields and extracted renderer; no representation compatibility |
+| 2 | 230-360 | 40-100 | 220-340 | 20-60 | Two-source SQL, indexes and one current page DTO |
+| 3 | 90-160 | 60-120 | 140-220 | 20-60 | Snapshot/replay handoff and existing consumers |
+| 4 | 0-30 | 0-10 | 160-260 | 0-20 | Measurement fixture and fresh-bootstrap documentation |
+| **Total** | **400-690** | **175-345** | **620-990** | **40-160** | Reuse current storage and publication machinery |
 
-These are estimates, not a reason to omit correctness tests. Supporting lines
+The original approved budget remains in the preserved commit: production additions
+480-840, deletions 175-345; supporting additions 840-1,300, deletions 40-160. The
+revised ranges remove compatibility work, not ordinary recovery or bounded-read
+proof. They are estimates, not a reason to omit correctness tests. Supporting lines
 include tests, fixtures and canonical documentation; exclude this record,
 generated files, locks, dependencies and formatting-only changes. Explain each
 category exceeding its upper budget by more than 25 percent or 100 lines,
@@ -257,8 +252,9 @@ before proceeding. Preserve the approved budget when reporting actuals.
 
 ### Failures and recovery
 
-An event and its descriptor commit atomically or neither does. Removing a log
-write must not change run ownership, fencing, cancellation or retry decisions.
+An event and its required identity fields commit atomically or neither does.
+Removing a log write must not change run ownership, fencing, cancellation or
+retry decisions.
 After lost acknowledgement, replay the original committed event. After a process
 exit or lost PubSub notification, the existing sequenced outbox remains the replay
 authority. Readers retain their last successful cursor on transient errors and
@@ -270,12 +266,11 @@ logging; do not log payloads on every poll or introduce a new diagnostic ledger.
 
 ### Retention policy
 
-User-selected policy: derived lifecycle entries follow run-event retention,
-currently indefinite. Historical lifecycle logs and independent stored logs keep
-the existing bounded log-purge policy. Purging logs does not erase marked event
-history, and an expired unmarked legacy log never reappears as a derived entry.
-Consequently a new lifecycle message can remain visible longer than an old stored
-lifecycle message. Document that operator-visible distinction explicitly.
+User-selected policy: lifecycle entries follow run-event retention, currently
+indefinite. Independent stored logs keep the existing bounded log-purge policy.
+Purging diagnostic logs does not erase lifecycle history. Document that distinction
+and prove it using events and diagnostics created by the new build. There are no
+pre-reset lifecycle logs to retain or resurrect.
 
 Do not add a shared retention cutoff, tombstones or a retention worker in #706.
 Event/outbox deletion remains the separate #704 design and must establish replay
@@ -299,22 +294,28 @@ criterion complete, demonstrate the intended operator path or agree a separately
 scoped prerequisite for that gap. Storage-row preservation alone is not proof of
 operator visibility. Do not create or publish a new issue without user direction.
 
-### Deployment, migration and compatibility
+### Reset, fresh bootstrap and rollback
 
-- Add the required event-query indexes and storage schema qualification entries.
-  Existing event payloads/hashes and historical logs are unchanged; there is no
-  data backfill or bulk deletion.
-- Use a coordinated control-plane/View stop/start upgrade. New readers and the
-  no-log-write event marker ship together. No runtime feature flag or supported
-  mixed-binary period is introduced. Runners retain their current wire contract.
-- Do not alter the representation of commands already durably committed before
-  the upgrade. Test acknowledgement loss across this boundary.
-- Old readers cannot show new event-backed logs. Roll back only to a build that
-  understands this representation; do not silently remove marker/index support
-  or regenerate logs on downgrade. This restriction belongs in the operator docs.
+- The user performs a coordinated environment reset before deploying this change.
+  Stop old control planes, Views and runners first; clear old durable execution
+  state, pending runner delivery and browser sessions/cursors. No old task,
+  command or log batch may be replayed into the new environment.
+- Follow the existing [reset-only ownership contract](../../production/upgrade_and_rollback.md): coordinate control-plane
+  state with Favn-owned data-plane state. Do not clear ownership records and
+  silently reuse the managed outputs they described. This record does not execute
+  deletion or introduce a new reset tool.
+- Update the current schema/bootstrap definitions, necessary query indexes and
+  schema qualification through the repository's established reset-only process.
+  Test a fresh bootstrap. Add no historical data migration or compatibility
+  shim. Existing environments are reset rather than upgraded in place.
+- Bootstrap and publish the manifest into the fresh environment, then start the
+  matching candidate control plane and View plus compatible runners. No feature
+  flag or mixed-version period is supported. No runner wire change is planned.
+- Rollback is another coordinated fresh-baseline deployment of the chosen build.
+  Do not run old readers against new event history or restore incompatible data.
 - Before runtime implementation, complete the repository's reviewed-baseline,
-  commit/push, draft PR and rendered-diagram workflow. Creating this record alone
-  is not authorization to execute the runtime plan.
+  commit/push, draft PR and rendered-diagram workflow. This request updates the
+  record only; environment reset and implementation remain unexecuted.
 
 ## Verification plan
 
@@ -323,19 +324,26 @@ operator visibility. Do not create or publish a new issue without user direction
 | No duplicate routine writes | Count new log entries, log batches and log-specific outbox rows for each transition; event and event outbox still commit once | PostgreSQL transition integration |
 | Independent diagnostics remain available | Existing facade diagnostic round-trip and runner-batch preservation tests; explicitly resolve or report the availability gap above | Orchestrator and PostgreSQL |
 | Equivalent history, filters, ordering and cursors | Every mapped type plus generic fallback, level/source/stream/time/identity filters, equal timestamps, attempts and repeated windows; filter before limit | Renderer and combined-query tests |
-| Historical/new compatibility without duplication or loss | Unmarked legacy plus marked new events in the same run; upgraded code replays old commands without enrichment and still rejects changed content; mixed system-stream filtering; purge old logs without resurrection | PostgreSQL |
+| History and mixed sources after reset | New-build events and independent diagnostics in one page; exact command replay and changed-content conflicts; system-stream defaults; diagnostic purge preserves lifecycle history | PostgreSQL |
 | Live delivery and reconnect | Empty bootstrap, out-of-order commits on separate connections, unsequenced rows, process exit after commit, lost/duplicate wakeups, multi-page drain, filter changes and authorization loss | PostgreSQL and View boundary |
 | Before/after writes, bytes and read cost | Same success, retry and cancellation fixtures on baseline and implementation; actual generated-query plans | Owning performance tier |
-| Documentation and safe rollout | Update public facade/DTO docs, storage architecture/data-model docs, operator retention/rollback guidance and FEATURES only when implemented | Documentation review |
+| Documentation and fresh deployment | Fresh bootstrap; update facade/DTO docs, storage architecture/data-model docs, reset/retention/rollback guidance and FEATURES only when implemented | PostgreSQL and documentation |
+
+**User-directed acceptance change:** the original issue asks for historical and
+new lifecycle representations to coexist. The user superseded that requirement
+with mandatory environment reset. Do not mark legacy compatibility as tested or
+implemented. Ordinary persisted history, diagnostics/event coexistence and live
+reconnect within the new build remain required. Record this scope change in the
+later PR; do not edit the GitHub issue as part of this record-only request.
 
 Use deterministic messages and database barriers rather than timing sleeps. Cover
 a full 1,000-entry stored batch and replay ending mid-batch, many unrelated rows
-before a matching row, zero-match progress, malformed/unsupported descriptor,
-redaction, truncation, subscription cleanup and stale cursor reload. Preserve
-the existing distinct-event behavior after repeated runner-start notifications.
+before a matching row, zero-match progress, malformed required event data,
+redaction, truncation, subscription cleanup and invalid current cursor rejection.
+Preserve distinct-event behavior after repeated runner-start notifications.
 
 Measure inserted/updated rows and SQL/transaction counts by table, heap/index/TOAST
-bytes and WAL per representative execution. Include descriptor/index overhead
+bytes and WAL per representative execution. Include identity-field/index overhead
 in net savings. EXPLAIN the actual combined queries with ANALYZE and BUFFERS at
 representative cardinality for history and replay; record latency and examined
 rows. Do not substitute a hand-written similar query or forced-index-only plan
@@ -355,22 +363,22 @@ runtime tests, migration runs and benchmarks are not executed merely to write it
 | --- | --- |
 | Scope expands into a general logging platform | Explicit non-goals, four small slices and separate added/deleted budgets |
 | Lossy event JSON changes identity filters | Persist only missing canonical identity values before encoding; round-trip tests |
-| Historic log purge changes representation | Never derive unmarked events or switch source according to log existence |
+| Old state accidentally enters a fresh deployment | Coordinated reset and matching builds; no import, upgrade or old runner replay |
 | Empty history or display trimming loses replay progress | Snapshot watermark and paged replay state independent of visible entries |
 | Two-source query scans growing history | Filter before limit; measured production query plans; targeted partial indexes |
 | Different lifecycle and diagnostic retention | User-selected policy; common cutoff requires a reviewed scope change |
 | Existing runner diagnostics cannot be shown in operator logs | Explicit acceptance gap, not permission to build another ingestion pipeline |
-| Downgrade hides new lifecycle messages | Coordinated deployment and reader-compatible rollback only |
+| Downgrade uses incompatible history | Rollback requires another coordinated fresh-baseline deployment |
 
 ## Plan review
 
 | Field | Result |
 | --- | --- |
 | Reviewer | Independent agent `review_706_plan` |
-| Reviewed against | Issue #706, current source/tests, this record and the user's instruction to avoid overengineering |
-| Findings | Require representation-aware legacy replay without weakening changed-content conflicts; normalize missing stored stream to system for equivalent filters |
-| Findings addressed and rechecked | Both corrections and the full revised record independently rechecked on 2026-09-15 |
-| Verdict | Approved for the scoped plan; no blocking plan findings. Runner diagnostic visibility remains an explicit issue-completion gate. No implementation or performance qualification claimed. |
+| Reviewed against | Issue #706, current source/tests, prior plan and the user's reset-only simplification |
+| Prior review | Compatibility plan approved on 2026-09-15; preserved in `89705bd493da5722d0e974884db7951ee8fd93ad` |
+| Revised findings and recheck | Complete revised plan, prior baseline and all four deviations independently checked on 2026-09-15; no blocking findings |
+| Revised verdict | Approved for the reset-only scoped plan. Runner diagnostic visibility remains an explicit issue-completion gate. No reset, implementation or performance qualification claimed. |
 
 ## Implementation outcome
 
@@ -379,29 +387,42 @@ canonical product documentation and historical data are unchanged.
 
 ## Deviations from the approved plan
 
-No implementation baseline or deviations exist yet. Record material changes here
-after the independently reviewed plan is published; do not rewrite that baseline.
+This is a user-directed planning revision before implementation. The complete
+previous plan and its budgets remain in commit
+`89705bd493da5722d0e974884db7951ee8fd93ad`; it has not been rewritten in Git.
+
+| Prior reviewed plan | Revised plan | Reason | Reviewer verdict |
+| --- | --- | --- | --- |
+| Preserve unmarked lifecycle logs and mark new events | Derive every step event; retain only independent diagnostic logs | User permits mandatory reset and rejects backward compatibility | Approved; justified |
+| Representation-aware replay of old commands and legacy cursor handling | Ordinary exact replay and current cursor shape only | No old commands, sessions or data survive reset | Approved; justified |
+| In-place reader upgrade and compatible-reader rollback | Fresh bootstrap for deployment and rollback | Reset-only environment contract | Approved; justified |
+| Production additions 480-840; supporting additions 840-1,300 | Production additions 400-690; supporting additions 620-990 | Remove compatibility code and its test matrix | Approved; justified |
 
 ## Decision log
 
-- Prefer disjoint historical/new representations over retrospective matching.
+- On 2026-09-15 the user removed backward compatibility and accepted environment
+  resets. Remove lifecycle markers, legacy reads and cross-upgrade replay paths.
+- Keep canonical identities, exact replay within the new build, redaction and
+  commit-safe bounded pagination: resets do not remove these correctness needs.
 - Reuse the existing publication sequencer and paged-drain mechanism.
 - The user selected lifecycle retention with run history on 2026-09-15; retain
   existing diagnostic log retention without a new shared cutoff mechanism.
-- Keep the runner diagnostic visibility gap explicit and separately scoped.
+- Keep the runner diagnostic visibility gap explicit and separately scoped;
+  resetting environments does not solve it.
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | Issue and source inspection | Complete at origin/main `046f59d5` | Static findings; not live database behavior |
-| Independent plan review | Approved after both findings were corrected and rechecked | Plan only; diagnostic visibility gate remains explicit |
-| Links, diagrams and whitespace | Ten local links resolve; fences and flowchart node references checked; Mermaid syntax/meaning manually reviewed; whitespace check passed | Documentation only; rendered GitHub diagram verification remains before implementation |
+| Independent plan review | Reset-only revision approved; all four deviations justified | Plan only; runner diagnostic visibility gate remains explicit |
+| Links, diagrams and whitespace | Eleven local links resolve; fences and flowchart node references checked; Mermaid syntax/meaning manually reviewed; whitespace check passed | Documentation only; rendered GitHub diagram verification remains before implementation |
 
 ### Not verified
 
-Implementation correctness, migration execution, database query plans, net byte
-savings, live deployment behavior and runner diagnostic operator visibility.
+Implementation correctness, fresh bootstrap, database query plans, net byte
+savings, environment reset, live deployment behavior and runner diagnostic
+operator visibility.
 
 ## Final review
 
