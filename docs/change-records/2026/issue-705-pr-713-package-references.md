@@ -5,7 +5,7 @@
 | Status | Implemented |
 | Type | Breaking storage refactor |
 | Primary issue | [#705: Normalize persisted execution packages and results](https://github.com/eirhop/favn/issues/705) |
-| Pull request | Not opened; user requested implementation review before PR creation |
+| Pull request | [#713](https://github.com/eirhop/favn/pull/713) |
 | Related work | Subsequent outcome and run-result phases of #705 |
 | Affected areas | `favn_core` persistence codecs; orchestrator persistence contract; `favn_storage_postgres` task storage, registry lookup, and schema bootstrap |
 | Approved plan commit | `93296df7` |
