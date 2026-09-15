@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Breaking storage refactor |
 | Primary issue | [#705: Normalize persisted execution packages and results](https://github.com/eirhop/favn/issues/705) |
 | Pull request | Not opened; user requested implementation review before PR creation |
@@ -378,7 +378,7 @@ environment was reset or deployed during implementation.
 
 | Deviation | Reason and effect |
 | --- | --- |
-| Implementation and final review precede PR creation. | The user explicitly requested this order on 2026-09-15. The reviewed baseline was committed first; the PR is created only after Astra xhigh accepts the implementation. |
+| Implementation and final review precede PR creation. | The user explicitly requested this order on 2026-09-15. The reviewed baseline was committed locally first; the author delayed its first push until the reviewed implementation was ready. The PR is created only after Astra xhigh accepts the implementation. |
 | Main advanced after the approved baseline. | Merged `4abf4fbf` (PR #711) before final qualification, keeping `93296df7` reachable as the original plan baseline. Final PR complexity excludes upstream serialization/security changes. |
 | Performance qualification uses a storage-format microbenchmark rather than a complete execution/lifecycle workload. | It directly measures the changed representation without building a second orchestration workload framework. It stores 2,000 rows using actual payload/result codecs and bounded synthetic snapshot/receipt fields. It does not run receipt expiry, real retries, or full enqueue/claim/recovery transactions. Those lifecycle paths are covered by integration tests; their end-to-end performance is not qualified. |
 | No environment-specific hosted reset commands were executed or invented. | The repository provides local infrastructure commands; consuming projects own managed catalogs and output locations. The runbook requires an explicit command/target inventory before adoption. This is an adoption prerequisite, not migration automation. |
@@ -481,7 +481,20 @@ remain separate evidence; no full umbrella or hosted-environment pass is claimed
 
 ## Final review
 
-Astra xhigh review is requested only after implementation and qualification.
-The reviewer must compare the approved plan at `93296df7` and the implementation
-diff against current-main `4abf4fbf`, including the scoped performance evidence
-and wider-suite limitations. No PR is created before its verdict.
+**Approved** by independent reviewer `gpt-6-astra` at `xhigh` on 2026-09-15.
+The reviewer compared implementation `bea6d2f33547081ae90dc3d424776a7b04d74b1c`
+against current-main `4abf4fbf` and the preserved approved plan at `93296df7`.
+No actionable findings remained.
+
+The review confirmed package verification, pinned manifest/asset binding,
+trusted atom decoding, expanded work bounds, exact receipt replay and unknown-write
+evidence. It accepted the documented microbenchmark, reset-command, PR-order
+and supporting-code budget deviations without requiring additional machinery.
+
+The reviewer independently ran the Core persistence file: **16 passed** (seed
+`728506`), and `git diff --check` passed. PostgreSQL, migration, crash-recovery,
+acceptance, broader-suite and benchmark logs were inspected, not independently
+rerun. Broader storage qualification remains not green; baseline failures do not
+prove every candidate failure pre-existing. CI, GitHub diagram rendering and
+live adoption remain unverified. Subsequent record status/PR-link updates are
+administrative and do not change the reviewed implementation.
