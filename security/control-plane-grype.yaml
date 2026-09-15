@@ -1,10 +1,31 @@
 # Narrow reviewed exceptions for Debian 13 image findings.
-# reviewed: 2026-09-14
-# review-by: 2026-10-01
+# reviewed: 2026-09-15
+# review-by: 2026-09-28
 # Every rule includes the vendor fix state so it stops matching when a fix appears.
 # Fixed glibc, Perl, gzip and SQLite findings were removed on 2026-09-14;
 # the runtime snapshot now installs their vendor fixes. See security/README.md.
 ignore:
+  # Temporary applicability assessment; guard expires on 2026-09-29.
+  - vulnerability: CVE-2026-19499
+    namespace: debian:distro:debian:13
+    fix-state: wont-fix
+    reason: >-
+      Temporary reviewed exception for the shipped binaries, which do not import
+      strfmon/strfmon_l; custom native code requires reassessment. See security/README.md.
+    package:
+      name: libc6
+      version: 2.41-12+deb13u4
+      type: deb
+  - vulnerability: CVE-2026-19499
+    namespace: debian:distro:debian:13
+    fix-state: wont-fix
+    reason: >-
+      Temporary reviewed exception for the shipped binaries, which do not import
+      strfmon/strfmon_l; custom native code requires reassessment. See security/README.md.
+    package:
+      name: libc-bin
+      version: 2.41-12+deb13u4
+      type: deb
   - vulnerability: CVE-2026-9538
     fix-state: wont-fix
     package:

@@ -1,3 +1,5 @@
+Code.require_file("../../../favn_test_support/fixtures/runner_task_persistence.exs", __DIR__)
+
 defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   use ExUnit.Case, async: false
 
@@ -7,6 +9,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerWork
   alias Favn.Contracts.RunnerTask.LeaseRenewal
   alias Favn.Contracts.RunnerTask.Registration
   alias FavnOrchestrator.Persistence.Commands, as: C
@@ -29,6 +32,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnStoragePostgres.Schemas.RunnerTaskCommand
   alias FavnStoragePostgres.Schemas.RunnerTaskLogBatch
   alias FavnStoragePostgres.StorageV2.Migrations
+  alias FavnTestSupport.RunnerTaskPersistence, as: TaskFixture
   alias FavnStoragePostgres.TestSupport.DistributedRunnerAgent
 
   @release "rr_" <> String.duplicate("a", 64)
@@ -552,6 +556,32 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                "UPDATE favn_control.runner_tasks SET payload = jsonb_build_object('padding', repeat('x', $3)) WHERE workspace_id = $1 AND task_id = $2",
                [fixture.workspace_id, queued.task_id, 33_562_624]
              )
+  end
+
+  test "first pipeline task enqueues and restores its window policy and schedule", fixture do
+    run_id = "windowed-pipeline-run"
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [run_id])
+    pipeline = TaskFixture.pipeline_context()
+
+    command =
+      enqueue_command(fixture, "windowed-pipeline",
+        task_kind: :asset_attempt,
+        run_id: run_id,
+        payload: %RunnerWork{
+          run_id: run_id,
+          pipeline: pipeline,
+          trigger: pipeline.trigger,
+          metadata: TaskFixture.submission_metadata(pipeline)
+        }
+      )
+
+    assert {:ok, %{status: :queued} = queued} = Store.enqueue(command)
+
+    assert {:ok, %{payload: %{pipeline: ^pipeline}}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
   end
 
   test "enqueue rejects payload and scalar run identity mismatch", fixture do
