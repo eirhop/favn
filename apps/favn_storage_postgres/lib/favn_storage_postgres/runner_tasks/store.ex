@@ -136,7 +136,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         status: "queued",
         enqueued_at: command.occurred_at,
         deadline_at: command.deadline_at,
-        payload_version: 13,
+        payload_version: Codec.payload_version(),
         payload: command.payload,
         payload_hash: command.payload_hash,
         orchestration_context: command.orchestration_context,
@@ -1789,6 +1789,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          true <- is_map(command.payload),
          true <- is_map(command.orchestration_context),
          true <- is_binary(command.payload_hash) and byte_size(command.payload_hash) == 32,
+         {:ok, expected_hash} <- Codec.payload_hash(command.payload),
+         true <- expected_hash == command.payload_hash,
          {:ok, version} <- pinned_manifest(command),
          {:ok, packages} <- task_packages(command.payload, version),
          {:ok, decoded} <-
@@ -1802,8 +1804,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          true <- context_matches_payload?(context, decoded),
          true <- persisted_claim_matches?(command, decoded, context),
          true <- FavnOrchestrator.RunnerTaskContext.matches_task?(context, command),
-         {:ok, expected_hash} <- Codec.payload_hash(command.payload),
-         true <- expected_hash == command.payload_hash,
          :ok <- optional_bounded_id(command.run_id),
          :ok <- optional_bounded_id(command.operation_id),
          :ok <- optional_bounded_id(command.asset_step_id),
@@ -1833,7 +1833,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task.required_runner_release_id == command.required_runner_release_id and
       task.required_capability == command.required_capability and
       task.deadline_at == command.deadline_at and
-      task.payload_version == 13 and
+      task.payload_version == Codec.payload_version() and
       task.payload_hash == command.payload_hash and
       task.orchestration_context == command.orchestration_context
   end
@@ -2948,12 +2948,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp task_data(row, task) do
     identity = Map.put(task, :workspace_context, %{workspace_id: task.workspace_id})
 
-    with {:manifest_pin, {:ok, version}} <- {:manifest_pin, pinned_manifest(row)},
+    with {:payload, true} <- {:payload, row.payload_version == Codec.payload_version()},
+         {:payload, {:ok, expected_hash}} <- {:payload, Codec.payload_hash(row.payload)},
+         {:payload, true} <- {:payload, expected_hash == row.payload_hash},
+         {:manifest_pin, {:ok, version}} <- {:manifest_pin, pinned_manifest(row)},
          {:payload, {:ok, packages}} <- {:payload, task_packages(row.payload, version)},
          {:payload, {:ok, payload}} <-
            {:payload, Codec.decode_payload(task.task_kind, row.payload, version, packages)},
-         {:payload, {:ok, expected_hash}} <- {:payload, Codec.payload_hash(row.payload)},
-         {:payload, true} <- {:payload, expected_hash == row.payload_hash},
          {:context, true} <-
            {:context, result_hash(row.orchestration_context) == row.orchestration_context_hash},
          {:manifest_pin, true} <-

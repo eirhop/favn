@@ -4,6 +4,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Codec do
   alias Favn.Contracts.RunnerTask.PersistenceCodec
   alias FavnOrchestrator.RunnerTaskContext
 
+  defdelegate payload_version(), to: PersistenceCodec
+
   defdelegate encode_payload(task_kind, payload), to: PersistenceCodec
   defdelegate decode_payload(task_kind, envelope, version, packages), to: PersistenceCodec
   defdelegate encode_result(task_kind, outcome, result), to: PersistenceCodec

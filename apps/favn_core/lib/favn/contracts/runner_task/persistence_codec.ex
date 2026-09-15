@@ -4,25 +4,61 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   alias Favn.Contracts.RunnerTask
   alias Favn.Contracts.RunnerTask.PersistenceSchema
   alias Favn.Contracts.RunnerTask.PersistenceData
+  alias Favn.Contracts.RunnerWork
+  alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Serializer
+  alias Favn.Manifest.Version
 
   @protocol_version RunnerTask.version()
   alias Favn.Contracts.RunnerTask.Limits
 
-  def encode_payload(task_kind, payload),
-    do: encode("runner_task_payload", task_kind, nil, payload, &RunnerTask.validate_payload/2)
+  @payload_encoding "runner-task-payload-v2"
 
-  def decode_payload(task_kind, envelope, version \\ nil, packages \\ []),
-    do:
-      decode(
-        "runner_task_payload",
-        task_kind,
-        nil,
-        envelope,
-        &RunnerTask.validate_payload/2,
-        version,
-        packages
-      )
+  @doc "Returns the current persisted task-payload version, independent of the wire protocol."
+  @spec payload_version() :: pos_integer()
+  def payload_version, do: 2
+
+  def encode_payload(task_kind, payload) do
+    with :ok <- apply_validation(&RunnerTask.validate_payload/2, task_kind, nil, payload),
+         :ok <- Limits.validate_payload(task_kind, payload),
+         {:ok, stripped, hash} <- strip_package(payload),
+         {:ok, data} <- PersistenceData.encode(stripped, Limits.payload_bytes(task_kind)) do
+      envelope = %{
+        "encoding" => @payload_encoding,
+        "execution_package_hash" => hash,
+        "payload" => data,
+        "protocol_version" => @protocol_version,
+        "task_kind" => Atom.to_string(task_kind),
+        "type" => "runner_task_payload"
+      }
+
+      {:ok, hash} = payload_hash(envelope)
+      {:ok, envelope, hash}
+    end
+  end
+
+  def decode_payload(task_kind, envelope, version \\ nil, packages \\ []) do
+    with {:ok, hash} <- package_hash(envelope),
+         true <- envelope["task_kind"] == Atom.to_string(task_kind),
+         {:ok, stripped} <-
+           PersistenceData.decode(
+             envelope["payload"],
+             Limits.payload_bytes(task_kind),
+             version,
+             [],
+             packages
+           ),
+         {:ok, value} <- restore_package(stripped, hash, packages),
+         true <- required_package_present?(value, version),
+         :ok <- apply_validation(&RunnerTask.validate_payload/2, task_kind, nil, value),
+         :ok <- Limits.validate_payload(task_kind, value) do
+      {:ok, value}
+    else
+      _other -> {:error, :invalid_runner_task_persistence_envelope}
+    end
+  rescue
+    _error -> {:error, :invalid_runner_task_persistence_envelope}
+  end
 
   def encode_result(task_kind, outcome, result) do
     case encode("runner_task_result", task_kind, outcome, result, &RunnerTask.validate_result/3) do
@@ -55,73 +91,65 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   # Read only a fixed, bounded path before loading the independently retained package.
   def package_hash(
         %{
-          "task_kind" => "asset_attempt",
-          "encoding" => "task-data-v1",
+          "encoding" => @payload_encoding,
+          "execution_package_hash" => hash,
           "protocol_version" => @protocol_version,
           "type" => "runner_task_payload",
-          "payload" => %{"format" => "task-data-v1", "data" => data} = inner
+          "task_kind" => kind,
+          "payload" => %{"format" => "task-data-v1", "data" => _} = inner
         } = envelope
       )
-      when map_size(envelope) == 5 and map_size(inner) == 2 do
-    with {:ok, fields} <- struct_fields(data, Favn.Contracts.RunnerWork),
-         package <- Map.fetch!(fields, "execution_package") do
-      case package do
-        nil ->
-          {:ok, nil}
+      when map_size(envelope) == 6 and map_size(inner) == 2 do
+    cond do
+      is_nil(hash) ->
+        {:ok, nil}
 
-        _ ->
-          with {:ok, fields} <- struct_fields(package, Favn.Manifest.ExecutionPackage),
-               ["binary", encoded] when byte_size(encoded) == 88 <- fields["content_hash"],
-               {:ok, hash} <- Base.decode64(encoded),
-               true <- Base.encode64(hash) == encoded and Regex.match?(~r/\A[0-9a-f]{64}\z/, hash) do
-            {:ok, hash}
-          else
-            _ -> {:error, :invalid_runner_task_package_reference}
-          end
-      end
-    else
-      _ -> {:error, :invalid_runner_task_package_reference}
+      kind == "asset_attempt" and is_binary(hash) and byte_size(hash) == 64 and
+          Regex.match?(~r/\A[0-9a-f]{64}\z/, hash) ->
+        {:ok, hash}
+
+      true ->
+        {:error, :invalid_runner_task_package_reference}
     end
   end
 
-  def package_hash(%{"task_kind" => kind}) when kind != "asset_attempt", do: {:ok, nil}
   def package_hash(_), do: {:error, :invalid_runner_task_package_reference}
 
-  defp struct_fields(["struct", name, ["map", pairs]], module) when is_list(pairs) do
-    expected =
-      Map.from_struct(struct(module)) |> Map.keys() |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+  defp strip_package(%RunnerWork{execution_package: %ExecutionPackage{} = package} = work) do
+    if RunnerWork.asset_ref(work) == package.asset_ref,
+      do: {:ok, %{work | execution_package: nil}, package.content_hash},
+      else: {:error, :invalid_runner_task_package_reference}
+  end
 
-    with true <- name == Atom.to_string(module),
-         true <- length(pairs) == length(expected),
-         true <- Enum.all?(pairs, &match?([["atom", key], _] when is_binary(key), &1)),
-         keys <- Enum.map(pairs, fn [["atom", key], _] -> key end),
-         true <- Enum.sort(keys) == expected do
-      {:ok, Map.new(pairs, fn [["atom", key], value] -> {key, value} end)}
-    else
-      _ -> {:error, :invalid_runner_task_package_reference}
+  defp strip_package(value), do: {:ok, value, nil}
+
+  defp restore_package(%RunnerWork{execution_package: nil} = work, hash, [
+         %ExecutionPackage{content_hash: hash} = package
+       ])
+       when is_binary(hash) do
+    if RunnerWork.asset_ref(work) == package.asset_ref,
+      do: {:ok, %{work | execution_package: package}},
+      else: {:error, :invalid_runner_task_package_reference}
+  end
+
+  defp restore_package(%RunnerWork{execution_package: nil} = work, nil, []), do: {:ok, work}
+
+  defp restore_package(%RunnerWork{}, _hash, _packages),
+    do: {:error, :invalid_runner_task_package_reference}
+
+  defp restore_package(value, nil, []), do: {:ok, value}
+
+  defp restore_package(_value, _hash, _packages),
+    do: {:error, :invalid_runner_task_package_reference}
+
+  defp required_package_present?(%RunnerWork{execution_package: nil} = work, %Version{} = version) do
+    case Enum.find(version.manifest.assets, &(&1.ref == RunnerWork.asset_ref(work))) do
+      %{type: :sql} -> false
+      _other -> true
     end
   end
 
-  defp struct_fields(_, _), do: {:error, :invalid_runner_task_package_reference}
-
-  defp package_matches?(
-         "runner_task_payload",
-         %Favn.Contracts.RunnerWork{execution_package: package} = work,
-         packages
-       ) do
-    case {package, packages} do
-      {nil, []} ->
-        true
-
-      {%Favn.Manifest.ExecutionPackage{} = package, [package]} ->
-        Favn.Contracts.RunnerWork.asset_ref(work) == package.asset_ref
-
-      _ ->
-        false
-    end
-  end
-
-  defp package_matches?(_tag, _value, _packages), do: true
+  defp required_package_present?(_value, _version), do: true
 
   def payload_hash(envelope) when is_map(envelope),
     do: {:ok, :crypto.hash(:sha256, Serializer.encode_canonical!(envelope))}
@@ -174,8 +202,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
     with true <- Map.drop(envelope, ["payload"]) == expected,
          {:ok, value} <-
            PersistenceData.decode(Map.get(envelope, "payload"), limit, version, [], packages),
-         :ok <- apply_validation(validate, task_kind, outcome, value),
-         true <- package_matches?(tag, value, packages) do
+         :ok <- apply_validation(validate, task_kind, outcome, value) do
       {:ok, value}
     else
       _other -> {:error, :invalid_runner_task_persistence_envelope}
@@ -201,6 +228,5 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   defp maybe_put_outcome(envelope, outcome),
     do: Map.put(envelope, "outcome", Atom.to_string(outcome))
 
-  defp term_limit("runner_task_payload", kind), do: Limits.payload_bytes(kind)
   defp term_limit("runner_task_result", _kind), do: Limits.result_bytes()
 end

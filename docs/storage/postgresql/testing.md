@@ -105,3 +105,32 @@ cloud instance, or execution order from another job.
 Production-like TLS, least-privilege roles, backup/restore, and multi-node failure
 tests belong in explicit acceptance/slow slices because a basic service container
 does not prove those properties.
+
+## Task package storage benchmark
+
+[`scripts/benchmarks/task_package_storage.exs`](../../../scripts/benchmarks/task_package_storage.exs)
+compares the payload codec and PostgreSQL storage using 2,000 repeated SQL tasks,
+two package sizes, three attempt numbers, varied window labels/error metadata,
+and fixed old timestamps. It measures payload/result/snapshot/receipt/outcome
+column sizes, inclusive relation sizes, workload WAL, and encode/insert and
+restoration time. Snapshot/receipt fields are synthetic bounded examples; this
+is a storage-format microbenchmark, not a full enqueue/claim/recovery benchmark.
+
+Use a quiet disposable PostgreSQL 18 instance and separate new databases for the
+baseline and changed revision. Database names must start with `favn_705_bench_`.
+Create each database with the existing PostgreSQL `createdb` tool, then run from
+the umbrella root with its bootstrap URL:
+
+```bash
+MIX_ENV=test mise exec -- mix run --no-start \
+  scripts/benchmarks/task_package_storage.exs "$BENCHMARK_DATABASE_URL"
+```
+
+The script creates its own benchmark tables and refuses to reuse them. It issues
+`CHECKPOINT`, disables autovacuum only on its benchmark tables (including
+TOAST), and reports PostgreSQL settings. This prevents a previous workload's
+background vacuum from contaminating the write-volume comparison. Hold the script, settings, and
+concurrent workload constant across revisions. Run performance measurements
+without simultaneous builds/tests. `pg_total_relation_size` already includes
+indexes and TOAST; do not add those sizes again. Delete only these disposable
+benchmark databases after preserving the JSON output.

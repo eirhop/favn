@@ -37,7 +37,10 @@ publication success alone does not guarantee that a task fits this bound.
 
 The wire assignment remains protocol 13 and checks encoded and decoded bounds
 before safe term decoding. Task persistence uses a separate current typed format;
-it does not decode stored ETF. Non-asset payloads/results have a 1 MiB semantic
+it does not decode stored ETF. Persisted SQL work stores a verified package
+reference; both encoding and restoration still enforce the complete-work bound.
+See [task package references](../storage/postgresql/architecture.md#task-package-references).
+Non-asset payloads/results have a 1 MiB semantic
 limit, owner context 4 MiB, and command receipts 256 KiB. Typed encoding is limited
 to four times the semantic budget, depth 64 and 100,000 nodes, with a small
 PostgreSQL envelope allowance. Wire log limits remain 256 KiB.

@@ -49,6 +49,18 @@ end
 {:ok, task} = Store.get(%Q.GetRunnerTask{workspace_context: context, task_id: f["task_id"]})
 true = task.data_state == :available
 
+if mode == "package" do
+  true = task.payload.execution_package.content_hash == f["package_hash"]
+
+  digest =
+    :crypto.hash(:sha256, :erlang.term_to_binary(task.payload, [:deterministic]))
+    |> Base.encode16()
+
+  true = digest == f["digest"]
+  IO.puts("PACKAGE restored exactly")
+  System.halt(0)
+end
+
 if mode == "inspect" do
   true = is_struct(task.payload, Favn.Contracts.RelationInspectionRequest)
   IO.puts("INSPECTION restored")

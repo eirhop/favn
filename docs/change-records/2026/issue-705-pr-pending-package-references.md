@@ -2,22 +2,22 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Breaking storage refactor |
 | Primary issue | [#705: Normalize persisted execution packages and results](https://github.com/eirhop/favn/issues/705) |
-| Pull request | Not opened; planning only |
+| Pull request | Not opened; user requested implementation review before PR creation |
 | Related work | Subsequent outcome and run-result phases of #705 |
 | Affected areas | `favn_core` persistence codecs; orchestrator persistence contract; `favn_storage_postgres` task storage, registry lookup, and schema bootstrap |
-| Approved plan commit | Not committed; independent plan review approved on 2026-09-15 |
+| Approved plan commit | `93296df7` |
 | Last updated | 2026-09-15 |
 
 ## One-minute summary
 
-Every SQL asset-attempt task stores an execution package that already exists in
-the immutable package registry. This PR will replace that stored copy with a
-verified reference using one current persistence format and one payload hash.
+SQL asset-attempt tasks previously stored an execution package that already
+exists in the immutable package registry. This PR replaces that stored copy with
+a verified reference using one current persistence format and one payload hash.
 Adoption requires an explicit environment reset; no old-data conversion or
-backward-compatible reader will be built. It will reuse the existing package
+backward-compatible reader is included. It reuses the existing package
 lookup and task decoding boundaries. The first delivery is limited to package
 storage; outcome consolidation and run-result compaction require separate records
 and measured justification before implementation.
@@ -31,8 +31,8 @@ The expected benefit is lower task storage and write volume. The runner still
 receives complete work. This PR makes no performance promise about enqueue CPU
 or runner assignment size.
 
-This record is for implementers and reviewers. It is a proposed plan, not approval
-to implement, a completed migration, or evidence of measured savings.
+The approved plan below is preserved from `93296df7`. The implementation outcome
+and verification evidence distinguish completed qualification from live adoption.
 
 ## Problem analysis
 
@@ -359,23 +359,67 @@ yet established the baseline.
 
 ## Implementation outcome
 
-Implementation has not started. No implementation results, actual complexity,
-or approved-baseline deviations exist yet. Complete these sections after the
-reviewed plan is implemented; do not rewrite the approved baseline to match it.
+The existing Core codec now writes `runner-task-payload-v2`, strips the verified
+package body and restores it through the existing retained-package lookup. The
+store uses payload version 2 and verifies the compact hash before lookup. Shared
+typed encoding, wire protocol, results, context, receipts, task identity and
+retention relationships are unchanged. The old embedded-payload reader was
+removed; no compatibility path, cache, new service or storage column was added.
+
+The new migration guards all four agreed empty-state predicates, replaces the
+payload-version constraint and updates the schema fingerprint. The operator
+runbook documents reset scope and the existing local reset/bootstrap command.
+Project-specific managed-output reset commands remain an operator adoption
+prerequisite because the repository does not own those locations. No existing
+environment was reset or deployed during implementation.
+
+### Baseline deviations and decisions
+
+| Deviation | Reason and effect |
+| --- | --- |
+| Implementation and final review precede PR creation. | The user explicitly requested this order on 2026-09-15. The reviewed baseline was committed first; the PR is created only after Astra xhigh accepts the implementation. |
+| Performance qualification uses a storage-format microbenchmark rather than a complete execution/lifecycle workload. | It directly measures the changed representation without building a second orchestration workload framework. It stores 2,000 rows using actual payload/result codecs and bounded synthetic snapshot/receipt fields. It does not run receipt expiry, real retries, or full enqueue/claim/recovery transactions. Those lifecycle paths are covered by integration tests; their end-to-end performance is not qualified. |
+| No environment-specific hosted reset commands were executed or invented. | The repository provides local infrastructure commands; consuming projects own managed catalogs and output locations. The runbook requires an explicit command/target inventory before adoption. This is an adoption prerequisite, not migration automation. |
+
+### Measured storage benefit
+
+Same deterministic script, two new databases in a dedicated PostgreSQL 18.4
+instance, 2,000 rows, 256-byte/16-KiB SQL comments, three attempt labels and old
+fixed timestamps. Both runs used 8-KiB blocks, pglz TOAST, full-page writes on,
+WAL compression off, a pre-workload checkpoint and autovacuum disabled on the
+benchmark tables/TOAST. Global autovacuum remained on. No other client wrote to
+that database instance during the final measurements.
+
+The baseline codec was loaded from `93296df7` in a fresh BEAM; every other module
+and the benchmark script was identical. The process used two schedulers. Other
+worktrees were doing CPU-heavy work on the same host, so timings are indicative,
+not a latency guarantee or a dispatch/recovery performance result.
+
+| Measurement | Embedded baseline | Package reference |
+| --- | ---: | ---: |
+| Stored payload bytes | 77,450,996 | 4,425,887 |
+| Stored result bytes | 3,106,000 | 3,106,000 |
+| Synthetic snapshot bytes | 106,000 | 106,000 |
+| Synthetic receipt bytes | 130,000 | 130,000 |
+| Stored outcome bytes | 3,114,000 | 3,114,000 |
+| Inclusive tables/indexes/TOAST bytes | 88,850,432 | 12,681,216 |
+| Workload WAL bytes | 90,541,656 | 12,465,520 |
+| Encode and insert 2,000 rows | 20.073 s | 13.015 s |
+| Restore 200 rows | 1.522 s | 1.573 s |
+| SQL queries per restoration in this script | 2 | 2 |
+
+Payload storage fell 94.3%, inclusive storage 85.7%, and workload WAL 86.2%.
+These are fixture-specific measurements, not promised savings for every SQL
+package. An earlier run on the shared database instance and a run contaminated
+by baseline-table autovacuum were discarded. The checked-in script disables
+that benchmark-table maintenance explicitly and documents the evidence boundary.
 
 ## Verification evidence
 
-| Check | Result | Evidence boundary |
-| --- | --- | --- |
-| Source and existing test inspection | Completed for the initial investigation | Static evidence; tests were inspected, not executed. |
-| Record links and whitespace | All 13 local links resolve; whitespace check passed | Documentation only. |
-| Markdown and diagrams | Fences checked and simple flowcharts reviewed in source | GitHub rendering has not been verified; no PR exists. |
-| Independent plan review and recheck | Astra xhigh approved; both P2 findings resolved | Static review of plan/source only; no implementation or deployment qualification. |
-
-All proposed codec, breaking-bootstrap, concurrency, performance, and live deployment
-behavior remains unverified. No PostgreSQL savings have been measured.
+Qualification is in progress. Final commands, counts, complexity and review
+verdict will be recorded before PR creation.
 
 ## Final review
 
-Not performed. Requires the approved baseline, final implementation, actual
-complexity, deviations, tests, reset/bootstrap instructions, and canonical documentation.
+Not yet requested. Astra xhigh will compare the implementation against `93296df7`
+after qualification; the reviewer will not edit the implementation.
