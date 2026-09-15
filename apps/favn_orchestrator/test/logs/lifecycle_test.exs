@@ -36,6 +36,17 @@ defmodule FavnOrchestrator.Logs.LifecycleTest do
     end
   end
 
+  test "generic persisted messages do not depend on the VM atom table" do
+    type = "step_custom_#{System.unique_integer([:positive])}"
+    persisted = Map.put(payload(:step_running), "event_type", type)
+    assert_raise ArgumentError, fn -> String.to_existing_atom(type) end
+    assert {:ok, before} = Lifecycle.render("workspace", 12, 8, persisted)
+    _ = String.to_atom(type)
+    assert {:ok, after_load} = Lifecycle.render("workspace", 12, 8, persisted)
+    assert before.message == String.replace(type, "_", " ")
+    assert after_load.message == before.message
+  end
+
   test "canonical identities survive repeated codec normalization and bounded metadata" do
     event = event(:step_running)
     data = Map.merge(event.data, Map.new(1..100, &{"field_#{&1}", &1}))

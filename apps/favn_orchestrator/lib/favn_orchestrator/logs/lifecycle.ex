@@ -73,28 +73,25 @@ defmodule FavnOrchestrator.Logs.Lifecycle do
       occurred_at: event.occurred_at,
       level: level(event.event_type),
       source: :orchestrator,
-      message: transition_log_message(event.event_type),
+      message: transition_log_message(to_string(event.event_type)),
       metadata: transition_log_metadata(event),
       producer_id: "orchestrator:#{event.run_id}",
       producer_sequence: event.sequence
     }
   end
 
-  defp transition_log_message(:step_started), do: "asset execution submitted"
-  defp transition_log_message(:step_retry_started), do: "asset execution retry submitted"
-  defp transition_log_message(:step_running), do: "asset execution started on a runner"
-  defp transition_log_message(:step_finished), do: "asset execution finished"
-  defp transition_log_message(:step_failed), do: "asset execution failed"
-  defp transition_log_message(:step_timed_out), do: "asset execution timed out"
-  defp transition_log_message(:step_cancelled), do: "asset execution cancelled"
-  defp transition_log_message(:step_retry_scheduled), do: "asset execution retry scheduled"
-  defp transition_log_message(:step_skipped_fresh), do: "asset skipped because it is fresh"
-  defp transition_log_message(:step_blocked), do: "asset execution blocked"
+  defp transition_log_message("step_started"), do: "asset execution submitted"
+  defp transition_log_message("step_retry_started"), do: "asset execution retry submitted"
+  defp transition_log_message("step_running"), do: "asset execution started on a runner"
+  defp transition_log_message("step_finished"), do: "asset execution finished"
+  defp transition_log_message("step_failed"), do: "asset execution failed"
+  defp transition_log_message("step_timed_out"), do: "asset execution timed out"
+  defp transition_log_message("step_cancelled"), do: "asset execution cancelled"
+  defp transition_log_message("step_retry_scheduled"), do: "asset execution retry scheduled"
+  defp transition_log_message("step_skipped_fresh"), do: "asset skipped because it is fresh"
+  defp transition_log_message("step_blocked"), do: "asset execution blocked"
 
-  defp transition_log_message(event_type) when is_atom(event_type),
-    do: event_type |> Atom.to_string() |> String.replace("_", " ")
-
-  defp transition_log_message(event_type), do: to_string(event_type)
+  defp transition_log_message(event_type), do: String.replace(event_type, "_", " ")
 
   defp transition_log_metadata(%RunEvent{} = event) do
     %{

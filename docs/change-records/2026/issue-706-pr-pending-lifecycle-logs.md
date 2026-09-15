@@ -445,7 +445,7 @@ previous plan and its budgets remain in commit
 ### Behavior and schema
 
 - Warnings-as-errors compilation passed. The final renderer/codec/subscription
-  checks passed (17 tests). Whitespace and test-tier checks passed.
+  checks passed (17 tests before review; 18 with the review regression). Whitespace and test-tier checks passed.
 - Orchestrator fast suite: 862/863 checks passed; the remaining unchanged
   slot-owner monitor race passed on isolated rerun (5 tests). An earlier parallel
   attempt had four 100 ms timing failures, all covered by the sequential run.
@@ -462,6 +462,8 @@ previous plan and its budgets remain in commit
 - The fast storage suite includes independent diagnostic redaction and accepted
   runner-batch preservation, and fresh bootstrap/schema qualification. The new
   catalog fingerprint is `d32ef8a8d9aea4e56cee626a41cb7918ab57e057e6790b13cf0c247929ab091b`.
+- After merging upstream PR #711, compilation and 78 focused PostgreSQL
+  concurrency/runner-task checks passed (4 excluded).
 - Both record diagrams were rendered with Mermaid and visually inspected locally.
   GitHub rendering is checked after PR creation under the user-directed workflow.
 
@@ -552,12 +554,46 @@ sizes were inspected locally; reproduce them with the slow tagged test and
 
 ### Complexity and remaining boundaries
 
-Final counts, excluding this record: **554 production lines added, 448 deleted; 756 supporting lines added, 27 deleted**. Additions remain within the approved ranges. More production deletions come from removing obsolete broadcast/topic helpers. Fewer supporting deletions reflect adding coverage to the small existing log test surface; no legacy-compatibility tests were introduced. No reset of an existing
+Final counts against the merged upstream base, excluding this record:
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 158 | 95 | 146 | 1 |
+| 2 | 287 | 127 | 235 | 12 |
+| 3 | 108 | 227 | 187 | 12 |
+| 4 | 0 | 0 | 227 | 2 |
+| **Total** | **553** | **449** | **795** | **27** |
+
+Allocation uses whole files except the 183-line measurement fixture/helper block,
+which belongs to slice 4. Slice 1 owns the renderer, codec and both former write
+modules. Slice 2 owns page DTOs, persistence/query/schema changes. The intertwined
+public `Logs` facade is allocated entirely to slice 3 with subscriptions and View;
+this allocation avoids pretending its shared functions have independent costs.
+Remaining concurrency/core-authority tests belong to slice 2; measurement and
+canonical documentation belong to slice 4.
+
+Total additions remain within the approved ranges. Slice 1's 158 production
+additions exceed its 140-line estimate by 18 lines, below the material variance
+threshold, because the renderer also validates malformed identities and bounded
+metadata. Slice 3's extra deletions remove obsolete broadcast/topic helpers;
+its additions remain in budget. Fewer supporting deletions reflect adding coverage
+to the small existing log test surface; no legacy compatibility tests were added.
+
+No reset of an existing
 environment, production workload test, mixed-version rollout or legacy-history
 conversion was performed. Runner diagnostic operator visibility remains the
 explicit pre-existing acceptance gap; this PR must not auto-close all of #706.
 
 ## Final review
 
-Not applicable yet. After implementation, a different reviewer must compare the
-actual change, evidence and complexity counts with the approved planning baseline.
+Astra at xhigh independently reviewed the code, baseline comparison and raw
+measurement artifacts before PR creation. Its initial verdict requested one
+correctness fix: generic historical messages depended on the VM atom table.
+Message classification now uses strings, with a regression that renders the same
+persisted payload before and after its event atom is created. A minor subscription
+warning issue was also fixed and tested across failed and successful polling.
+The requested per-slice complexity accounting is included above.
+
+Review fixes passed warnings-as-errors compilation, 18 orchestrator
+renderer/codec/subscription tests and 6 focused View tests. Final reviewer recheck
+is in progress.

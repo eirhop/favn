@@ -15,6 +15,7 @@ defmodule FavnView.LogsLiveSupport do
   @initial_limit 200
   @fetch_limit 500
   @poll_interval_ms 2_000
+  @subscription_warning "Loaded existing logs, but live streaming is unavailable."
   @dialyzer {:no_unused,
              [target_label: 1, run_context_from_public: 3, asset_context_from_public: 2]}
   @dialyzer {:no_match,
@@ -166,7 +167,7 @@ defmodule FavnView.LogsLiveSupport do
         assign(
           socket,
           :stream_warning,
-          "Loaded existing logs, but live streaming is unavailable."
+          @subscription_warning
         )
     end
   end
@@ -192,7 +193,7 @@ defmodule FavnView.LogsLiveSupport do
           |> LogsViewModel.trim_latest(@initial_limit)
 
         socket
-        |> assign(:stream_warning, nil)
+        |> assign(:stream_warning, if(socket.assigns.live?, do: nil, else: @subscription_warning))
         |> assign(:logs, logs)
         |> assign(
           :next_cursor,

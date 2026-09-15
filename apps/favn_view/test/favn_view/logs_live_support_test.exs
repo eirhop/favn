@@ -85,6 +85,34 @@ defmodule FavnView.LogsLiveSupportTest do
     assert List.last(socket.assigns.logs).id == "event-10"
   end
 
+  test "successful polling preserves the unavailable subscription warning" do
+    Application.put_env(:favn_view, :log_subscribe_fun, fn _, _ -> {:error, :unavailable} end)
+
+    Application.put_env(:favn_view, :list_logs_fun, fn _, _, _ ->
+      {:ok, %{items: [], replay_cursor: cursor(0)}}
+    end)
+
+    Application.put_env(:favn_view, :replay_logs_fun, fn _, _, _, _ ->
+      {:ok, %{items: [], replay_cursor: cursor(1), has_more?: false}}
+    end)
+
+    socket = mount()
+    refute socket.assigns.live?
+    assert socket.assigns.stream_warning =~ "live streaming is unavailable"
+
+    Application.put_env(:favn_view, :replay_logs_fun, fn _, _, _, _ -> {:error, :unavailable} end)
+    socket = LogsLiveSupport.poll(socket)
+    assert socket.assigns.stream_warning == "Unable to refresh logs."
+
+    Application.put_env(:favn_view, :replay_logs_fun, fn _, _, _, _ ->
+      {:ok, %{items: [], replay_cursor: cursor(2), has_more?: false}}
+    end)
+
+    socket = LogsLiveSupport.poll(socket)
+    assert socket.assigns.stream_warning =~ "live streaming is unavailable"
+    assert socket.assigns.next_cursor == cursor(2)
+  end
+
   test "a missed notification is recovered by the periodic poll" do
     Application.put_env(:favn_view, :list_logs_fun, fn _, _, _ ->
       {:ok, %{items: [], replay_cursor: cursor(0)}}
