@@ -4,6 +4,11 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
   alias Favn.Manifest
   alias Favn.Manifest.Version
   alias Favn.RelationRef
+  alias Favn.Manifest.Schedule
+  alias Favn.ResourceRecovery.Policy, as: RecoveryPolicy
+  alias Favn.Run.PipelineContext
+  alias Favn.Timezone
+  alias Favn.Window.{Anchor, Policy, Selection}
 
   def version(
         module_name \\ "Elixir.CrashRecoveryFixture",
@@ -123,6 +128,8 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
         })
       )
 
+    pipeline = pipeline_context(ref)
+
     work =
       struct!(
         C.RunnerWork,
@@ -133,6 +140,9 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
           run_id: "run",
           asset_step_id: "step",
           run_started_at: now,
+          pipeline: pipeline,
+          trigger: pipeline.trigger,
+          metadata: submission_metadata(pipeline),
           params: %{
             "exact" =>
               {<<0, 255>>, ~D[2026-09-04], ~T[12:34:56.123], ~N[2026-09-04 12:34:56.123456], now,
@@ -288,6 +298,76 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
     }
   end
 
+  def pipeline_context(ref \\ nil) do
+    timezone = "Europe/Oslo"
+    database = Timezone.database!()
+    start_at = DateTime.from_naive!(~N[2026-09-01 00:00:00], timezone, database)
+    end_at = DateTime.from_naive!(~N[2026-10-01 00:00:00], timezone, database)
+    anchor = Anchor.new!(:month, start_at, end_at, timezone: timezone)
+    {:ok, selection} = Selection.scheduled(anchor, 2, timezone)
+
+    %PipelineContext{
+      ref: ref,
+      trigger: %{
+        kind: :schedule,
+        pipeline: %{module: if(ref, do: elem(ref, 0)), id: if(ref, do: elem(ref, 1))},
+        schedule: %{
+          id: if(ref, do: elem(ref, 1)),
+          ref: ref,
+          cron: "0 6 * * *",
+          timezone: timezone,
+          overlap: :queue_one,
+          missed: :one
+        },
+        occurrence: %{
+          due_at: start_at,
+          occurrence_key: "schedule:fixture:2026-09-01",
+          recovery: :on_time
+        },
+        evaluated_at: start_at
+      },
+      anchor_window: anchor,
+      window_selection: selection,
+      window:
+        Policy.new!(:month,
+          timezone: "Europe/Oslo",
+          anchor: :current_period,
+          lookback: 2,
+          combine_windows: true,
+          allow_full_load: true
+        ),
+      schedule: %Schedule{
+        module: if(ref, do: elem(ref, 0)),
+        name: if(ref, do: elem(ref, 1)),
+        ref: ref,
+        cron: "0 6 * * *",
+        timezone: "Europe/Oslo",
+        timezone_source: :local,
+        missed: :one,
+        overlap: :queue_one,
+        origin: :inline
+      },
+      resource_recovery: RecoveryPolicy.new!(:retry_remaining, max_age_ms: 60_000)
+    }
+  end
+
+  def submission_metadata(%PipelineContext{} = context) do
+    %{
+      submit_kind: :pipeline,
+      pipeline_target_refs: if(context.ref, do: [context.ref], else: []),
+      pipeline_dependencies: context.dependencies,
+      pipeline_submit_ref: if(context.ref, do: elem(context.ref, 0)),
+      pipeline_identity_ref: context.ref,
+      pipeline_execution_policy: %{
+        runner_pool: context.runner_pool,
+        resource_recovery: context.resource_recovery
+      },
+      runtime_input_mode: :fresh,
+      refresh_policy: %{mode: :auto, refs: [], include_upstream?: false},
+      window_selection: context.window_selection
+    }
+  end
+
   def validations do
     contract = %Favn.SQL.Contract{
       columns: [Favn.SQL.Contract.Column.new!(:value, :integer, null: false)]
@@ -311,7 +391,13 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
       }
     ]
 
+    context = pipeline_context()
+
     [
+      context,
+      context.window,
+      context.schedule,
+      context.resource_recovery,
       Favn.SQL.ContractValidation.compare(contract, good),
       Favn.SQL.ContractValidation.compare(contract, bad)
     ]

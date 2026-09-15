@@ -6,6 +6,43 @@ findings, and machine-checked review deadline remain enforced. An exception is
 an applicability or residual-risk assessment, not a package patch or a claim
 that privileged/customized deployments are safe.
 
+## Temporary monetary-formatting exception, 15 September 2026
+
+[CVE-2026-19499](https://security-tracker.debian.org/tracker/CVE-2026-19499)
+affects glibc's `strfmon` and `strfmon_l` monetary formatting when right-justified
+padding writes past a caller-supplied buffer. Debian marks trixie `no-dsa`
+(minor issue); its `glibc 2.41-12+deb13u4` remains vulnerable with no trixie
+package fix. The advisory reports no known network-facing application impact;
+that is not a guarantee that every application is unaffected.
+
+Grype 0.116.0 with database built `2026-09-15T06:31:36Z` reports two High
+matches, `libc6` and `libc-bin`, in the previously qualified runtime image.
+The temporary rules require this CVE, Debian 13, package type `deb`, the exact
+installed version `2.41-12+deb13u4`, and fix state `wont-fix`. A package version
+or vendor fix-state change stops the rules matching. The High severity gate
+and scanning of unfixed findings remain enabled.
+
+The applicability assessment checks the shipped ELF binaries for imports of
+both affected functions and literal symbol names used for dynamic lookup.
+The control-plane audit examined 701 ELF files from the previously qualified
+image at source revision `380a7364`; the generic runner audit examined 684 ELF
+files built from revision `0b0c8bfa`, including DuckDB and its shipped extensions.
+Both found no affected imports, symbol names only in libc itself, and no ELF
+inspection errors. This PR changes no native runtime dependencies. Independent
+review and scan results are recorded in [PR #711](https://github.com/eirhop/favn/pull/711). Favn source contains no calls to
+these functions. This supports a temporary assessment of the shipped binaries,
+not a proof that arbitrary native code cannot reach the vulnerable functions.
+Additional native plugins, DuckDB extensions, or dynamically loaded libraries
+require reassessment; do not rely on this exception for customized native code.
+The vulnerable libc functions remain present and unpatched.
+
+The policy has one shared deadline. It is brought forward from 1 October to
+**28 September 2026**, so `scripts/check_grype_exceptions.sh` rejects builds
+starting **29 September 2026**. This enforces the two-week limit without adding
+a separate expiry mechanism and also advances review of the existing rules.
+Remove these two rules when a fix is available, or reassess and explicitly
+review them before the deadline; do not automatically extend them.
+
 ## Runtime package refresh of 14 September 2026
 
 The runtime stages of both shipped images now use Debian and Debian-security
@@ -24,9 +61,9 @@ used the runtime package set; full image scans remain the release gate.
 
 Eighteen obsolete package-specific exception rules were removed for the fixed
 glibc, Perl, gzip and SQLite findings. The two PCRE2 findings had no exception.
-The High severity gate, scanning of unfixed findings, remaining applicability
-constraints and 1 October review deadline are unchanged. Image contracts compare
-installed versions using Debian version ordering and also accept later patches.
+That refresh kept the High severity gate, scanning of unfixed findings, remaining
+applicability constraints and then-current 1 October review deadline unchanged. Image
+contracts compare installed versions using Debian version ordering and also accept later patches.
 
 The complete runner scan additionally found 11 High matches in bundled Erlang
 29.0.4. Both builders now use [OTP 29.0.6](https://github.com/erlang/otp/releases/tag/OTP-29.0.6)
@@ -47,7 +84,7 @@ reviewed; a package or vendor fix-state change does not broaden an exception.
 Grype 0.116.0 with its database built at `2026-09-04T06:30:46Z` reports 37 new
 High matches in the runtime package setup: four util-linux advisories across
 nine binary packages and one zlib advisory. Debian has no stable-release fix for
-these findings at this review. The existing review deadline remains
+these findings at this review. That review retained the deadline of
 **1 October 2026**; it was not extended.
 
 | Advisory | Assessment |
