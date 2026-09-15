@@ -602,3 +602,31 @@ approved commit `f9efafd4` with no remaining findings and independently reran bo
 groups successfully. The reviewer confirmed the per-slice counts and justified
 deviations. Approval covers the reset-only implementation, with the documented
 runner-diagnostic gap and deployment/measurement limits.
+
+
+## Rebase and CI follow-up
+
+Rebased onto `7fbd6f03` (PR #713). The only rebase conflict was the schema
+fingerprint: package references and lifecycle indexes both change the catalog.
+A fresh disposable PostgreSQL 18 database produced the combined fingerprint
+`a5fda30b5862a730d64c0a2f0be468653c916701861ce7c6781fed85c01a7edc`.
+No production behavior changed beyond updating that exact schema expectation.
+The reviewed plan content is unchanged; its rebased commits are `8119ba68` and
+`8390875d`, and the reviewed implementation fixes map to `ee3637a5`.
+
+CI run `34950799108` failed the runner-session busy-duration assertion. The same
+seed (`288134`) passed its owning file alone and reproduced the failure in the
+full storage suite. Database inspection found six crash-recovery fixture tasks
+with completion one second before assignment; their negative durations polluted
+the platform-wide aggregate. The common claim fixture now uses the same logical
+time as its transitions/completions. The one test deliberately enqueuing a later
+candidate explicitly advances its own claim clock. A recovery assertion also
+checks completion is not earlier than assignment. No production aggregation or
+lifecycle behavior was changed for this test-order issue.
+
+The focused crash-recovery/session checks passed (22 tests, 1 excluded), and the
+fixture database contained zero negative task durations afterward. Compilation
+with warnings as errors and formatting checks passed. The final full PostgreSQL
+fast suite passed all 441 tests (23 excluded) with seed `288134`. The earlier
+reproduction run also hit three unrelated timing failures; those passed unchanged
+in this final run. Hosted CI must qualify the rewritten branch head.
