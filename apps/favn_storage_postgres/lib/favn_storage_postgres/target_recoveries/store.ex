@@ -152,6 +152,8 @@ defmodule FavnStoragePostgres.TargetRecoveries.Store do
   end
 
   defp create_intent!(command) do
+    FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
+
     workspace_id = command.workspace_context.workspace_id
 
     existing =

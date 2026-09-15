@@ -417,6 +417,13 @@ defmodule FavnStoragePostgres.Scheduler.Store do
   end
 
   defp complete_occurrence!(command) do
+    if command.run_id,
+      do:
+        FavnStoragePostgres.RunIdentity.lock!(
+          command.workspace_context.workspace_id,
+          command.run_id
+        )
+
     occurrence = lock_occurrence!(command.workspace_context.workspace_id, command.occurrence_id)
 
     cond do

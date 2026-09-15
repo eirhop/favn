@@ -207,6 +207,22 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
              "run_events_unavailable"
   end
 
+  test "missing and retiring run events return explicit history errors" do
+    for {kind, status, code} <- [
+          {:not_found, 404, "not_found"},
+          {:expired, 410, "history_expired"}
+        ] do
+      Process.put(
+        :runs_router_events_error,
+        FavnOrchestrator.Persistence.Error.new(kind, "history unavailable")
+      )
+
+      response = events_request("run-1")
+      assert response.status == status
+      assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == code
+    end
+  end
+
   test "viewer endpoints expose queued submissions and run detail during admission delay" do
     Process.put(:runs_router_terminal_run, nil)
     Process.put(:runs_router_submission, submission_fixture())

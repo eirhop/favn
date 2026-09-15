@@ -1,6 +1,19 @@
 defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   use ExUnit.Case, async: false
 
+  defmodule SSEProbe do
+    def send_chunked(observer, _status, _headers), do: {:ok, "", observer}
+
+    def chunk(observer, body) do
+      if String.contains?(IO.iodata_to_binary(body), "event: stream.ready") do
+        send(observer, {:sse_ready, self()})
+        receive do: (:release_sse -> :ok)
+      end
+
+      :ok
+    end
+  end
+
   import Ecto.Query
   import ExUnit.CaptureLog
 
@@ -65,7 +78,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ProvisionWorkspace
   alias FavnOrchestrator.Persistence.Commands.PinRuntimeInputs
   alias FavnOrchestrator.Persistence.Commands.PutRunExecutionCheckpoint
-  alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.RegisterManifest
   alias FavnOrchestrator.Persistence.Commands.RegisterExecutionPackages
   alias FavnOrchestrator.Persistence.Commands.RecoverAdministratorCredential
@@ -81,7 +93,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
   alias FavnOrchestrator.Persistence.Commands.LogEntry
-  alias FavnOrchestrator.Persistence.Commands.PurgeLogs
   alias FavnOrchestrator.Persistence.Commands.RevokeSessions
   alias FavnOrchestrator.Persistence.Commands.ResetActorCredential
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
@@ -315,7 +326,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   setup do
-    :ok = Sandbox.checkout(Repo)
+    :ok = Sandbox.checkout(Repo, isolation: "REPEATABLE READ")
     previous_tokens = Application.get_env(:favn_orchestrator, :api_service_tokens)
 
     Application.put_env(:favn_orchestrator, :api_service_tokens, [
@@ -2977,6 +2988,148 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute Enum.any?(validation_queries, &Regex.match?(~r/\bpayload\b/i, &1))
   end
 
+  test "registry retirement bounds a large manifest and rejects relinking during cleanup",
+       fixture do
+    {version, packages} = packaged_manifest_version(12)
+
+    assert :ok =
+             RegistryStore.register_execution_packages(%RegisterExecutionPackages{
+               platform_context: fixture.platform_context,
+               packages: packages
+             })
+
+    register = %RegisterManifest{platform_context: fixture.platform_context, version: version}
+    assert {:ok, ^version} = RegistryStore.register_manifest(register)
+    id = version.manifest_version_id
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.manifest_versions SET inserted_at=clock_timestamp()-interval '8 days' WHERE manifest_version_id=$1",
+      [id]
+    )
+
+    policy = %FavnOrchestrator.Retention.Policy{row_limit: 5}
+    cursor = %{"workspace_id" => "", "id" => id}
+
+    batch = fn cursor, policy ->
+      Repo.transaction(fn ->
+        FavnStoragePostgres.Maintenance.Retention.lock!()
+
+        FavnStoragePostgres.Maintenance.RegistryRetention.delete!(
+          :manifest,
+          policy,
+          DateTime.add(DateTime.utc_now(), -605_100, :second),
+          cursor
+        )
+      end)
+    end
+
+    # Evidence alone protects the entire manifest before any package link disappears.
+    evidence_sql = """
+    INSERT INTO favn_control.asset_evidence_bindings
+      (workspace_id,target_id,evidence_generation_id,initial_manifest_id,created_at)
+    VALUES ($1,'retention-evidence',$2,$3,clock_timestamp())
+    """
+
+    evidence_params = [fixture.workspace_id, "ag_" <> String.duplicate("a", 64), id]
+    SQL.query!(Repo, evidence_sql, evidence_params)
+    assert {:ok, %{deleted_count: 0}} = batch.(cursor, policy)
+
+    assert {:ok, %{manifest_version_id: ^id}} =
+             RegistryStore.get_manifest(
+               %FavnOrchestrator.Persistence.Queries.ManifestSelector.ById{
+                 manifest_version_id: id
+               }
+             )
+
+    assert %{rows: [[12]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.manifest_execution_packages WHERE manifest_version_id=$1",
+               [id]
+             )
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.asset_evidence_bindings WHERE workspace_id=$1 AND target_id='retention-evidence'",
+      [fixture.workspace_id]
+    )
+
+    assert {:ok, %{deleted_count: 5, cursor: cursor}} = batch.(cursor, policy)
+
+    assert {:error, %Postgrex.Error{postgres: %{constraint: "registry_history_retiring"}}} =
+             SQL.query(Repo, evidence_sql, evidence_params)
+
+    assert {:error, %{kind: :expired}} = RegistryStore.register_manifest(register)
+
+    assert {:error, %{kind: :expired}} =
+             RegistryStore.get_manifest(
+               %FavnOrchestrator.Persistence.Queries.ManifestSelector.ById{
+                 manifest_version_id: id
+               }
+             )
+
+    # A writer of a new logical reference must observe the committed retirement marker.
+
+    assert {:error, %Postgrex.Error{postgres: %{constraint: "registry_history_retiring"}}} =
+             SQL.query(
+               Repo,
+               "INSERT INTO favn_control.manifest_execution_packages(manifest_version_id,package_hash,asset_module,asset_name) SELECT $1,package_hash,asset_module,asset_name FROM favn_control.manifest_execution_packages WHERE manifest_version_id=$2 LIMIT 1",
+               [id, fixture.version.manifest_version_id]
+             )
+
+    assert {:ok, %{deleted_count: 0}} =
+             batch.(cursor, %{policy | excluded_workspace_ids: [fixture.workspace_id]})
+
+    assert {:ok, %{deleted_count: 5, cursor: cursor}} = batch.(cursor, policy)
+    assert {:ok, %{deleted_count: 2, cursor: cursor}} = batch.(cursor, policy)
+    assert {:ok, %{deleted_count: 1, cursor: %{"after_id" => ^id}}} = batch.(cursor, policy)
+
+    assert {:error, %{kind: :not_found}} =
+             RegistryStore.get_manifest(
+               %FavnOrchestrator.Persistence.Queries.ManifestSelector.ById{
+                 manifest_version_id: id
+               }
+             )
+
+    # Logical references have no FK, so the trigger must also reject a deleted owner.
+    freshness_sql = """
+    INSERT INTO favn_control.asset_freshness_states
+      (workspace_id,deployment_id,target_id,freshness_key,status,payload,source_publication_id,updated_at,evidence_generation_id,manifest_version_id)
+    VALUES ($1,$2,'retention-evidence','key','ok','{}',1,clock_timestamp(),'generation',$3)
+    """
+
+    for {deployment, manifest} <- [
+          {fixture.deployment_id, id},
+          {"missing-deployment", fixture.version.manifest_version_id}
+        ] do
+      assert {:error, %Postgrex.Error{postgres: %{constraint: "registry_history_retiring"}}} =
+               SQL.query(Repo, freshness_sql, [fixture.workspace_id, deployment, manifest])
+    end
+
+    # Formerly linked packages become eligible; their first_linked_at is not a permanent hold.
+    hashes =
+      Enum.map(packages, fn package -> Base.decode16!(package.content_hash, case: :lower) end)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.execution_packages SET inserted_at=clock_timestamp()-interval '8 days' WHERE content_hash=ANY($1::bytea[])",
+      [hashes]
+    )
+
+    assert {:ok, %{deleted_count: 5}} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :registry,
+                 policy,
+                 DateTime.add(DateTime.utc_now(), -605_100, :second),
+                 %{"phase" => 0}
+               )
+             end)
+  end
+
   test "purges only old execution packages that no manifest references", fixture do
     unlinked = execution_package({MyApp.OrphanedPackage, :asset})
     linked = execution_package({MyApp.RetainedPackage, :asset})
@@ -2995,7 +3148,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                version: linked_version
              })
 
-    command = %PurgePersistence{
+    command = %{
       platform_context: fixture.platform_context,
       job_id: "purge-execution-packages-#{System.unique_integer([:positive])}",
       target: :execution_packages,
@@ -3003,7 +3156,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       limit: 10
     }
 
-    assert {:ok, %{status: :completed, batch_count: 1}} = MaintenanceStore.purge(command)
+    assert {:ok, %{deleted_count: 1}} = retention_family_batch(command)
 
     assert {:ok, [unlinked_hash]} =
              RegistryStore.missing_execution_package_hashes(%MissingExecutionPackageHashes{
@@ -3013,8 +3166,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert unlinked_hash == unlinked.content_hash
 
-    assert {:error, %{kind: :invalid}} =
-             MaintenanceStore.purge(%{command | workspace_id: fixture.workspace_id})
+    assert {:ok, %{deleted_count: 0}} =
+             retention_family_batch(Map.put(command, :workspace_id, fixture.workspace_id))
   end
 
   test "rejects an execution-package command above the aggregate byte budget", fixture do
@@ -5139,6 +5292,420 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
+  test "cancelled rebuild retirement bounds tasks and pauses under a workspace hold", fixture do
+    now = DateTime.utc_now()
+    id = "retention-rebuild:" <> fixture.workspace_id
+    payload = %{schema_version: 1, operation_id: id, deployment_id: fixture.deployment_id}
+
+    assert {:ok, _} =
+             RebuildStore.begin_plan(%BeginRebuildPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: id,
+               operation_id: id,
+               root_target_id: fixture.target_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               planning_hash: RebuildPlan.hash(payload),
+               planning_payload: payload,
+               actor_id: fixture.workspace_context.principal_id,
+               reason: "retention test",
+               idempotency_key: id,
+               evaluated_at: now,
+               occurred_at: now
+             })
+
+    request = %GenerationCapabilitiesRequest{
+      manifest: %{fixture.version | manifest: nil},
+      asset_ref: {MyApp.Asset, :asset}
+    }
+
+    {:ok, encoded, hash} = RunnerTaskCodec.encode_payload(:generation_capabilities, request)
+    {:ok, context} = RunnerTaskCodec.encode_orchestration_context(%{})
+
+    commands =
+      for n <- 1..12 do
+        command = %EnqueueRunnerTask{
+          workspace_context: fixture.workspace_context,
+          command_id: "enqueue:#{id}:#{n}",
+          task_id: "rt_retention_#{fixture.workspace_id}_#{n}",
+          manifest_version_id: fixture.version.manifest_version_id,
+          manifest_content_hash: fixture.version.content_hash,
+          domain_identity: "#{id}:#{n}",
+          task_kind: :generation_capabilities,
+          runner_pool: "default",
+          required_runner_release_id: fixture.version.runner_releases["default"],
+          retry_class: :safe_to_retry,
+          payload: encoded,
+          payload_hash: hash,
+          orchestration_context: context,
+          operation_id: id,
+          required_capability: "generation_capabilities",
+          issued_at: now,
+          occurred_at: now
+        }
+
+        assert {:ok, _} = RunnerTaskStore.enqueue(command)
+        command
+      end
+
+    assert {:ok, _} =
+             RebuildStore.request_cancellation(%RequestRebuildCancellation{
+               workspace_context: fixture.workspace_context,
+               command_id: "cancel:" <> id,
+               operation_id: id,
+               reason: "retention test",
+               occurred_at: now
+             })
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET completed_at=clock_timestamp()-interval '8 days', cancelled_at=clock_timestamp()-interval '8 days', evaluated_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND operation_id=$2",
+      [fixture.workspace_id, id]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runner_tasks SET terminal_at=clock_timestamp()-interval '8 days', enqueued_at=clock_timestamp()-interval '9 days', inserted_at=clock_timestamp()-interval '9 days', cancellation_requested_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND operation_id=$2",
+      [fixture.workspace_id, id]
+    )
+
+    SQL.query!(Repo, "DELETE FROM favn_control.runner_task_command_tasks WHERE workspace_id=$1", [
+      fixture.workspace_id
+    ])
+
+    batch = fn policy, cursor ->
+      Repo.transaction(fn ->
+        FavnStoragePostgres.Maintenance.Retention.lock!()
+
+        FavnStoragePostgres.Maintenance.OperationRetention.delete!(
+          policy,
+          DateTime.add(now, -605_100, :second),
+          cursor
+        )
+      end)
+    end
+
+    policy = %FavnOrchestrator.Retention.Policy{row_limit: 5}
+    owner = %{"workspace_id" => fixture.workspace_id, "id" => id}
+    assert {:ok, %{deleted_count: 0, cursor: nil}} = batch.(policy, owner)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET cleanup_state='complete' WHERE workspace_id=$1 AND operation_id=$2",
+      [fixture.workspace_id, id]
+    )
+
+    assert {:ok, %{cursor: cursor}} = batch.(policy, owner)
+
+    assert {:error, %{kind: :expired}} =
+             RunnerTaskStore.get(%GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: hd(commands).task_id
+             })
+
+    late = %{
+      hd(commands)
+      | command_id: "late:" <> id,
+        task_id: "rt_late_" <> fixture.workspace_id,
+        domain_identity: "late:" <> id
+    }
+
+    assert {:error, %{kind: :expired}} = RunnerTaskStore.enqueue(late)
+
+    assert {:error, %{kind: :expired}} =
+             RunnerTaskStore.request_cancellation(
+               %FavnOrchestrator.Persistence.Commands.RequestRunnerTaskCancellation{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "late-cancel:" <> id,
+                 task_id: hd(commands).task_id,
+                 reason: :operator_request,
+                 issued_at: now,
+                 occurred_at: now
+               }
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_task_command_tasks WHERE workspace_id=$1 AND command_id=$2",
+               [fixture.workspace_id, "late-cancel:" <> id]
+             )
+
+    assert {:ok, %{deleted_count: 0}} =
+             batch.(%{policy | excluded_workspace_ids: [fixture.workspace_id]}, cursor)
+
+    result =
+      Enum.reduce_while(1..50, cursor, fn _, cursor ->
+        assert {:ok, result} = batch.(policy, cursor)
+        assert result.deleted_count <= 5
+        if is_nil(result.cursor), do: {:halt, :complete}, else: {:cont, result.cursor}
+      end)
+
+    assert result == :complete
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_tasks WHERE workspace_id=$1 AND operation_id=$2",
+               [fixture.workspace_id, id]
+             )
+  end
+
+  test "backfill retirement bounds children and hides the partially removed plan", fixture do
+    %{root: root, backfill_id: id} = seed_failed_backfill_windows(fixture, 12)
+
+    assert {:ok, _} =
+             RunStore.commit_transition(%CommitRunTransition{
+               workspace_context: fixture.workspace_context,
+               command_id: "retention-terminal:" <> root.id,
+               expected_sequence: 1,
+               run: RunState.transition(root, status: :error),
+               event: %{
+                 run_id: root.id,
+                 sequence: 2,
+                 event_type: :run_failed,
+                 status: :error,
+                 occurred_at: DateTime.utc_now()
+               }
+             })
+
+    {successor, _} = create_run_command(fixture)
+    assert {:ok, _} = RunStore.create_run(successor)
+    assert {:ok, _} = Sequencer.sequence_batch(5_000)
+    assert drain_projector("retention-backfill") > 0
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET last_publication_id=(SELECT max(publication_id) FROM favn_control.outbox_events)",
+      []
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET terminal_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, root.id]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.outbox_events SET published_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1",
+      [fixture.workspace_id]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.backfills SET updated_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND backfill_id=$2",
+      [fixture.workspace_id, id]
+    )
+
+    policy = %FavnOrchestrator.Retention.Policy{row_limit: 5}
+
+    batch = fn cursor ->
+      Repo.transaction(fn ->
+        FavnStoragePostgres.Maintenance.Retention.lock!()
+
+        FavnStoragePostgres.Maintenance.History.delete!(
+          policy,
+          DateTime.add(DateTime.utc_now(), -605_100, :second),
+          cursor
+        )
+      end)
+    end
+
+    assert {:ok, %{cursor: cursor}} =
+             batch.(%{"workspace_id" => fixture.workspace_id, "root" => root.id})
+
+    assert {:error, %{kind: :expired}} =
+             BackfillStore.page_windows(%PageBackfillWindows{
+               workspace_context: fixture.workspace_context,
+               backfill_id: id,
+               limit: 10
+             })
+
+    result =
+      Enum.reduce_while(1..160, cursor, fn _, cursor ->
+        assert {:ok, result} = batch.(cursor)
+        assert result.deleted_count <= 5
+        if is_nil(result.cursor), do: {:halt, :complete}, else: {:cont, result.cursor}
+      end)
+
+    assert result == :complete
+
+    assert {:error, %{kind: :not_found}} =
+             BackfillStore.page_windows(%PageBackfillWindows{
+               workspace_context: fixture.workspace_context,
+               backfill_id: id,
+               limit: 10
+             })
+  end
+
+  test "retention retires a large event history in bounded phases and rejects partial reads",
+       fixture do
+    {command, run} = create_run_command(fixture)
+    assert {:ok, _} = RunStore.create_run(command)
+
+    Enum.reduce(2..22, run, fn sequence, previous ->
+      status = if sequence == 22, do: :error, else: :running
+      current = RunState.transition(previous, status: status)
+
+      assert {:ok, _} =
+               RunStore.commit_transition(%CommitRunTransition{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "retention-event-#{run.id}-#{sequence}",
+                 expected_sequence: sequence - 1,
+                 run: current,
+                 event: %{
+                   run_id: run.id,
+                   sequence: sequence,
+                   event_type: if(status == :error, do: :run_failed, else: :run_started),
+                   status: status,
+                   occurred_at: DateTime.utc_now()
+                 }
+               })
+
+      current
+    end)
+
+    {successor, _} = create_run_command(fixture)
+    assert {:ok, _} = RunStore.create_run(successor)
+    assert {:ok, _} = Sequencer.sequence_batch()
+    assert drain_projector("retention-test") > 0
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET last_publication_id=(SELECT max(publication_id) FROM favn_control.outbox_events)",
+      []
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET terminal_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, run.id]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.outbox_events SET published_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND aggregate_id=$2",
+      [fixture.workspace_id, run.id]
+    )
+
+    policy = %FavnOrchestrator.Retention.Policy{row_limit: 10}
+    cursor = %{"workspace_id" => fixture.workspace_id, "root" => run.id, "phase" => 0}
+
+    batch = fn cursor ->
+      Repo.transaction(fn ->
+        FavnStoragePostgres.Maintenance.Retention.lock!()
+
+        FavnStoragePostgres.Maintenance.History.delete!(
+          policy,
+          DateTime.add(DateTime.utc_now(), -605_100, :second),
+          cursor
+        )
+      end)
+    end
+
+    {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
+
+    if is_nil(Process.whereis(FavnOrchestrator.PubSub)),
+      do: start_supervised!({Phoenix.PubSub, name: FavnOrchestrator.PubSub})
+
+    observer = self()
+
+    stream =
+      Task.async(fn ->
+        receive do: (:start_sse -> :ok)
+
+        conn = %{
+          Plug.Test.conn(:get, "/api/orchestrator/v1/streams/runs")
+          | adapter: {SSEProbe, observer}
+        }
+
+        SSE.stream(conn, fixture.workspace_context, {:run, run.id, 0})
+      end)
+
+    Sandbox.allow(Repo, self(), stream.pid)
+    send(stream.pid, :start_sse)
+    assert_receive {:sse_ready, _}, 5_000
+
+    assert {:ok, %{cursor: cursor}} = batch.(cursor)
+
+    assert {:error, %{kind: :expired}} =
+             RunStore.page_events(%PageRunEvents{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+
+    assert {:error, %{kind: :expired}} = RunStore.create_run(command)
+
+    response =
+      Plug.Test.conn(:get, "/api/orchestrator/v1/streams/runs")
+      |> SSE.stream(fixture.workspace_context, {:run, run.id, 0})
+
+    assert response.status == 410
+    assert response.resp_body =~ "cursor_expired"
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.execution_group_overviews WHERE workspace_id=$1 AND root_run_id=$2",
+      [fixture.workspace_id, run.id]
+    )
+
+    assert {:ok, _} =
+             MaintenanceStore.backfill_missing_projection(%BackfillMissingProjection{
+               platform_context: fixture.platform_context,
+               job_id: "retiring-repair:" <> run.id,
+               projection: :execution_groups,
+               workspace_id: fixture.workspace_id,
+               limit: 100
+             })
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.execution_group_overviews WHERE workspace_id=$1 AND root_run_id=$2",
+               [fixture.workspace_id, run.id]
+             )
+
+    final =
+      Enum.reduce_while(1..100, cursor, fn _, cursor ->
+        assert {:ok, result} = batch.(cursor)
+        assert result.deleted_count <= 10
+        if is_nil(result.cursor), do: {:halt, :complete}, else: {:cont, result.cursor}
+      end)
+
+    assert final == :complete
+    send(stream.pid, :release_sse)
+    send(stream.pid, :sse_heartbeat)
+    assert %{state: :chunked} = Task.await(stream, 5_000)
+
+    assert {:error, %{kind: :expired}} =
+             RunStore.page_events(%PagePublishedRunEvents{
+               scope: fixture.workspace_context,
+               after_publication_id: 0,
+               limit: 10
+             })
+
+    assert {:error, %{kind: :expired}} =
+             FavnStoragePostgres.Logs.Store.page(%FavnOrchestrator.Persistence.Queries.PageLogs{
+               workspace_context: fixture.workspace_context,
+               filter: Map.from_struct(%Favn.Log.Filter{}),
+               direction: :newer,
+               after: %{publication_id: 0, batch_offset: 0},
+               limit: 10
+             })
+
+    response =
+      Plug.Test.conn(:get, "/api/orchestrator/v1/streams/runs")
+      |> SSE.stream(fixture.workspace_context, {:global, 0})
+
+    assert response.status == 410
+
+    assert {:error, %{kind: :not_found}} =
+             RunStore.page_events(%PageRunEvents{
+               workspace_context: fixture.workspace_context,
+               run_id: run.id
+             })
+  end
+
   test "projection backfill restores missing rows without overwriting existing state",
        fixture do
     {command, run} = create_run_command(fixture)
@@ -7167,7 +7734,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
            retry_class: retry_class,
            result: if(outcome == :succeeded, do: result, else: nil),
            error: error,
-           finished_at: DateTime.utc_now()
+           finished_at: Enum.max([DateTime.utc_now(), task.enqueued_at], DateTime)
          }) do
       {:ok, _ack} -> :ok
       {:error, reason} -> raise "failed to complete durable test task: #{inspect(reason)}"
@@ -7906,6 +8473,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, ^entries} = LogStore.append_batch(command)
     assert {:ok, _} = Sequencer.sequence_batch(5_000)
 
+    assert {:ok, _} = Sequencer.sequence_batch()
+
     assert {:ok, page} =
              LogStore.page(%PageLogs{
                workspace_context: fixture.workspace_context,
@@ -7917,13 +8486,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert error_entry.level == :error
 
     assert {:ok, purged} =
-             LogStore.purge(%PurgeLogs{
-               workspace_context: fixture.workspace_context,
+             retention_family_batch(%{
+               target: :logs,
+               workspace_id: fixture.workspace_id,
                cutoff: DateTime.add(now, 1, :second),
                limit: 10
              })
 
-    assert purged.deleted_count == 2
+    assert purged.deleted_count == 0
   end
 
   test "normalizes runner metadata before validating the persisted payload", fixture do
@@ -8795,8 +9365,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       ]
     )
 
-    assert {:ok, %{status: :completed, batch_count: 0}} =
-             MaintenanceStore.purge(%PurgePersistence{
+    assert {:ok, %{deleted_count: 0}} =
+             retention_family_batch(%{
                platform_context: fixture.platform_context,
                job_id: "retain-operator-idempotency-#{System.unique_integer([:positive])}",
                target: :idempotency,
@@ -8826,8 +9396,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       [fixture.workspace_id, session.id, expired_at]
     )
 
-    assert {:ok, %{status: :completed, batch_count: 0}} =
-             MaintenanceStore.purge(%PurgePersistence{
+    assert {:ok, %{deleted_count: 0}} =
+             retention_family_batch(%{
                platform_context: fixture.platform_context,
                job_id: "retain-operator-session-#{System.unique_integer([:positive])}",
                target: :sessions,
@@ -9181,8 +9751,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       ]
     )
 
-    assert {:ok, %{status: :completed, batch_count: 0}} =
-             MaintenanceStore.purge(%PurgePersistence{
+    assert {:ok, %{deleted_count: 0}} =
+             retention_family_batch(%{
                platform_context: fixture.platform_context,
                job_id: "retain-service-idempotency-#{System.unique_integer([:positive])}",
                target: :idempotency,
@@ -9212,8 +9782,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                %{run_id: "run-service-maintenance"}
              )
 
-    assert {:ok, %{status: :completed, batch_count: 1}} =
-             MaintenanceStore.purge(%PurgePersistence{
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.auth_operator_commands SET terminal_at=$2 WHERE key_hash=$1",
+      [intent.key_hash, expired_at]
+    )
+
+    assert {:ok, %{deleted_count: 1}} =
+             retention_family_batch(%{
                platform_context: fixture.platform_context,
                job_id: "retire-service-intent-#{System.unique_integer([:positive])}",
                target: :sessions,
@@ -13411,4 +13987,26 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   defp restore_app_env(key, nil), do: Application.delete_env(:favn_orchestrator, key)
   defp restore_app_env(key, value), do: Application.put_env(:favn_orchestrator, key, value)
+
+  defp retention_family_batch(command) do
+    {family, phase} =
+      case command.target do
+        :execution_packages -> {:registry, 0}
+        :sessions -> {:sessions, 0}
+        :idempotency -> {:idempotency, 0}
+        :logs -> {:logs, 0}
+      end
+
+    Repo.transaction(fn ->
+      FavnStoragePostgres.Maintenance.Retention.lock!()
+
+      FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+        family,
+        %FavnOrchestrator.Retention.Policy{row_limit: command.limit},
+        command.cutoff,
+        %{"phase" => phase},
+        Map.get(command, :workspace_id)
+      )
+    end)
+  end
 end

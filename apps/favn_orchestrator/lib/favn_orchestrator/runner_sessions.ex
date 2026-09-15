@@ -16,9 +16,6 @@ defmodule FavnOrchestrator.RunnerSessions do
   alias FavnOrchestrator.RunnerRegistry.Session
 
   @boot_id_key {__MODULE__, :control_plane_boot_id}
-  @prune_watermark_key {__MODULE__, :prune_watermark}
-  @prune_interval_ms :timer.hours(24)
-  @retention_days 90
 
   @doc "Returns the stable identity of this control-plane boot."
   @spec control_plane_boot_id() :: String.t()
@@ -63,7 +60,6 @@ defmodule FavnOrchestrator.RunnerSessions do
       {:error, error} -> log_failure(:open, session.runner_instance_id, error)
     end
 
-    maybe_prune()
     :ok
   end
 
@@ -125,28 +121,6 @@ defmodule FavnOrchestrator.RunnerSessions do
     end
 
     :ok
-  end
-
-  defp maybe_prune do
-    now = System.monotonic_time(:millisecond)
-
-    case :persistent_term.get(@prune_watermark_key, nil) do
-      last when is_integer(last) and now - last < @prune_interval_ms ->
-        :ok
-
-      _stale ->
-        :persistent_term.put(@prune_watermark_key, now)
-
-        command = %C.PruneRunnerSessions{
-          platform_context: platform_context(),
-          older_than: DateTime.add(DateTime.utc_now(), -@retention_days, :day)
-        }
-
-        case store_call(:prune_sessions, command) do
-          {:ok, _count} -> :ok
-          {:error, error} -> log_failure(:prune, "all", error)
-        end
-    end
   end
 
   defp store_call(operation, command) do

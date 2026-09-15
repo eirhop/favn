@@ -134,29 +134,6 @@ defmodule FavnStoragePostgres.RunnerSessions.Store do
     end)
   end
 
-  @spec prune(C.PruneRunnerSessions.t()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
-  def prune(%C.PruneRunnerSessions{} = command) do
-    transact(fn ->
-      validate_platform_context!(command.platform_context)
-
-      unless is_integer(command.limit) and command.limit > 0 do
-        Repo.rollback(Error.new(:invalid, "invalid runner session prune limit"))
-      end
-
-      prunable =
-        from(session in Session,
-          where: not is_nil(session.ended_at) and session.ended_at < ^command.older_than,
-          select: session.session_id,
-          limit: ^command.limit
-        )
-
-      {count, _} =
-        Repo.delete_all(from(session in Session, where: session.session_id in subquery(prunable)))
-
-      count
-    end)
-  end
-
   @spec page(Q.PageRunnerSessions.t()) :: {:ok, [SessionResult.t()]} | {:error, Error.t()}
   def page(%Q.PageRunnerSessions{} = query) do
     read(fn ->

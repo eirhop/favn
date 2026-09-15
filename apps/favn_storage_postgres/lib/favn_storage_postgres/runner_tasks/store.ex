@@ -45,7 +45,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   @terminal_result_statuses [:succeeded, :failed, :cancelled, :unknown]
   @receipt_retention_ms :timer.hours(24) * 7
   @maximum_future_clock_skew_ms :timer.minutes(5)
-  @receipt_prune_limit 100
+
   @immutable_task_result_fields [
     :workspace_id,
     :task_id,
@@ -110,6 +110,14 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   def enqueue(%C.EnqueueRunnerTask{} = command) do
     idempotent_transact(command, "enqueue", fn ->
       validate_enqueue!(command)
+
+      if command.operation_id,
+        do:
+          FavnStoragePostgres.Maintenance.OperationRetention.guard!(
+            command.workspace_context.workspace_id,
+            command.operation_id
+          )
+
       workspace_id = command.workspace_context.workspace_id
       if command.run_id, do: CancellationOwnership.guard!(workspace_id, command.run_id)
 
@@ -155,7 +163,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
               task.workspace_id == ^workspace_id and
                 (task.task_id == ^command.task_id or
                    task.domain_identity == ^command.domain_identity),
-            limit: 1
+            limit: 1,
+            lock: "FOR UPDATE"
           )
         )
 
@@ -188,7 +197,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                     task.workspace_id == ^workspace_id and
                       (task.task_id == ^command.task_id or
                          task.domain_identity == ^command.domain_identity),
-                  limit: 1
+                  limit: 1,
+                  lock: "FOR UPDATE"
                 )
               )
 
@@ -921,14 +931,18 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   @impl true
   def get(%Q.GetRunnerTask{} = query) do
-    read(fn ->
+    snapshot_read(fn ->
       if bounded_id(query.task_id) == :ok do
         case Repo.get_by(RunnerTask,
                workspace_id: query.workspace_context.workspace_id,
                task_id: query.task_id
              ) do
-          nil -> {:error, Error.new(:not_found, "runner task not found")}
-          task -> to_result(task)
+          nil ->
+            {:error, Error.new(:not_found, "runner task not found")}
+
+          task ->
+            readable_task!(task)
+            to_result(task)
         end
       else
         {:error, Error.new(:invalid, "invalid runner task identity")}
@@ -938,8 +952,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   @impl true
   def page_run(%Q.PageRunRunnerTasks{} = query) do
-    read(fn ->
+    snapshot_read(fn ->
       if valid_page_query?(query) do
+        FavnStoragePostgres.Maintenance.History.check!(
+          query.workspace_context.workspace_id,
+          query.run_id
+        )
+
         statuses =
           case query.statuses do
             :all -> nil
@@ -986,9 +1005,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defdelegate reconcile_sessions(command), to: SessionsStore, as: :reconcile_boot
 
   @impl true
-  defdelegate prune_sessions(command), to: SessionsStore, as: :prune
-
-  @impl true
   defdelegate page_sessions(query), to: SessionsStore, as: :page
 
   @impl true
@@ -996,7 +1012,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   @impl true
   def page_session_tasks(%Q.PageRunnerSessionTasks{} = query) do
-    read(fn ->
+    snapshot_read(fn ->
       if valid_session_task_query?(query) do
         statuses = Enum.map(query.statuses, &Atom.to_string/1)
 
@@ -1018,7 +1034,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             %DateTime{} = ended_at -> from(task in base, where: task.assigned_at <= ^ended_at)
           end
 
-        base |> Repo.all() |> Enum.map(&to_operator_result/1)
+        base
+        |> Repo.all()
+        |> Enum.map(fn task ->
+          readable_task!(task)
+          to_operator_result(task)
+        end)
       else
         {:error, Error.new(:invalid, "invalid runner session task page query")}
       end
@@ -1275,12 +1296,23 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp lock_task!(workspace_id, task_id) do
-    Repo.one!(
-      from(task in RunnerTask,
-        where: task.workspace_id == ^workspace_id and task.task_id == ^task_id,
-        lock: "FOR UPDATE"
+    task =
+      Repo.one!(
+        from(task in RunnerTask,
+          where: task.workspace_id == ^workspace_id and task.task_id == ^task_id,
+          lock: "FOR UPDATE"
+        )
       )
-    )
+
+    if task.retiring, do: Repo.rollback(Error.new(:expired, "task history is retiring"))
+    # Parent locks are nonblocking: a cleaner holding the owner makes this writer roll back.
+    if task.run_id, do: FavnStoragePostgres.Maintenance.History.guard!(workspace_id, task.run_id)
+
+    if task.operation_id,
+      do:
+        FavnStoragePostgres.Maintenance.OperationRetention.guard!(workspace_id, task.operation_id)
+
+    task
   end
 
   defp active_runner_task(command) do
@@ -2111,7 +2143,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       now = database_now!()
       validate_command_window!(command.issued_at, now)
       command = canonicalize_enqueue_issued_at!(command, operation, scope_id)
-      prune_command_receipts!(now)
+
       validate_command_window!(command.issued_at, now)
       execute_command(command, operation, scope_id, now, fun)
     end)
@@ -2805,74 +2837,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp validate_command_window!(_issued_at, _now),
     do: Repo.rollback(Error.new(:invalid, "invalid runner task command issued-at timestamp"))
 
-  defp prune_command_receipts!(now) do
-    cutoff = DateTime.add(now, -@receipt_retention_ms, :millisecond)
-
-    SQL.query!(
-      Repo,
-      """
-      DELETE FROM favn_control.runner_task_commands
-      WHERE ctid IN (
-        SELECT ctid
-        FROM favn_control.runner_task_commands
-        WHERE inserted_at < $1
-        ORDER BY inserted_at
-        LIMIT $2
-        FOR UPDATE SKIP LOCKED
-      )
-      """,
-      [cutoff, @receipt_prune_limit]
-    )
-
-    SQL.query!(
-      Repo,
-      """
-      DELETE FROM favn_control.runner_task_outcomes
-      WHERE ctid IN (
-        SELECT outcome.ctid
-        FROM favn_control.runner_task_outcomes AS outcome
-        WHERE outcome.inserted_at < $1
-          AND NOT EXISTS (
-            SELECT 1
-            FROM favn_control.runner_task_command_tasks AS snapshot
-            WHERE snapshot.outcome_assignment_generation IS NOT NULL
-              AND snapshot.workspace_id = outcome.workspace_id
-              AND snapshot.task_id = outcome.task_id
-              AND snapshot.outcome_assignment_generation = outcome.assignment_generation
-          )
-        ORDER BY outcome.inserted_at
-        LIMIT $2
-        FOR UPDATE SKIP LOCKED
-      )
-      """,
-      [cutoff, @receipt_prune_limit]
-    )
-
-    SQL.query!(
-      Repo,
-      """
-      DELETE FROM favn_control.runner_task_runtime_input_errors
-      WHERE ctid IN (
-        SELECT outcome.ctid
-        FROM favn_control.runner_task_runtime_input_errors AS outcome
-        WHERE outcome.inserted_at < $1
-          AND NOT EXISTS (
-            SELECT 1
-            FROM favn_control.runner_task_command_tasks AS snapshot
-            WHERE snapshot.runtime_input_resolution_id IS NOT NULL
-              AND snapshot.workspace_id = outcome.workspace_id
-              AND snapshot.task_id = outcome.task_id
-              AND snapshot.runtime_input_resolution_id = outcome.resolution_id
-          )
-        ORDER BY outcome.inserted_at
-        LIMIT $2
-        FOR UPDATE SKIP LOCKED
-      )
-      """,
-      [cutoff, @receipt_prune_limit]
-    )
-  end
-
   defp database_now! do
     %{rows: [[now]]} = SQL.query!(Repo, "SELECT clock_timestamp()", [])
     now
@@ -2891,6 +2855,22 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     error -> {:error, ErrorMapper.map(error)}
   end
 
+  defp snapshot_read(fun) do
+    FavnStoragePostgres.Maintenance.Replay.read(fn -> read(fun) end)
+  end
+
+  defp readable_task!(task) do
+    if task.run_id,
+      do: FavnStoragePostgres.Maintenance.History.check!(task.workspace_id, task.run_id)
+
+    if task.operation_id,
+      do:
+        FavnStoragePostgres.Maintenance.OperationRetention.check!(
+          task.workspace_id,
+          task.operation_id
+        )
+  end
+
   defp read(fun) do
     case fun.() do
       {:error, %Error{} = error} -> {:error, error}
@@ -2903,6 +2883,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp to_state(%RunnerTask{} = task) do
+    if task.retiring, do: Repo.rollback(Error.new(:expired, "task history is retiring"))
+
     task
     |> Map.from_struct()
     |> Map.take(Map.keys(%RunnerTaskResult{}))

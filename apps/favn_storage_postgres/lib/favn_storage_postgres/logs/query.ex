@@ -5,9 +5,15 @@ defmodule FavnStoragePostgres.Logs.Query do
 
   # Both sources are bounded in the same snapshot. The outer join retains the
   # publication watermark even when neither source has a matching entry.
-  @spec statement(FavnOrchestrator.Persistence.Queries.PageLogs.t(), map()) ::
+  @spec statement(
+          FavnOrchestrator.Persistence.Queries.PageLogs.t(),
+          map(),
+          {non_neg_integer(), non_neg_integer()}
+        ) ::
           {String.t(), list()}
-  def statement(page, filter) do
+  def statement(page, filter, floor \\ {0, 0}) do
+    floor = if is_nil(page.after), do: {0, 0}, else: floor
+
     {stored_where, stored_params} =
       predicates(filter, :stored, [page.workspace_context.workspace_id])
 
@@ -15,21 +21,16 @@ defmodule FavnStoragePostgres.Logs.Query do
     {stored_cursor, params} = cursor(page, :stored, params)
     {event_cursor, params} = cursor(page, :event, params)
     {bound, params} = bind(params, page.limit + 1)
-    watermark = if page.direction == :older && page.after, do: page.after.watermark, else: nil
-    {snapshot, params} = bind(params, watermark)
+    {floor_id, params} = bind(params, elem(floor, 0))
+    {floor_offset, params} = bind(params, elem(floor, 1))
 
-    stored_order =
-      order(page.direction, "e.occurred_at", "(0::integer)", "e.log_id", "e.position")
-
-    event_order =
-      order(page.direction, "e.occurred_at", "(1::integer)", "e.event_id", "(0::integer)")
-
-    final_order =
-      order(page.direction, "occurred_at", "kind", "row_id", "position", "publication_id")
+    stored_order = order(page.direction, "p.publication_id", "e.position")
+    event_order = order(page.direction, "p.publication_id", "(0::integer)")
+    final_order = order(page.direction, "publication_id", "position")
 
     {"""
      WITH watermark AS MATERIALIZED (
-       SELECT COALESCE(#{snapshot}::bigint, last_publication_id) AS value, last_publication_id AS current_value
+       SELECT last_publication_id AS value, last_publication_id AS current_value
        FROM favn_control.outbox_publication_state WHERE singleton_id = 1
      ), entries AS (
        (SELECT 0 AS kind, e.log_id AS row_id, e.occurred_at, p.publication_id,
@@ -40,6 +41,7 @@ defmodule FavnStoragePostgres.Logs.Query do
         JOIN favn_control.outbox_events p ON p.workspace_id = b.workspace_id
           AND p.outbox_event_id = b.outbox_event_id
         WHERE e.workspace_id = $1 AND p.publication_id <= (SELECT value FROM watermark)
+          AND (p.publication_id,e.position)>(#{floor_id}::bigint,#{floor_offset}::integer)
           #{stored_where} #{stored_cursor}
         ORDER BY #{stored_order} LIMIT #{bound})
        UNION ALL
@@ -51,6 +53,7 @@ defmodule FavnStoragePostgres.Logs.Query do
           AND p.outbox_event_id = e.outbox_event_id
         WHERE e.workspace_id = $1 AND e.entity_type = 'step'
           AND p.publication_id <= (SELECT value FROM watermark)
+          AND (p.publication_id,0)>(#{floor_id}::bigint,#{floor_offset}::integer)
           #{event_where} #{event_cursor}
         ORDER BY #{event_order} LIMIT #{bound})
      )
@@ -58,7 +61,7 @@ defmodule FavnStoragePostgres.Logs.Query do
      LEFT JOIN LATERAL (
        SELECT * FROM entries ORDER BY #{final_order} LIMIT #{bound}
      ) page ON true
-     ORDER BY #{order(page.direction, "page.occurred_at", "page.kind", "page.row_id", "page.position", "page.publication_id")}
+     ORDER BY #{order(page.direction, "page.publication_id", "page.position")}
      """, params}
   end
 
@@ -126,25 +129,17 @@ defmodule FavnStoragePostgres.Logs.Query do
 
   defp cursor(%{after: nil}, _, params), do: {"", params}
 
-  defp cursor(%{direction: :newer, after: cursor}, kind, params) do
+  defp cursor(%{direction: direction, after: cursor}, kind, params) do
     {publication, params} = bind(params, cursor.publication_id)
     {offset, params} = bind(params, cursor.batch_offset)
     position = if kind == :stored, do: "e.position", else: "0"
-    {"AND (p.publication_id, #{position}) > (#{publication}::bigint, #{offset}::integer)", params}
-  end
+    comparison = if direction == :newer, do: ">", else: "<"
 
-  defp cursor(%{direction: :older, after: cursor}, kind, params) do
-    {time, params} = bind(params, cursor.occurred_at)
-    {source, params} = bind(params, cursor.kind)
-    {id, params} = bind(params, cursor.row_id)
-    {row_kind, row_id} = if kind == :stored, do: {0, "e.log_id"}, else: {1, "e.event_id"}
-
-    {"AND (e.occurred_at, #{row_kind}, #{row_id}) < (#{time}::timestamptz, #{source}::integer, #{id}::bigint)",
+    {"AND (p.publication_id, #{position}) #{comparison} (#{publication}::bigint, #{offset}::integer)",
      params}
   end
 
-  defp order(direction, time, kind, id, offset, publication \\ "p.publication_id")
-  defp order(:older, time, kind, id, _, _), do: "#{time} DESC, #{kind} DESC, #{id} DESC"
-  defp order(:newer, _, _, _, offset, publication), do: "#{publication} ASC, #{offset} ASC"
+  defp order(:older, publication, offset), do: "#{publication} DESC, #{offset} DESC"
+  defp order(:newer, publication, offset), do: "#{publication} ASC, #{offset} ASC"
   defp bind(params, value), do: {"$#{length(params) + 1}", params ++ [value]}
 end

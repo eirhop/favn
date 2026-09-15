@@ -496,9 +496,15 @@ defmodule FavnStoragePostgres.Registry.Store do
   def get_manifest(%ById{manifest_version_id: id}) when byte_size(id) in 1..255 do
     selector = %ById{manifest_version_id: id}
 
-    case ManifestCache.get(selector) do
-      {:ok, version} -> {:ok, version}
-      :miss -> selector |> load_manifest() |> cache_manifest()
+    case readable_manifest(selector) do
+      {:error, error} ->
+        {:error, error}
+
+      :ok ->
+        case ManifestCache.get(selector) do
+          {:ok, version} -> {:ok, version}
+          :miss -> selector |> load_manifest() |> cache_manifest()
+        end
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -509,9 +515,15 @@ defmodule FavnStoragePostgres.Registry.Store do
   def get_manifest(%ByContentHash{content_hash: content_hash}) do
     selector = %ByContentHash{content_hash: content_hash}
 
-    case ManifestCache.get(selector) do
-      {:ok, version} -> {:ok, version}
-      :miss -> selector |> load_manifest() |> cache_manifest()
+    case readable_manifest(selector) do
+      {:error, error} ->
+        {:error, error}
+
+      :ok ->
+        case ManifestCache.get(selector) do
+          {:ok, version} -> {:ok, version}
+          :miss -> selector |> load_manifest() |> cache_manifest()
+        end
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -530,11 +542,18 @@ defmodule FavnStoragePostgres.Registry.Store do
   end
 
   @impl true
-  def get_deployment_manifest(%GetDeploymentManifest{} = query) do
+  def get_deployment_manifest(%GetDeploymentManifest{} = query),
+    do:
+      FavnStoragePostgres.Maintenance.Replay.read(fn ->
+        get_deployment_manifest_snapshot(query)
+      end)
+
+  defp get_deployment_manifest_snapshot(%GetDeploymentManifest{} = query) do
     context = query.workspace_context
 
     with true <- WorkspaceContext.valid?(context),
          true <- valid_id?(query.deployment_id) and valid_id?(query.manifest_version_id),
+         :ok <- readable_deployment(context.workspace_id, query.deployment_id),
          true <-
            Repo.exists?(
              from(deployment in WorkspaceDeployment,
@@ -547,17 +566,25 @@ defmodule FavnStoragePostgres.Registry.Store do
       get_manifest(%ById{manifest_version_id: query.manifest_version_id})
     else
       false -> {:error, Error.new(:not_found, "workspace deployment manifest not found")}
+      {:error, _} = error -> error
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
 
   @impl true
-  def get_deployment_configuration(%GetDeploymentConfiguration{} = query) do
+  def get_deployment_configuration(%GetDeploymentConfiguration{} = query),
+    do:
+      FavnStoragePostgres.Maintenance.Replay.read(fn ->
+        get_deployment_configuration_snapshot(query)
+      end)
+
+  defp get_deployment_configuration_snapshot(%GetDeploymentConfiguration{} = query) do
     context = query.workspace_context
 
     with true <- WorkspaceContext.valid?(context),
          true <- valid_id?(query.deployment_id),
+         :ok <- readable_deployment(context.workspace_id, query.deployment_id),
          %WorkspaceDeployment{configuration: configuration} <-
            Repo.get_by(WorkspaceDeployment,
              workspace_id: context.workspace_id,
@@ -567,6 +594,7 @@ defmodule FavnStoragePostgres.Registry.Store do
     else
       false -> {:error, Error.new(:forbidden, "valid workspace deployment context required")}
       nil -> {:error, Error.new(:not_found, "workspace deployment configuration not found")}
+      {:error, _} = error -> error
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
@@ -595,6 +623,40 @@ defmodule FavnStoragePostgres.Registry.Store do
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
+
+  defp readable_deployment(workspace, id) do
+    case from(d in WorkspaceDeployment,
+           where: d.workspace_id == ^workspace and d.deployment_id == ^id,
+           select: d.retiring
+         )
+         |> Repo.one() do
+      nil -> {:error, Error.new(:not_found, "deployment not found")}
+      true -> {:error, Error.new(:expired, "deployment history is retiring")}
+      false -> :ok
+    end
+  end
+
+  defp readable_manifest(%ById{manifest_version_id: id}) do
+    from(m in ManifestVersion, where: m.manifest_version_id == ^id, select: m.retiring)
+    |> Repo.one()
+    |> manifest_readable_result()
+  end
+
+  defp readable_manifest(%ByContentHash{content_hash: hash}) do
+    with {:ok, bytes} <- decode_hash(hash) do
+      from(m in ManifestVersion, where: m.content_hash == ^bytes, select: m.retiring)
+      |> Repo.one()
+      |> manifest_readable_result()
+    end
+  end
+
+  defp manifest_readable_result(nil),
+    do: {:error, Error.new(:not_found, "manifest release not found")}
+
+  defp manifest_readable_result(true),
+    do: {:error, Error.new(:expired, "manifest history is retiring")}
+
+  defp manifest_readable_result(false), do: :ok
 
   defp load_manifest(%ById{manifest_version_id: id}) do
     ManifestVersion
@@ -693,7 +755,8 @@ defmodule FavnStoragePostgres.Registry.Store do
     case Repo.one(
            from(manifest in ManifestVersion,
              where: manifest.manifest_version_id == ^id,
-             select: {manifest.schema_version, manifest.content_hash}
+             select: {manifest.schema_version, manifest.content_hash},
+             where: not manifest.retiring
            )
          ) do
       {schema, hash} when schema == @current_manifest_schema and schema == v.schema_version ->
@@ -717,6 +780,9 @@ defmodule FavnStoragePostgres.Registry.Store do
 
   defp get_activatable_manifest(manifest_version_id) do
     case Repo.get(ManifestVersion, manifest_version_id) do
+      %ManifestVersion{retiring: true} ->
+        {:error, Error.new(:expired, "manifest history is retiring")}
+
       nil ->
         {:error, Error.new(:not_found, "manifest release not found")}
 
@@ -908,8 +974,15 @@ defmodule FavnStoragePostgres.Registry.Store do
     do: {:error, Error.new(:forbidden, "valid workspace deployment reservation required")}
 
   @impl true
-  def get_deployment_targets(%GetDeploymentTargets{} = query) do
-    with :ok <- validate_deployment_target_query(query) do
+  def get_deployment_targets(%GetDeploymentTargets{} = query),
+    do:
+      FavnStoragePostgres.Maintenance.Replay.read(fn ->
+        get_deployment_targets_snapshot(query)
+      end)
+
+  defp get_deployment_targets_snapshot(%GetDeploymentTargets{} = query) do
+    with :ok <- validate_deployment_target_query(query),
+         :ok <- readable_deployment(query.workspace_context.workspace_id, query.deployment_id) do
       rows =
         WorkspaceDeploymentTarget
         |> where(
@@ -1369,6 +1442,9 @@ defmodule FavnStoragePostgres.Registry.Store do
   end
 
   defp decode_manifest_row(nil), do: {:error, Error.new(:not_found, "manifest release not found")}
+
+  defp decode_manifest_row(%ManifestVersion{retiring: true}),
+    do: {:error, Error.new(:expired, "manifest history is retiring")}
 
   defp decode_manifest_row(%ManifestVersion{schema_version: schema_version})
        when schema_version < @current_manifest_schema do

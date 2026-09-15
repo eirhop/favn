@@ -292,7 +292,10 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   defp retry_at(%ResourceCircuit{state: "half_open", probe_expires_at: value}), do: value
 
   defp record_outcomes!(command) do
+    FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
+
     workspace_id = command.workspace_context.workspace_id
+    FavnStoragePostgres.RunIdentity.lock!(workspace_id, command.run_id)
 
     lock_candidate_owners!(
       workspace_id,
@@ -498,6 +501,8 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   end
 
   defp insert_recovery_candidate!(command) do
+    FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
+
     workspace = command.workspace_context.workspace_id
     CancellationOwnership.lock!(workspace, command.source_run_id)
     {:ok, node_key} = PayloadCodec.encode(command.node_key)
@@ -604,6 +609,13 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   end
 
   defp complete_recovery!(command) do
+    if command.recovery_run_id,
+      do:
+        FavnStoragePostgres.RunIdentity.lock!(
+          command.workspace_context.workspace_id,
+          command.recovery_run_id
+        )
+
     workspace = command.workspace_context.workspace_id
 
     query =

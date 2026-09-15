@@ -70,6 +70,7 @@ defmodule FavnStoragePostgres.Schemas.RebuildOperation do
   @primary_key false
   @schema_prefix "favn_control"
   schema "rebuild_operations" do
+    field(:retiring, :boolean, default: false)
     field(:workspace_id, :string, primary_key: true)
     field(:operation_id, :string, primary_key: true)
     field(:root_target_id, :string)

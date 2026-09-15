@@ -39,11 +39,6 @@ defmodule FavnOrchestrator.RunnerSessionsTest do
       send(:persistent_term.get(@test_pid_key), {:reconcile_sessions, command})
       {:ok, 2}
     end
-
-    def prune_sessions(command) do
-      send(:persistent_term.get(@test_pid_key), {:prune_sessions, command})
-      {:ok, 0}
-    end
   end
 
   setup do

@@ -731,6 +731,139 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
     assert cancelled.claim_owner == nil
   end
 
+  test "unadmitted terminal submissions expire only after many-command replay and holds end",
+       fixture do
+    for name <- ["retention-first", "retention-second"],
+        do: Store.enqueue(enqueue_command(fixture, name))
+
+    claim = claim_command(fixture, "retention-many", "retention-worker", limit: 2)
+    assert {:ok, owned} = Store.claim(claim)
+    assert length(owned) == 2
+
+    for submission <- owned,
+        do:
+          assert(
+            {:ok, _} =
+              Store.mark_failed(
+                mark_failed_command(fixture, submission, submission.claim_owner, :safe)
+              )
+          )
+
+    unknown = fail_submission(fixture, "retention-unknown", :unknown)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.run_submissions SET terminal_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1",
+      [fixture.workspace_id]
+    )
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.run_submission_commands WHERE workspace_id=$1 AND command_id<>$2",
+      [fixture.workspace_id, claim.command_id]
+    )
+
+    policy = %FavnOrchestrator.Retention.Policy{row_limit: 5}
+
+    sweep = fn policy ->
+      Enum.reduce(1..8, {nil, 0}, fn _, {cursor, total} ->
+        assert {:ok, result} =
+                 Repo.transaction(fn ->
+                   FavnStoragePostgres.Maintenance.Retention.lock!()
+
+                   FavnStoragePostgres.Maintenance.SubmissionRetention.delete!(
+                     policy,
+                     DateTime.add(DateTime.utc_now(), -605_100, :second),
+                     cursor
+                   )
+                 end)
+
+        assert result.deleted_count <= 1
+        {result.cursor, total + result.deleted_count}
+      end)
+      |> elem(1)
+    end
+
+    assert sweep.(policy) == 0
+
+    SQL.query!(Repo, "DELETE FROM favn_control.run_submission_commands WHERE workspace_id=$1", [
+      fixture.workspace_id
+    ])
+
+    assert sweep.(%{policy | excluded_workspace_ids: [fixture.workspace_id]}) == 0
+    assert sweep.(policy) == 2
+
+    assert {:ok, %{failure_kind: :unknown}} =
+             Store.get(%GetRunSubmission{
+               workspace_context: fixture.workspace_context,
+               submission_id: unknown.submission_id
+             })
+
+    {:ok, queued} = Store.enqueue(enqueue_command(fixture, "retention-cancel"))
+
+    assert {:ok, _} =
+             Store.request_cancellation(cancellation_command(fixture, queued, "not needed"))
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.run_submissions SET terminal_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND submission_id=$2",
+      [fixture.workspace_id, queued.submission_id]
+    )
+
+    SQL.query!(Repo, "DELETE FROM favn_control.run_submission_commands WHERE workspace_id=$1", [
+      fixture.workspace_id
+    ])
+
+    assert sweep.(policy) == 1
+
+    assert {:error, %{kind: :not_found}} =
+             Store.get(%GetRunSubmission{
+               workspace_context: fixture.workspace_context,
+               submission_id: queued.submission_id
+             })
+  end
+
+  test "submission cleanup skips retiring group children and advances rotation", fixture do
+    {:ok, child} = Store.enqueue(enqueue_command(fixture, "retiring-child"))
+
+    assert {:ok, _} =
+             Store.request_cancellation(cancellation_command(fixture, child, "not needed"))
+
+    root = "retiring-submission-owner"
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [root])
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET retiring=true WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, root]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.run_submissions SET cancellation_owner_run_id=$3, terminal_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND submission_id=$2",
+      [fixture.workspace_id, child.submission_id, root]
+    )
+
+    assert {:ok, %{deleted_count: 0, cursor: %{"phase" => 0, "submissions" => nil}}} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :execution_history,
+                 %FavnOrchestrator.Retention.Policy{},
+                 DateTime.add(DateTime.utc_now(), -605_100, :second),
+                 %{"phase" => 2}
+               )
+             end)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.run_submissions WHERE workspace_id=$1 AND submission_id=$2",
+               [fixture.workspace_id, child.submission_id]
+             )
+  end
+
   test "distinct deliberate commands create immutable retries only from safe failures", fixture do
     safe_failure = fail_submission(fixture, "safe-retry", :safe)
 
@@ -851,9 +984,11 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
 
   test "run creation cannot attach to a submission with different deployment, manifest, or target",
        fixture do
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [])
+
     mismatches = [
-      [deployment_id: "other-deployment-#{random_id()}"],
-      [manifest_version_id: "other-manifest-#{random_id()}"],
+      [deployment_id: "deploy-" <> fixture.workspace_id],
+      [manifest_version_id: "mv-" <> fixture.workspace_id],
       [target_id: "other-target-#{random_id()}"]
     ]
 
@@ -1263,7 +1398,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
     assert diagnostics.missing_critical_constraints == []
   end
 
-  test "expired receipts are pruned and their commands cannot mutate later work", fixture do
+  test "expired receipts are coordinated and their commands cannot mutate later work", fixture do
     old_command = %ClaimRunSubmissions{
       workspace_context: fixture.workspace_context,
       command_id: "expired-command-#{random_id()}",
@@ -1295,6 +1430,19 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
 
     assert {:ok, []} =
              Store.claim(claim_command(fixture, "trigger-receipt-prune", "current-worker"))
+
+    assert {:ok, %{deleted_count: 1}} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :receipts,
+                 %FavnOrchestrator.Retention.Policy{row_limit: 5},
+                 DateTime.add(DateTime.utc_now(), -7, :day),
+                 %{"phase" => 2},
+                 fixture.workspace_id
+               )
+             end)
 
     %{rows: [[0]]} =
       SQL.query!(
@@ -1426,7 +1574,15 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
         assert "run_submissions_stale_claim_idx" in index_names(discovery)
         assert "run_submissions_page_idx" in index_names(page)
         assert "run_submissions_status_page_idx" in index_names(status_page)
-        assert "run_submission_commands_retention_idx" in index_names(retention)
+
+        assert Enum.any?(
+                 index_names(retention),
+                 &(&1 in [
+                     "run_submission_commands_retention_idx",
+                     "run_submission_commands_global_retention_idx"
+                   ])
+               )
+
         {claim, stale, discovery, page, status_page, retention}
       end)
   end

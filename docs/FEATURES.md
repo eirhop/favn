@@ -143,6 +143,7 @@ accessibility, and production-provider qualification are unfinished.
 - Capability-specific stores group atomic commands and bounded queries by domain.
 - The `favn_control` schema separates platform manifests from workspace data and
   enforces exact schema, constraint, index, identifier, and payload requirements.
+- Optional [scheduled retention](storage/postgresql/retention.md) uses bounded PostgreSQL transactions, workspace holds, explicit replay expiry, and protected provenance. Mandatory receipt cleanup shares the same worker.
 - High-growth reads use keyset pagination and bounded projections. Manifest runtime
   reads fetch compact indexes and selected immutable execution packages.
 - One idempotent `bootstrap` Job owns Favn-specific role/database setup,

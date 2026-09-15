@@ -79,8 +79,6 @@ defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
               {:ok, :closed | :already_closed | :not_found} | {:error, Error.t()}
   @callback reconcile_sessions(C.ReconcileRunnerSessions.t()) ::
               {:ok, non_neg_integer()} | {:error, Error.t()}
-  @callback prune_sessions(C.PruneRunnerSessions.t()) ::
-              {:ok, non_neg_integer()} | {:error, Error.t()}
   @callback page_sessions(Q.PageRunnerSessions.t()) ::
               {:ok, [RunnerSession.t()]} | {:error, Error.t()}
   @callback session_window_totals(Q.GetRunnerSessionWindowTotals.t()) ::

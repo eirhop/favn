@@ -16,7 +16,7 @@ defmodule FavnStoragePostgres.RunIdentity do
       [workspace_id, run_id]
     )
 
-    :ok
+    FavnStoragePostgres.Maintenance.History.guard!(workspace_id, run_id)
   end
 
   @spec try_lock!(String.t(), String.t()) :: boolean()
@@ -28,6 +28,7 @@ defmodule FavnStoragePostgres.RunIdentity do
         [workspace_id, run_id]
       )
 
+    if locked?, do: FavnStoragePostgres.Maintenance.History.guard!(workspace_id, run_id)
     locked?
   end
 end

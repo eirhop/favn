@@ -1410,11 +1410,31 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
 
     assert MapSet.new([first.id, second.id]) == MapSet.new([entry.id, diagnostic_entry.id])
 
+    for table <- ["log_entries", "log_batches"] do
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.#{table} SET inserted_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1",
+        [fixture.workspace_id]
+      )
+    end
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.outbox_events SET published_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND event_kind='logs.batch.appended'",
+      [fixture.workspace_id]
+    )
+
     assert {:ok, %{deleted_count: 1}} =
-             LogStore.purge(%FavnOrchestrator.Persistence.Commands.PurgeLogs{
-               workspace_context: fixture.workspace_context,
-               cutoff: DateTime.add(running.updated_at, 1, :second)
-             })
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.LogRetention.delete!(
+                 %FavnOrchestrator.Retention.Policy{row_limit: 1},
+                 DateTime.utc_now(),
+                 nil,
+                 fixture.workspace_id
+               )
+             end)
 
     assert {:ok, %{items: [^entry]}} = Logs.page(fixture.workspace_context, %{})
   end

@@ -7,7 +7,6 @@ defmodule FavnStoragePostgres.Maintenance.Store do
 
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
-  alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.ReconcilePersistence
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
@@ -17,20 +16,25 @@ defmodule FavnStoragePostgres.Maintenance.Store do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.MaintenanceJob
 
+  alias FavnStoragePostgres.Maintenance.Retention
+
+  @impl true
+  def retention_status(context), do: Retention.status(context)
+  @impl true
+  def retention_preview(context, family), do: Retention.preview(context, family)
+  @impl true
+  def retention_batch(command), do: Retention.batch(command)
+  @impl true
+  def configure_retention(command), do: Retention.configure(command)
+
   @projections [:execution_groups, :backfills, :target_statuses, :asset_attempts, :freshness]
-  @purge_targets [
-    :logs,
-    :sessions,
-    :idempotency,
-    :materialization_claims,
-    :projection_failures,
-    :execution_packages
-  ]
 
   @impl true
   def backfill_missing_projection(%BackfillMissingProjection{} = command) do
     with :ok <- validate_rebuild(command) do
       transaction(fn ->
+        Retention.lock!()
+
         configuration = %{
           "projection" => Atom.to_string(command.projection),
           "workspace_id" => command.workspace_id,
@@ -83,31 +87,6 @@ defmodule FavnStoragePostgres.Maintenance.Store do
             "mismatch_count" => batch.mismatch_count,
             "repaired" => command.repair?
           })
-        end
-      end)
-    end
-  end
-
-  @impl true
-  def purge(%PurgePersistence{} = command) do
-    with :ok <- validate_purge(command) do
-      transaction(fn ->
-        configuration = %{
-          "target" => Atom.to_string(command.target),
-          "workspace_id" => command.workspace_id,
-          "cutoff" => DateTime.to_iso8601(command.cutoff),
-          "limit" => command.limit
-        }
-
-        job = prepare_job!(command, "purge", configuration)
-
-        if job.status == "completed" do
-          outcome(job, 0, %{})
-        else
-          count = purge_batch!(command)
-          status = if count < command.limit, do: "completed", else: "running"
-          updated = update_job!(job, status, count, nil)
-          outcome(updated, count, %{"target" => Atom.to_string(command.target)})
         end
       end)
     end
@@ -242,211 +221,6 @@ defmodule FavnStoragePostgres.Maintenance.Store do
     %{scanned_count: length(rows), mismatch_count: length(mismatches), cursor: cursor}
   end
 
-  defp purge_batch!(%{target: :logs} = command) do
-    entry_count =
-      delete_count(
-        """
-        WITH candidates AS (
-          SELECT log_id FROM favn_control.log_entries
-          WHERE ($1::text IS NULL OR workspace_id = $1) AND occurred_at < $2
-          ORDER BY log_id LIMIT $3 FOR UPDATE SKIP LOCKED
-        )
-        DELETE FROM favn_control.log_entries entry USING candidates
-        WHERE entry.log_id = candidates.log_id
-        """,
-        command
-      )
-
-    remaining = command.limit - entry_count
-
-    batch_count =
-      if remaining > 0 do
-        %{num_rows: count} =
-          SQL.query!(
-            Repo,
-            """
-            WITH candidates AS (
-              SELECT batch.workspace_id, batch.batch_id
-              FROM favn_control.log_batches batch
-              WHERE ($1::text IS NULL OR batch.workspace_id = $1)
-                AND batch.inserted_at < $2
-                AND NOT EXISTS (
-                  SELECT 1 FROM favn_control.log_entries entry
-                  WHERE entry.workspace_id = batch.workspace_id
-                    AND entry.batch_id = batch.batch_id
-                )
-              ORDER BY batch.workspace_id, batch.batch_id
-              LIMIT $3
-              FOR UPDATE SKIP LOCKED
-            )
-            DELETE FROM favn_control.log_batches batch USING candidates
-            WHERE batch.workspace_id = candidates.workspace_id
-              AND batch.batch_id = candidates.batch_id
-            """,
-            [command.workspace_id, command.cutoff, remaining]
-          )
-
-        count
-      else
-        0
-      end
-
-    entry_count + batch_count
-  end
-
-  defp purge_batch!(%{target: :sessions} = command) do
-    %{num_rows: service_intent_count} =
-      SQL.query!(
-        Repo,
-        """
-        WITH candidates AS (
-          SELECT intent.ctid
-          FROM favn_control.auth_operator_commands intent
-          WHERE intent.principal_kind = 'service'
-            AND intent.status IN ('accepted', 'partial', 'rejected')
-            AND intent.expires_at < $2
-            AND ($1::text IS NULL OR intent.workspace_id = $1)
-          ORDER BY intent.expires_at, intent.workspace_id, intent.key_hash
-          LIMIT $3
-          FOR UPDATE SKIP LOCKED
-        )
-        DELETE FROM favn_control.auth_operator_commands intent USING candidates
-        WHERE intent.ctid = candidates.ctid
-        """,
-        [command.workspace_id, command.cutoff, command.limit]
-      )
-
-    remaining = command.limit - service_intent_count
-
-    session_count =
-      if remaining > 0 do
-        delete_count(
-          """
-          WITH candidates AS (
-          SELECT session.session_id
-          FROM favn_control.auth_sessions session
-          WHERE (session.status <> 'active' OR session.expires_at < $2)
-          AND session.updated_at < $2
-          AND ($1::text IS NULL OR EXISTS (
-            SELECT 1 FROM favn_control.auth_workspace_memberships membership
-            WHERE membership.workspace_id = $1 AND membership.actor_id = session.actor_id
-          ))
-          ORDER BY session.session_id LIMIT $3 FOR UPDATE SKIP LOCKED
-          ),
-          deleted_operator_commands AS (
-          DELETE FROM favn_control.auth_operator_commands intent USING candidates
-          WHERE intent.session_id = candidates.session_id
-          AND intent.status IN ('accepted', 'partial', 'rejected')
-          AND intent.expires_at < $2
-          )
-          DELETE FROM favn_control.auth_sessions session USING candidates
-          WHERE session.session_id = candidates.session_id
-          AND NOT EXISTS (
-          SELECT 1 FROM favn_control.auth_operator_commands intent
-          WHERE intent.session_id = session.session_id
-          )
-          """,
-          %{command | limit: remaining}
-        )
-      else
-        0
-      end
-
-    service_intent_count + session_count
-  end
-
-  defp purge_batch!(%{target: :idempotency} = command) do
-    delete_count(
-      """
-      WITH candidates AS (
-        SELECT ctid FROM favn_control.idempotency_records
-        WHERE ($1::text IS NULL OR workspace_id = $1)
-          AND expires_at < $2
-          AND NOT EXISTS (
-            SELECT 1
-            FROM favn_control.auth_operator_commands intent
-            WHERE intent.workspace_id = idempotency_records.workspace_id
-              AND intent.operation = idempotency_records.operation
-              AND intent.principal_kind = idempotency_records.principal_kind
-              AND intent.principal_id = idempotency_records.principal_id
-              AND convert_to(intent.key_hash, 'UTF8') = idempotency_records.key_hash
-              AND intent.status IN ('pending', 'unknown')
-          )
-        ORDER BY expires_at LIMIT $3 FOR UPDATE SKIP LOCKED
-      )
-      DELETE FROM favn_control.idempotency_records record USING candidates
-      WHERE record.ctid = candidates.ctid
-      """,
-      command
-    )
-  end
-
-  defp purge_batch!(%{target: :materialization_claims} = command) do
-    delete_count(
-      """
-      WITH candidates AS (
-        SELECT workspace_id, claim_key FROM favn_control.materialization_claims
-        WHERE ($1::text IS NULL OR workspace_id = $1)
-          AND status IN ('succeeded', 'failed', 'expired', 'released')
-          AND effect_state NOT IN ('in_flight', 'outcome_unknown')
-          AND updated_at < $2
-        ORDER BY updated_at, workspace_id, claim_key
-        LIMIT $3 FOR UPDATE SKIP LOCKED
-      )
-      DELETE FROM favn_control.materialization_claims claim USING candidates
-      WHERE claim.workspace_id = candidates.workspace_id AND claim.claim_key = candidates.claim_key
-      """,
-      command
-    )
-  end
-
-  defp purge_batch!(%{target: :projection_failures} = command) do
-    delete_count(
-      """
-      WITH candidates AS (
-        SELECT failure_id FROM favn_control.projection_failures
-        WHERE ($1::text IS NULL OR workspace_id = $1) AND updated_at < $2
-        ORDER BY failure_id LIMIT $3 FOR UPDATE SKIP LOCKED
-      )
-      DELETE FROM favn_control.projection_failures failure USING candidates
-      WHERE failure.failure_id = candidates.failure_id
-      """,
-      command
-    )
-  end
-
-  defp purge_batch!(%{target: :execution_packages} = command) do
-    delete_count(
-      """
-      WITH candidates AS (
-        SELECT package.content_hash
-        FROM favn_control.execution_packages package
-        WHERE $1::text IS NULL
-          AND package.first_linked_at IS NULL
-          AND package.inserted_at < $2
-          AND NOT EXISTS (
-            SELECT 1
-            FROM favn_control.manifest_execution_packages manifest_package
-            WHERE manifest_package.package_hash = package.content_hash
-          )
-        ORDER BY package.inserted_at, package.content_hash
-        LIMIT $3
-        FOR UPDATE OF package SKIP LOCKED
-      )
-      DELETE FROM favn_control.execution_packages package USING candidates
-      WHERE package.content_hash = candidates.content_hash
-      """,
-      command
-    )
-  end
-
-  defp delete_count(sql, command) do
-    %{num_rows: count} =
-      SQL.query!(Repo, sql, [command.workspace_id, command.cutoff, command.limit])
-
-    count
-  end
-
   defp outcome(job, batch_count, details) do
     %MaintenanceOutcome{
       job_id: job.job_id,
@@ -494,16 +268,6 @@ defmodule FavnStoragePostgres.Maintenance.Store do
          command.invariant == :capacity_counters and
          (is_nil(command.workspace_id) or valid_id?(command.workspace_id)) and
          is_boolean(command.repair?) and valid_bound?(command.limit, 1, 1_000),
-       do: :ok,
-       else: {:error, ErrorMapper.map(:invalid)}
-  end
-
-  defp validate_purge(command) do
-    if maintenance_operator?(command.platform_context) and valid_id?(command.job_id) and
-         command.target in @purge_targets and
-         (is_nil(command.workspace_id) or valid_id?(command.workspace_id)) and
-         (command.target != :execution_packages or is_nil(command.workspace_id)) and
-         match?(%DateTime{}, command.cutoff) and valid_bound?(command.limit, 1, 5_000),
        do: :ok,
        else: {:error, ErrorMapper.map(:invalid)}
   end

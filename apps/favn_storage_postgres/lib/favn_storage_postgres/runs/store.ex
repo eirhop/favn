@@ -43,6 +43,8 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Payload
+  alias FavnStoragePostgres.Maintenance.History
+  alias FavnStoragePostgres.Maintenance.Replay
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Runs.Decoder
   alias FavnStoragePostgres.Runs.RuntimeInputPinCodec
@@ -146,6 +148,25 @@ defmodule FavnStoragePostgres.Runs.Store do
          {:ok, encoded} <- encode_write(command.run, command.event, persist_plan?: true),
          {:ok, result} <-
            Repo.transaction(fn ->
+             Replay.validate_timestamp!(encoded.occurred_at)
+
+             [command.run.root_run_id, command.run.parent_run_id, command.run.rerun_of_run_id]
+             |> Enum.reject(&is_nil/1)
+             |> Enum.uniq()
+             |> Enum.sort()
+             |> Enum.each(fn id ->
+               unless FavnStoragePostgres.RunIdentity.try_lock!(
+                        command.workspace_context.workspace_id,
+                        id
+                      ),
+                      do:
+                        Repo.rollback(
+                          Error.new(:conflict, "execution history owner is busy",
+                            retryable?: true
+                          )
+                        )
+             end)
+
              CancellationOwnership.lock_new!(
                command.workspace_context.workspace_id,
                command.run.id
@@ -174,6 +195,11 @@ defmodule FavnStoragePostgres.Runs.Store do
          {:ok, encoded} <- encode_write(command.run, command.event),
          {:ok, result} <-
            Repo.transaction(fn ->
+             FavnStoragePostgres.RunIdentity.lock!(
+               command.workspace_context.workspace_id,
+               command.run.id
+             )
+
              IdempotencyTransaction.execute!(
                command.workspace_context.workspace_id,
                command.idempotency,
@@ -217,10 +243,14 @@ defmodule FavnStoragePostgres.Runs.Store do
   def get_run(%GetRun{workspace_context: context, run_id: run_id}) do
     with :ok <- validate_workspace_read(context),
          true <- valid_identity?(run_id) do
-      case Repo.get_by(Run, workspace_id: context.workspace_id, run_id: run_id) do
-        nil -> {:error, Error.new(:not_found, "run not found")}
-        %Run{} = row -> decode_run(row)
-      end
+      Replay.read(fn ->
+        History.readable!(context.workspace_id, run_id)
+
+        case Repo.get_by(Run, workspace_id: context.workspace_id, run_id: run_id) do
+          nil -> {:error, Error.new(:not_found, "run not found")}
+          %Run{} = row -> decode_run(row)
+        end
+      end)
     else
       false -> {:error, Error.new(:invalid, "invalid run identity")}
       {:error, %Error{} = error} -> {:error, error}
@@ -230,7 +260,10 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   @impl true
-  def page_runs(%PageRuns{} = query) do
+  def page_runs(%PageRuns{} = query),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> page_runs_snapshot(query) end)
+
+  defp page_runs_snapshot(%PageRuns{} = query) do
     with :ok <- validate_page_runs(query),
          ecto_query <- runs_query(query),
          rows <- Repo.all(ecto_query),
@@ -252,7 +285,10 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   @impl true
-  def page_run_summaries(%PageRuns{} = query) do
+  def page_run_summaries(%PageRuns{} = query),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> page_run_summaries_snapshot(query) end)
+
+  defp page_run_summaries_snapshot(%PageRuns{} = query) do
     with :ok <- validate_page_runs(query),
          ecto_query <- run_summaries_query(query),
          rows <- Repo.all(ecto_query),
@@ -276,8 +312,17 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   @impl true
-  def page_events(%PageRunEvents{} = query) do
+  def page_events(query) do
+    Replay.read(fn -> page_events_snapshot(query) end)
+  end
+
+  defp page_events_snapshot(%PageRunEvents{} = query) do
     with :ok <- validate_page_events(query),
+         :ok <-
+           History.readable!(
+             query.workspace_context.workspace_id,
+             query.run_id || query.root_execution_group_id
+           ),
          rows <- Repo.all(events_query(query)),
          page_rows <- Enum.take(rows, query.limit),
          {:ok, events} <- decode_events(page_rows),
@@ -297,9 +342,13 @@ defmodule FavnStoragePostgres.Runs.Store do
     error -> {:error, ErrorMapper.map(error)}
   end
 
-  def page_events(%PagePublishedRunEvents{} = query) do
+  defp page_events_snapshot(%PagePublishedRunEvents{} = query) do
     with :ok <- validate_published_events(query),
          :ok <- validate_publication_cursor(query),
+         _floor <-
+           Replay.check!(Map.get(query.scope, :workspace_id), "events", %{
+             publication_id: query.after_publication_id || 0
+           }),
          rows <- Repo.all(published_events_query(query)),
          page_rows <- Enum.take(rows, query.limit),
          {:ok, events} <- decode_events(page_rows),
@@ -338,9 +387,17 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   @impl true
-  def get_runtime_inputs(%GetRuntimeInputs{} = query) do
+  def get_runtime_inputs(%GetRuntimeInputs{} = query),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> get_runtime_inputs_snapshot(query) end)
+
+  defp get_runtime_inputs_snapshot(%GetRuntimeInputs{} = query) do
     with :ok <- validate_runtime_input_query(query),
          {:ok, _run} <- fetch_run(query.workspace_context, query.run_id),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             query.workspace_context.workspace_id,
+             query.run_id
+           ),
          {:ok, hashes} <- requested_node_hashes(query.node_keys),
          {:ok, rows} <-
            runtime_input_rows(query.workspace_context.workspace_id, query.run_id, hashes),
@@ -372,8 +429,19 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   @impl true
-  def get_execution_checkpoint(%GetRunExecutionCheckpoint{} = query) do
-    with :ok <- validate_execution_checkpoint_query(query) do
+  def get_execution_checkpoint(%GetRunExecutionCheckpoint{} = query),
+    do:
+      FavnStoragePostgres.Maintenance.Replay.read(fn ->
+        get_execution_checkpoint_snapshot(query)
+      end)
+
+  defp get_execution_checkpoint_snapshot(%GetRunExecutionCheckpoint{} = query) do
+    with :ok <- validate_execution_checkpoint_query(query),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             query.workspace_context.workspace_id,
+             query.run_id
+           ) do
       case Repo.get_by(RunExecutionCheckpoint,
              workspace_id: query.workspace_context.workspace_id,
              run_id: query.run_id
@@ -392,6 +460,8 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   defp persist_runtime_input_pins!(command, key_version, key) do
+    FavnStoragePostgres.RunIdentity.lock!(command.workspace_context.workspace_id, command.run_id)
+
     with {:ok, run} <- fetch_run(command.workspace_context, command.run_id),
          {:ok, bindings} <-
            runtime_input_bindings(
@@ -1749,6 +1819,14 @@ defmodule FavnStoragePostgres.Runs.Store do
   defp runs_query(%PageRuns{} = query) do
     Run
     |> scope_runs(query.scope)
+    |> where(
+      [r],
+      fragment(
+        "NOT EXISTS (SELECT 1 FROM favn_control.runs root WHERE root.workspace_id=? AND root.run_id=? AND root.retiring)",
+        r.workspace_id,
+        r.root_execution_group_id
+      )
+    )
     |> filter_runs(query)
     |> cursor_runs(query.after, query.scope)
     |> order_runs(query.scope)

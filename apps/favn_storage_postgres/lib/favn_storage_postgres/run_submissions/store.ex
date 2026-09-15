@@ -44,7 +44,6 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   @fenced_result_kinds ["claim", "claim_stale", "renew", "mark_admitting", "requeue"]
   @receipt_retention_ms :timer.hours(24) * 7
   @maximum_future_clock_skew_ms :timer.minutes(5)
-  @receipt_prune_limit 100
 
   @impl true
   def enqueue(%EnqueueRunSubmission{} = command) do
@@ -182,14 +181,21 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   end
 
   @impl true
-  def get(%GetRunSubmission{} = query) do
+  def get(%GetRunSubmission{} = query),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> get_snapshot(query) end)
+
+  defp get_snapshot(%GetRunSubmission{} = query) do
     with :ok <- Validation.query(query) do
       case Repo.get_by(RunSubmission,
              workspace_id: query.workspace_context.workspace_id,
              submission_id: query.submission_id
            ) do
-        %RunSubmission{} = submission -> {:ok, Codec.result(submission)}
-        nil -> {:error, ErrorMapper.map(:not_found)}
+        %RunSubmission{} = submission ->
+          readable_submission!(submission)
+          {:ok, Codec.result(submission)}
+
+        nil ->
+          {:error, ErrorMapper.map(:not_found)}
       end
     end
   rescue
@@ -197,13 +203,17 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
   end
 
   @impl true
-  def get_by_run_id(%GetRunSubmissionByRunId{} = query) do
+  def get_by_run_id(%GetRunSubmissionByRunId{} = query),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> get_by_run_id_snapshot(query) end)
+
+  defp get_by_run_id_snapshot(%GetRunSubmissionByRunId{} = query) do
     with :ok <- Validation.query(query),
          %RunSubmission{} = submission <-
            Repo.get_by(RunSubmission,
              workspace_id: query.workspace_context.workspace_id,
              run_id: query.run_id
            ) do
+      readable_submission!(submission)
       {:ok, Codec.result(submission)}
     else
       nil -> {:error, Error.new(:not_found, "run submission not found")}
@@ -261,6 +271,15 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
       rows =
         RunSubmission
         |> where([submission], submission.workspace_id == ^query.workspace_context.workspace_id)
+        |> where(
+          [s],
+          fragment(
+            "NOT EXISTS (SELECT 1 FROM favn_control.runs member JOIN favn_control.runs root ON root.workspace_id=member.workspace_id AND root.run_id=member.root_execution_group_id WHERE member.workspace_id=? AND member.run_id IN (?,?) AND root.retiring)",
+            s.workspace_id,
+            s.run_id,
+            s.cancellation_owner_run_id
+          )
+        )
         |> maybe_status(status)
         |> after_cursor(query.after)
         |> order_by([submission],
@@ -832,7 +851,6 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
       transaction(fn ->
         now = database_now!()
         validate_command_window!(command.occurred_at, now)
-        prune_command_receipts!(now)
 
         workspace_id = command.workspace_context.workspace_id
         command_lock!(workspace_id, command.command_id)
@@ -1088,28 +1106,12 @@ defmodule FavnStoragePostgres.RunSubmissions.Store do
     end
   end
 
-  defp prune_command_receipts!(now) do
-    cutoff =
-      DateTime.add(
-        now,
-        -(@receipt_retention_ms + @maximum_future_clock_skew_ms),
-        :millisecond
-      )
+  defp readable_submission!(submission) do
+    FavnStoragePostgres.Maintenance.History.check!(submission.workspace_id, submission.run_id)
 
-    SQL.query!(
-      Repo,
-      """
-      DELETE FROM favn_control.run_submission_commands
-      WHERE ctid IN (
-        SELECT ctid
-        FROM favn_control.run_submission_commands
-        WHERE inserted_at < $1
-        ORDER BY inserted_at
-        LIMIT $2
-        FOR UPDATE SKIP LOCKED
-      )
-      """,
-      [cutoff, @receipt_prune_limit]
+    FavnStoragePostgres.Maintenance.History.check!(
+      submission.workspace_id,
+      submission.cancellation_owner_run_id
     )
   end
 

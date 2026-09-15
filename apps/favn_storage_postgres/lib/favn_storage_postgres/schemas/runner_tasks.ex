@@ -5,6 +5,7 @@ defmodule FavnStoragePostgres.Schemas.RunnerTask do
   @primary_key false
   @schema_prefix "favn_control"
   schema "runner_tasks" do
+    field(:retiring, :boolean, default: false)
     field(:workspace_id, :string, primary_key: true)
     field(:task_id, :string, primary_key: true)
     field(:domain_identity, :string)

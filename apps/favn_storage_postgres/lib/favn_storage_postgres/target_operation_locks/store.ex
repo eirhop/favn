@@ -46,6 +46,13 @@ defmodule FavnStoragePostgres.TargetOperationLocks.Store do
   end
 
   defp acquire_many!(command) do
+    if command.operation_type in [:rebuild, :target_recovery],
+      do:
+        FavnStoragePostgres.Maintenance.OperationRetention.guard_if_present!(
+          command.workspace_context.workspace_id,
+          command.operation_id
+        )
+
     workspace_id = command.workspace_context.workspace_id
     lock_identities!(workspace_id, command.target_ids)
     now = database_now!()

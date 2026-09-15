@@ -29,7 +29,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   end
 
   setup tags do
-    :ok = Sandbox.checkout(Repo)
+    :ok = Sandbox.checkout(Repo, isolation: "REPEATABLE READ")
     id = "write-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
     now = DateTime.utc_now()
     {:ok, platform} = PlatformContext.new("admin", id, [:platform_admin])
@@ -611,7 +611,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
              )
   end
 
-  test "abandoned unbound ownership claims are released and removed by the bounded purge", f do
+  test "released ownership claims retain their reusable fencing identity", f do
     command = %C.FinishMaterialization{
       workspace_context: f.workspace_context,
       command_id: "abandon",
@@ -627,15 +627,27 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     assert {:ok, %{claim: %{status: :released}}} = Materialization.finish(command)
     assert {:ok, _} = Materialization.finish(command)
 
-    assert {:ok, %{batch_count: 1}} =
-             FavnStoragePostgres.Maintenance.Store.purge(%C.PurgePersistence{
-               platform_context: f.platform_context,
-               job_id: "purge-" <> f.workspace_id,
-               workspace_id: f.workspace_id,
-               target: :materialization_claims,
-               cutoff: DateTime.add(f.now, 1, :second),
-               limit: 10
-             })
+    assert {:ok, %{deleted_count: 0}} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :operations,
+                 %FavnOrchestrator.Retention.Policy{row_limit: 10},
+                 DateTime.add(f.now, 1, :second),
+                 %{"phase" => 3},
+                 f.workspace_id
+               )
+             end)
+
+    assert %{rows: [[fence]]} =
+             SQL.query!(
+               Repo,
+               "SELECT fencing_token FROM favn_control.materialization_claims WHERE workspace_id=$1 AND claim_key=$2",
+               [f.workspace_id, f.claim.claim_key]
+             )
+
+    assert fence == f.claim.fencing_token
 
     assert %{rows: [[0]]} =
              SQL.query!(

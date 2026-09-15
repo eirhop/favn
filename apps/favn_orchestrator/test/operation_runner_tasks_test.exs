@@ -80,7 +80,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
     def open_session(_command), do: unavailable()
     def page_session_tasks(_command), do: unavailable()
     def page_sessions(_command), do: unavailable()
-    def prune_sessions(_command), do: unavailable()
+
     def reconcile_sessions(_command), do: unavailable()
     def session_window_totals(_command), do: unavailable()
     def workspace_task_stats(_command), do: unavailable()

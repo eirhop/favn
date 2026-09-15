@@ -2,15 +2,19 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
   @moduledoc """
   Runs one explicit, bounded PostgreSQL Storage V2 maintenance batch.
 
-  Re-run the exact command and job id while the returned status is `:running`.
+  Retention commands use an expected version from `retention-status`; after a lost
+  acknowledgement read status before resuming. Repair commands retain their stable
+  job ID and configuration while the returned status is `:running`.
   """
 
   use Mix.Task
 
   alias FavnOrchestrator.Persistence.Commands.BackfillMissingProjection
-  alias FavnOrchestrator.Persistence.Commands.PurgePersistence
   alias FavnOrchestrator.Persistence.Commands.ReconcilePersistence
   alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Persistence.Commands.ConfigureRetention
+  alias FavnOrchestrator.Persistence.Commands.RetentionBatch
+  alias FavnOrchestrator.Retention.Policy
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Maintenance.Store
   alias FavnStoragePostgres.Repo
@@ -23,9 +27,10 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
     projection: :string,
     target: :string,
     invariant: :string,
-    cutoff: :string,
     limit: :integer,
-    repair: :boolean
+    repair: :boolean,
+    policy: :string,
+    expected_version: :integer
   ]
 
   @impl true
@@ -40,8 +45,19 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
 
     operation =
       case positional do
-        [value] when value in ["backfill-missing", "reconcile", "purge"] -> value
-        _invalid -> usage!()
+        [value]
+        when value in [
+               "backfill-missing",
+               "reconcile",
+               "retention-status",
+               "retention-preview",
+               "retention-configure",
+               "retention-run"
+             ] ->
+          value
+
+        _invalid ->
+          usage!()
       end
 
     {:ok, _applications} = Application.ensure_all_started(:ecto_sql)
@@ -60,6 +76,43 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
     after
       GenServer.stop(repo)
     end
+  end
+
+  defp command("retention-status", _options, context), do: context
+
+  defp command("retention-preview", options, context) do
+    family = Enum.find(Policy.families(), &(Atom.to_string(&1) == options[:target])) || usage!()
+    {context, family}
+  end
+
+  defp command(operation, options, context)
+       when operation in ["retention-configure", "retention-run"] do
+    version = options[:expected_version]
+    unless is_integer(version) and version >= 0, do: usage!()
+    {:ok, state} = Store.retention_status(context)
+
+    policy =
+      case options[:policy] do
+        nil ->
+          state.policy
+
+        path ->
+          with {:ok, bytes} <- File.read(path),
+               {:ok, value} <- Jason.decode(bytes),
+               {:ok, policy} <- Policy.decode(value) do
+            policy
+          else
+            _ -> Mix.raise("invalid retention policy file")
+          end
+      end
+
+    if operation == "retention-configure",
+      do: %ConfigureRetention{
+        platform_context: context,
+        policy: policy,
+        expected_version: version
+      },
+      else: %RetentionBatch{platform_context: context, policy: policy, expected_version: version}
   end
 
   defp command("backfill-missing", options, context) do
@@ -83,20 +136,16 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
     }
   end
 
-  defp command("purge", options, context) do
-    %PurgePersistence{
-      platform_context: context,
-      job_id: required_id!(options, :job_id),
-      workspace_id: optional_id!(options, :workspace),
-      target: purge_target!(options),
-      cutoff: cutoff!(options),
-      limit: limit(options, 1_000, 5_000)
-    }
-  end
+  defp execute(context, "retention-status"), do: Store.retention_status(context)
+
+  defp execute({context, family}, "retention-preview"),
+    do: Store.retention_preview(context, family)
+
+  defp execute(command, "retention-configure"), do: Store.configure_retention(command)
+  defp execute(command, "retention-run"), do: Store.retention_batch(command)
 
   defp execute(command, "backfill-missing"), do: Store.backfill_missing_projection(command)
   defp execute(command, "reconcile"), do: Store.reconcile(command)
-  defp execute(command, "purge"), do: Store.purge(command)
 
   defp report({:ok, outcome}) do
     Mix.shell().info(inspect(outcome, pretty: true, limit: :infinity))
@@ -118,27 +167,6 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
   defp invariant!(options) do
     case Keyword.get(options, :invariant) do
       "capacity-counters" -> :capacity_counters
-      _invalid -> usage!()
-    end
-  end
-
-  defp purge_target!(options) do
-    case Keyword.get(options, :target) do
-      "logs" -> :logs
-      "sessions" -> :sessions
-      "idempotency" -> :idempotency
-      "materialization-claims" -> :materialization_claims
-      "projection-failures" -> :projection_failures
-      "execution-packages" -> :execution_packages
-      _invalid -> usage!()
-    end
-  end
-
-  defp cutoff!(options) do
-    with value when is_binary(value) <- Keyword.get(options, :cutoff),
-         {:ok, cutoff, 0} <- DateTime.from_iso8601(value) do
-      cutoff
-    else
       _invalid -> usage!()
     end
   end
@@ -169,13 +197,14 @@ defmodule Mix.Tasks.Favn.Postgres.Maintenance do
   defp usage! do
     Mix.raise("""
     usage:
+      mix favn.postgres.maintenance retention-status
+      mix favn.postgres.maintenance retention-preview --target FAMILY
+      mix favn.postgres.maintenance retention-configure --policy FILE --expected-version N
+      mix favn.postgres.maintenance retention-run --expected-version N
       mix favn.postgres.maintenance backfill-missing --job-id ID --workspace ID \\
         --projection execution-groups|backfills|target-statuses|freshness [--limit N]
       mix favn.postgres.maintenance reconcile --job-id ID \\
         --invariant capacity-counters [--workspace ID] [--repair] [--limit N]
-      mix favn.postgres.maintenance purge --job-id ID \\
-        --target logs|sessions|idempotency|materialization-claims|projection-failures|execution-packages \\
-        --cutoff ISO8601 [--workspace ID] [--limit N]
     """)
   end
 

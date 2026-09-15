@@ -33,7 +33,21 @@ defmodule FavnStoragePostgres.Materialization.Store do
   def claim(%ClaimMaterialization{} = command) do
     with true <- command.purpose in [:materialization, :ownership_only],
          :ok <- validate_claim(command) do
-      transaction(fn -> claim!(command) end)
+      transaction(fn ->
+        if command.operation_id,
+          do:
+            FavnStoragePostgres.Maintenance.OperationRetention.guard_if_present!(
+              command.workspace_context.workspace_id,
+              command.operation_id
+            )
+
+        FavnStoragePostgres.CancellationOwnership.lock!(
+          command.workspace_context.workspace_id,
+          command.run_id
+        )
+
+        claim!(command)
+      end)
     else
       false -> {:error, Error.new(:invalid, "invalid claim purpose")}
       {:error, _} = error -> error

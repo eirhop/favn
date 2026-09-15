@@ -84,6 +84,12 @@ defmodule FavnStoragePostgres.Backfills.Store do
   @impl true
   def get_backfill(%GetBackfill{} = query) do
     with :ok <- validate_get(query) do
+      FavnStoragePostgres.Maintenance.Replay.read(fn -> get_backfill_snapshot(query) end)
+    end
+  end
+
+  defp get_backfill_snapshot(%GetBackfill{} = query) do
+    with :ok <- validate_get(query) do
       case Repo.get_by(Backfill,
              workspace_id: query.workspace_context.workspace_id,
              backfill_id: query.backfill_id
@@ -98,6 +104,28 @@ defmodule FavnStoragePostgres.Backfills.Store do
 
   @impl true
   def page_windows(%PageBackfillWindows{} = page) do
+    with :ok <- validate_window_page(page) do
+      FavnStoragePostgres.Maintenance.Replay.read(fn ->
+        case Repo.get_by(Backfill,
+               workspace_id: page.workspace_context.workspace_id,
+               backfill_id: page.backfill_id
+             ) do
+          nil ->
+            {:error, Error.new(:not_found, "backfill not found")}
+
+          backfill ->
+            FavnStoragePostgres.Maintenance.History.readable!(
+              backfill.workspace_id,
+              backfill.root_run_id
+            )
+
+            page_windows_snapshot(page)
+        end
+      end)
+    end
+  end
+
+  defp page_windows_snapshot(%PageBackfillWindows{} = page) do
     with :ok <- validate_window_page(page) do
       query =
         BackfillWindow
@@ -577,6 +605,8 @@ defmodule FavnStoragePostgres.Backfills.Store do
   end
 
   defp backfill_result(backfill) do
+    FavnStoragePostgres.Maintenance.History.readable!(backfill.workspace_id, backfill.root_run_id)
+
     overview =
       Repo.get_by(BackfillOverview,
         workspace_id: backfill.workspace_id,

@@ -172,11 +172,17 @@ defmodule FavnStoragePostgres.StorageV2.RunnerSessionsTest do
     close!(fixture, old.session_id, DateTime.add(fixture.now, -100, :day))
     close!(fixture, fresh.session_id, DateTime.add(fixture.now, 5, :second))
 
-    assert {:ok, pruned} =
-             Store.prune_sessions(%C.PruneRunnerSessions{
-               platform_context: fixture.platform_context,
-               older_than: DateTime.add(fixture.now, -90, :day)
-             })
+    assert {:ok, %{deleted_count: pruned}} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :sessions,
+                 %FavnOrchestrator.Retention.Policy{},
+                 DateTime.add(fixture.now, -90, :day),
+                 %{"phase" => 2}
+               )
+             end)
 
     assert pruned >= 1
     assert {:ok, sessions} = page(fixture, states: :all, limit: 200)

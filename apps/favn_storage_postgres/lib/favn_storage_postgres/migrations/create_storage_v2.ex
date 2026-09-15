@@ -808,7 +808,7 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
     ADD CONSTRAINT run_events_run_fk
     FOREIGN KEY (workspace_id, run_id)
     REFERENCES #{@prefix}.runs(workspace_id, run_id)
-    ON DELETE RESTRICT
+    ON DELETE NO ACTION
     DEFERRABLE INITIALLY DEFERRED
     """)
 
@@ -852,7 +852,7 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
     ADD CONSTRAINT runs_submitted_event_fk
     FOREIGN KEY (workspace_id, submitted_event_id)
     REFERENCES #{@prefix}.run_events(workspace_id, event_id)
-    ON DELETE RESTRICT
+    ON DELETE NO ACTION
     DEFERRABLE INITIALLY DEFERRED
     """)
 
@@ -861,7 +861,7 @@ defmodule FavnStoragePostgres.Migrations.CreateStorageV2 do
     ADD CONSTRAINT runs_latest_event_fk
     FOREIGN KEY (workspace_id, latest_event_id)
     REFERENCES #{@prefix}.run_events(workspace_id, event_id)
-    ON DELETE RESTRICT
+    ON DELETE NO ACTION
     DEFERRABLE INITIALLY DEFERRED
     """)
 
