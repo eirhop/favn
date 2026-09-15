@@ -58,9 +58,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   Only `:materialization_claim` and `:execution_package` can fail one node on
   their own. `:attempt_start` is a run transition, so its failure means lost
-  ownership or store trouble and always stops the stage.
+  ownership or store trouble and always stops the stage. Invalid `:enqueue`
+  failures also stop the stage after confirming the task was never saved.
   """
-  @type call_site :: :materialization_claim | :execution_package | :attempt_start
+  @type call_site :: :materialization_claim | :execution_package | :attempt_start | :enqueue
 
   @typedoc """
   Persist-retry resume for a node-specific terminal admission failure.
@@ -532,7 +533,20 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         })
 
       {:error, reason} ->
-        fail_unknown_enqueue(ctx, task_id, ctx.work.asset_ref, reason)
+        fail_enqueue(ctx, task_id, reason)
+    end
+  end
+
+  defp fail_enqueue(ctx, task_id, reason) do
+    if AssetRunnerTasks.rejected_without_task?(ctx.current_run, task_id, reason) do
+      fail_unsubmitted_entry(
+        %{ctx | current_run: without_inflight_task(ctx.current_run, task_id)},
+        :enqueue,
+        ctx.work.asset_ref,
+        reason
+      )
+    else
+      fail_unknown_enqueue(ctx, task_id, ctx.work.asset_ref, reason)
     end
   end
 
@@ -961,7 +975,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       |> Map.get(:active_runner_task_ids, [])
       |> Enum.reject(&(&1 == task_id))
 
-    RunState.transition(run_state,
+    Snapshots.snapshot_update(run_state,
       runner_task_id: nil,
       metadata: Map.put(run_state.metadata, :active_runner_task_ids, ids)
     )

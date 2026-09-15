@@ -466,7 +466,27 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp fail_enqueue(state, lifecycle, work, claim, reason) do
-    MaterializationClaims.abandon_sequential(claim)
+    task_id = AssetRunnerTasks.task_id(state.run, work, lifecycle.node_key, lifecycle.attempt)
+
+    abandoned = MaterializationClaims.abandon_sequential(claim)
+
+    state =
+      if abandoned == :ok and AssetRunnerTasks.rejected_without_task?(state.run, task_id, reason) do
+        run =
+          Snapshots.snapshot_update(state.run,
+            metadata:
+              Map.update(
+                state.run.metadata,
+                :active_runner_task_ids,
+                [],
+                &Enum.reject(&1, fn id -> id == task_id end)
+              )
+          )
+
+        %{state | run: run}
+      else
+        state
+      end
 
     persist_pre_submit_failure(
       state,

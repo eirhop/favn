@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptionsTest do
   use ExUnit.Case, async: true
 
   alias Favn.Manifest.Asset
+  alias Favn.Contracts.RunnerTask.PersistenceData
   alias Favn.Manifest
   alias Favn.Manifest.Graph
   alias Favn.Manifest.Index
@@ -92,6 +93,9 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptionsTest do
     assert anchor.timezone == "Europe/Oslo"
     assert opts[:metadata].asset_run_context.id == context.id
     assert opts[:metadata].asset_run_context.policy.anchor == :current_period
+    metadata = opts[:metadata]
+    assert {:ok, encoded} = PersistenceData.encode(metadata, 1_048_576)
+    assert {:ok, ^metadata} = PersistenceData.decode(encoded, 1_048_576)
 
     forged = put_in(request.selection.timezone, "Etc/UTC")
 
@@ -133,6 +137,22 @@ defmodule FavnOrchestrator.RunSubmission.AssetOptionsTest do
              )
 
     assert automatic_opts[:metadata].asset_run_context.id == scheduled_id
+  end
+
+  test "data coverage selection metadata survives task serialization" do
+    asset = %{@asset | window: Favn.Window.Spec.new!(:day, timezone: "Etc/UTC")}
+
+    selection = %{
+      source: :data_coverage_timeline,
+      id: "window:day:2026-07-17",
+      kind: :day,
+      value: "2026-07-17"
+    }
+
+    assert {:ok, opts} = AssetOptions.apply_selection([], asset, selection)
+    metadata = opts[:metadata]
+    assert {:ok, encoded} = PersistenceData.encode(metadata, 1_048_576)
+    assert {:ok, ^metadata} = PersistenceData.decode(encoded, 1_048_576)
   end
 
   defp run_context do

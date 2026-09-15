@@ -205,6 +205,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.RunServer
+  alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunnerTaskResultRouter
   alias FavnOrchestrator.RunnerRegistry
   alias FavnOrchestrator.RunnerTasks
@@ -285,6 +286,27 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         @delegate.complete_operator_command(command)
       end
     end
+  end
+
+  defmodule InvalidTaskDataStore do
+    alias FavnStoragePostgres.RunnerTasks.Codec
+    alias FavnStoragePostgres.RunnerTasks.Store
+
+    def enqueue(command) do
+      payload = Map.update!(command.payload, "payload", &corrupt/1)
+      {:ok, hash} = Codec.payload_hash(payload)
+      Store.enqueue(%{command | payload: payload, payload_hash: hash})
+    end
+
+    defdelegate get(query), to: Store
+    defdelegate request_cancellation(command), to: Store
+    defp corrupt(["atom", "run_id"]), do: ["atom", "unregistered_runner_metadata"]
+    defp corrupt(list) when is_list(list), do: Enum.map(list, &corrupt/1)
+
+    defp corrupt(map) when is_map(map),
+      do: Map.new(map, fn {key, value} -> {key, corrupt(value)} end)
+
+    defp corrupt(value), do: value
   end
 
   setup_all do
@@ -3910,7 +3932,26 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       target_id = fixture.target_id
       assert {:ok, {:asset, ^target_id, opts}} = Intent.decode(submission.intent)
       refute opts[:combine_windows]
+      metadata = opts[:metadata]
+      assert metadata.backfill_execution_group_id == nil
+
+      assert {:ok, encoded} =
+               Favn.Contracts.RunnerTask.PersistenceData.encode(metadata, 1_048_576)
+
+      assert {:ok, ^metadata} =
+               Favn.Contracts.RunnerTask.PersistenceData.decode(encoded, 1_048_576)
     end)
+
+    window = hd(windows)
+
+    assert {:ok, first_submission} =
+             RunSubmissionStore.get_by_run_id(%GetRunSubmissionByRunId{
+               workspace_context: fixture.workspace_context,
+               run_id: window.run_id
+             })
+
+    assert {:ok, {:asset, _target, first_opts}} = Intent.decode(first_submission.intent)
+    assert_backfill_first_task!(fixture, window.run_id, first_opts, :asset, {MyApp.Asset, :asset})
   end
 
   test "combined pipeline dispatch creates one shared child submission", fixture do
@@ -3928,7 +3969,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                fixture.pipeline_target_id,
                range,
                root_run_id: "run-combined-dispatch-#{System.unique_integer([:positive])}",
-               combine_windows: true
+               combine_windows: true,
+               metadata: %{"requested_by" => "operator", "ticket" => %{"id" => "example"}}
              )
 
     dispatch_backfill_once!(fixture)
@@ -3949,6 +3991,26 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     pipeline_target_id = fixture.pipeline_target_id
     assert {:ok, {:pipeline, ^pipeline_target_id, opts}} = Intent.decode(submission.intent)
     assert opts[:combine_windows]
+
+    metadata = opts[:metadata]
+    assert metadata.backfill_id == backfill.backfill_id
+    assert metadata.backfill_root_run_id == backfill.root_run_id
+    assert metadata.backfill_execution_group_id == hd(windows).payload["execution_group_id"]
+    assert metadata.backfill_window_id in Enum.map(windows, & &1.window_id)
+    assert metadata.backfill_window_key in Enum.map(windows, & &1.window_key)
+
+    assert metadata.operator_metadata == %{
+             "requested_by" => "operator",
+             "ticket" => %{"id" => "example"}
+           }
+
+    assert {:ok, encoded_metadata} =
+             Favn.Contracts.RunnerTask.PersistenceData.encode(metadata, 1_048_576)
+
+    assert {:ok, ^metadata} =
+             Favn.Contracts.RunnerTask.PersistenceData.decode(encoded_metadata, 1_048_576)
+
+    assert_backfill_first_task!(fixture, run_id, opts, :pipeline, {MyApp.Pipeline, :daily})
 
     assert %{rows: [[1]]} =
              SQL.query!(
@@ -6912,6 +6974,74 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert :ok = ExecutionAdmission.release(second_lease)
+  end
+
+  test "rejected task enqueue clears the unsaved task and fails its claim", fixture do
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 1)
+
+    install_invalid_task_data_store!()
+
+    start_pipeline_runtime!()
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    monitor = Process.monitor(pid)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert {:ok, failed} = get_run(fixture, run.id)
+    assert failed.status == :error
+    assert failed.error["details"]["reason_code"] == "invalid_runner_task_data"
+    assert ActiveTaskSet.active_runner_task_ids(failed) == []
+    assert runner_task_ids(fixture.workspace_id, run.id) == []
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+
+    assert %{rows: [["failed"]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status FROM favn_control.materialization_claims WHERE workspace_id = $1 AND run_id = $2",
+               [fixture.workspace_id, run.id]
+             )
+  end
+
+  test "sequential rejected enqueue clears its unsaved task reference",
+       fixture do
+    {command, original} = create_run_command(fixture)
+
+    assert {:ok, built} =
+             SubmissionBuilder.persisted_target(
+               fixture.workspace_context,
+               :asset,
+               {MyApp.Asset, :asset},
+               fixture.deployment_id,
+               fixture.version.manifest_version_id,
+               original.id,
+               dependencies: :none,
+               refresh: :force
+             )
+
+    run = built.run_state
+
+    assert {:ok, _created} =
+             RunStore.create_run(%{
+               command
+               | run: run,
+                 event: %{command.event | occurred_at: run.inserted_at}
+             })
+
+    install_invalid_task_data_store!()
+
+    start_pipeline_runtime!()
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    monitor = Process.monitor(pid)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert {:ok, failed} = get_run(fixture, run.id)
+    assert failed.error["details"]["reason_code"] == "invalid_runner_task_data"
+    assert ActiveTaskSet.active_runner_task_ids(failed) == []
+    assert runner_task_ids(fixture.workspace_id, run.id) == []
+
+    assert %{rows: []} =
+             SQL.query!(
+               Repo,
+               "SELECT status FROM favn_control.materialization_claims WHERE workspace_id = $1 AND run_id = $2",
+               [fixture.workspace_id, run.id]
+             )
   end
 
   test "slow pipeline admission refills to max concurrency before any result", fixture do
@@ -13584,6 +13714,87 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   defp share_repo_sandbox! do
     Sandbox.mode(Repo, {:shared, self()})
     on_exit(fn -> Sandbox.mode(Repo, :manual) end)
+  end
+
+  defp install_invalid_task_data_store! do
+    {:ok, runtime} =
+      Runtime.start_link(%Runtime{
+        backend: Backend,
+        options: [],
+        stores: %{Backend.stores() | runner_tasks: InvalidTaskDataStore}
+      })
+
+    Process.unlink(runtime)
+    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
+  end
+
+  defp assert_backfill_first_task!(fixture, run_id, opts, kind, ref) do
+    assert {:ok, preparing_submissions} =
+             RunSubmissionStore.claim(%FavnOrchestrator.Persistence.Commands.ClaimRunSubmissions{
+               workspace_context: fixture.workspace_context,
+               command_id: "claim-backfill-test",
+               owner_id: "backfill-test",
+               limit: 10,
+               lease_duration_ms: 30_000,
+               occurred_at: DateTime.utc_now()
+             })
+
+    preparing = Enum.find(preparing_submissions, &(&1.run_id == run_id))
+    assert preparing
+
+    assert {:ok, _admitting} =
+             RunSubmissionStore.mark_admitting(
+               %FavnOrchestrator.Persistence.Commands.MarkRunSubmissionAdmitting{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "admit-backfill-test",
+                 submission_id: preparing.submission_id,
+                 owner_id: preparing.claim_owner,
+                 claim_generation: preparing.claim_generation,
+                 preparation: %{},
+                 occurred_at: DateTime.utc_now()
+               }
+             )
+
+    assert {:ok, built} =
+             SubmissionBuilder.persisted_target(
+               fixture.workspace_context,
+               kind,
+               ref,
+               fixture.deployment_id,
+               fixture.version.manifest_version_id,
+               run_id,
+               opts
+             )
+
+    {command, _run} =
+      if kind == :pipeline,
+        do: scheduled_pipeline_run_command(fixture, run_id),
+        else: create_run_command(fixture, run_id)
+
+    run = built.run_state
+
+    assert {:ok, _created} =
+             RunStore.create_run(%{
+               command
+               | run: run,
+                 event: %{command.event | occurred_at: run.inserted_at}
+             })
+
+    metadata = opts[:metadata]
+    start_pipeline_runtime!()
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    monitor = Process.monitor(pid)
+    assert [task_id] = await_runner_task_ids!(fixture.workspace_id, run_id, 1)
+    assert {:ok, task} = FavnOrchestrator.RunnerTasks.fetch(fixture.workspace_id, task_id)
+    assert Map.take(task.payload.metadata, Map.keys(metadata)) == metadata
+    assert task.payload.metadata.window_selection.intent == :backfill
+    if kind == :pipeline, do: assert(task.payload.pipeline.window_selection.intent == :backfill)
+    assert {:ok, claimed} = claim_asset_task(fixture, "backfill-first-task")
+    assert claimed.task_id == task_id
+    assert :ok = start_runner_task(claimed)
+    await_runner_task_waiter!(claimed)
+    :ok = complete_asset_task(claimed, claimed.payload, false)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
   end
 
   defp dispatch_backfill_once!(fixture) do
