@@ -481,7 +481,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
             compatibility_diff: %{},
             expected_binding_version: binding.version,
             active_physical_fingerprint: nil,
-          expected_active_generation_id: binding.active_generation_id
+            expected_active_generation_id: binding.active_generation_id
           }
         ]
       })

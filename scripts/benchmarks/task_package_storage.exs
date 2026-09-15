@@ -29,7 +29,7 @@ query.(
 )
 
 query.(
-  "CREATE TABLE tasks (id bigint PRIMARY KEY, package_hash text REFERENCES packages(hash), payload jsonb NOT NULL, result jsonb, snapshot jsonb, receipt jsonb, outcome jsonb, inserted_at timestamptz NOT NULL) WITH (autovacuum_enabled=false, toast.autovacuum_enabled=false)",
+  "CREATE TABLE tasks (id bigint PRIMARY KEY, payload jsonb NOT NULL, result jsonb, snapshot jsonb, receipt jsonb, outcome jsonb, inserted_at timestamptz NOT NULL) WITH (autovacuum_enabled=false, toast.autovacuum_enabled=false)",
   []
 )
 
@@ -73,7 +73,7 @@ query.("CHECKPOINT", [])
 {write_us, _} =
   :timer.tc(fn ->
     for i <- 1..2_000 do
-      {_, package, work, result} = Enum.at(packages, rem(i, 2))
+      {_, _, work, result} = Enum.at(packages, rem(i, 2))
 
       work = %{
         work
@@ -89,9 +89,8 @@ query.("CHECKPOINT", [])
       {:ok, payload, _} = Codec.encode_payload(:asset_attempt, work)
       {:ok, result} = Codec.encode_result(:asset_attempt, :succeeded, result)
 
-      query.("INSERT INTO tasks VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", [
+      query.("INSERT INTO tasks VALUES ($1,$2,$3,$4,$5,$6,$7)", [
         i,
-        package.content_hash,
         payload,
         result,
         %{"status" => "succeeded", "window" => i},
@@ -114,8 +113,8 @@ query.("ANALYZE tasks", [])
     for i <- 1..200 do
       {version, _, _, _} = Enum.at(packages, rem(i, 2))
 
-      %{rows: [[payload, hash]]} =
-        query.("SELECT payload, package_hash FROM tasks WHERE id=$1", [i])
+      %{rows: [[payload]]} = query.("SELECT payload FROM tasks WHERE id=$1", [i])
+      {:ok, hash} = Codec.package_hash(payload)
 
       %{rows: [[body]]} = query.("SELECT body FROM packages WHERE hash=$1", [hash])
       {:ok, package} = ExecutionPackage.from_published(body)

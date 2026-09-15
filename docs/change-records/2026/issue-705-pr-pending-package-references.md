@@ -354,8 +354,8 @@ conversion. On 2026-09-15, adoption was explicitly clarified as pre-production
 with environment resets available. This revision removes old-data conversion,
 dual-format readers, the extra payload checksum, and old-hash reconstruction.
 It reduces the production additions estimate from 250-500 to 150-300 lines.
-This decision preceded independent plan approval; the planning commit has not
-yet established the baseline.
+This decision preceded independent plan approval. Commit `93296df7` established
+the reviewed baseline before implementation.
 
 ## Implementation outcome
 
@@ -363,7 +363,8 @@ The existing Core codec now writes `runner-task-payload-v2`, strips the verified
 package body and restores it through the existing retained-package lookup. The
 store uses payload version 2 and verifies the compact hash before lookup. Shared
 typed encoding, wire protocol, results, context, receipts, task identity and
-retention relationships are unchanged. The old embedded-payload reader was
+retention relationships are unchanged by this PR. A nil reference is rejected
+when the pinned manifest identifies a SQL asset. The old embedded-payload reader was
 removed; no compatibility path, cache, new service or storage column was added.
 
 The new migration guards all four agreed empty-state predicates, replaces the
@@ -378,6 +379,7 @@ environment was reset or deployed during implementation.
 | Deviation | Reason and effect |
 | --- | --- |
 | Implementation and final review precede PR creation. | The user explicitly requested this order on 2026-09-15. The reviewed baseline was committed first; the PR is created only after Astra xhigh accepts the implementation. |
+| Main advanced after the approved baseline. | Merged `4abf4fbf` (PR #711) before final qualification, keeping `93296df7` reachable as the original plan baseline. Final PR complexity excludes upstream serialization/security changes. |
 | Performance qualification uses a storage-format microbenchmark rather than a complete execution/lifecycle workload. | It directly measures the changed representation without building a second orchestration workload framework. It stores 2,000 rows using actual payload/result codecs and bounded synthetic snapshot/receipt fields. It does not run receipt expiry, real retries, or full enqueue/claim/recovery transactions. Those lifecycle paths are covered by integration tests; their end-to-end performance is not qualified. |
 | No environment-specific hosted reset commands were executed or invented. | The repository provides local infrastructure commands; consuming projects own managed catalogs and output locations. The runbook requires an explicit command/target inventory before adoption. This is an adoption prerequisite, not migration automation. |
 
@@ -385,41 +387,101 @@ environment was reset or deployed during implementation.
 
 Same deterministic script, two new databases in a dedicated PostgreSQL 18.4
 instance, 2,000 rows, 256-byte/16-KiB SQL comments, three attempt labels and old
-fixed timestamps. Both runs used 8-KiB blocks, pglz TOAST, full-page writes on,
+fixed timestamps, and the current shared fixture's pipeline/schedule context.
+Both runs used 8-KiB blocks, pglz TOAST, full-page writes on,
 WAL compression off, a pre-workload checkpoint and autovacuum disabled on the
 benchmark tables/TOAST. Global autovacuum remained on. No other client wrote to
 that database instance during the final measurements.
 
 The baseline codec was loaded from `93296df7` in a fresh BEAM; every other module
-and the benchmark script was identical. The process used two schedulers. Other
-worktrees were doing CPU-heavy work on the same host, so timings are indicative,
-not a latency guarantee or a dispatch/recovery performance result.
+and the benchmark script was identical. Both restoration paths extract the
+reference through `package_hash/1`; no extra reference column is added to the
+benchmark task table. The process used two schedulers. Timings are one pair on
+a shared development host, not statistical latency qualification or a
+dispatch/recovery performance result.
 
 | Measurement | Embedded baseline | Package reference |
 | --- | ---: | ---: |
-| Stored payload bytes | 77,450,996 | 4,425,887 |
+| Stored payload bytes | 68,125,685 | 9,713,116 |
 | Stored result bytes | 3,106,000 | 3,106,000 |
 | Synthetic snapshot bytes | 106,000 | 106,000 |
 | Synthetic receipt bytes | 130,000 | 130,000 |
 | Stored outcome bytes | 3,114,000 | 3,114,000 |
-| Inclusive tables/indexes/TOAST bytes | 88,850,432 | 12,681,216 |
-| Workload WAL bytes | 90,541,656 | 12,465,520 |
-| Encode and insert 2,000 rows | 20.073 s | 13.015 s |
-| Restore 200 rows | 1.522 s | 1.573 s |
+| Inclusive tables/indexes/TOAST bytes | 78,913,536 | 20,914,176 |
+| Workload WAL bytes | 80,400,112 | 17,792,744 |
+| Encode and insert 2,000 rows | 21.636 s | 17.004 s |
+| Restore 200 rows | 2.266 s | 2.031 s |
 | SQL queries per restoration in this script | 2 | 2 |
 
-Payload storage fell 94.3%, inclusive storage 85.7%, and workload WAL 86.2%.
+Payload storage fell 85.7%, inclusive storage 73.5%, and workload WAL 77.9%.
 These are fixture-specific measurements, not promised savings for every SQL
-package. An earlier run on the shared database instance and a run contaminated
-by baseline-table autovacuum were discarded. The checked-in script disables
-that benchmark-table maintenance explicitly and documents the evidence boundary.
+package. Earlier measurements were superseded after integrating the richer
+upstream fixture and removing an unnecessary benchmark-only reference column.
+Runs contaminated by shared-instance writes or baseline-table autovacuum were
+also discarded. The checked-in script disables benchmark-table maintenance
+explicitly and documents the evidence boundary.
+
+### Actual complexity
+
+Counts compare the PR against `4abf4fbf`, excluding this record and upstream
+changes. The reviewed estimates above remain unchanged.
+
+| Slice | Production added/deleted | Supporting added/deleted |
+| --- | ---: | ---: |
+| Codec | 92 / 66 | 77 / 43 |
+| Store, migration and qualification | 50 / 9 | 238 / 1 |
+| Benchmark and canonical documentation | 0 / 0 | 252 / 1 |
+| **Total** | **142 / 75** | **567 / 45** |
+
+Production is below the additions estimate because existing package verification,
+lookup and retention could be reused. Store deletions are fewer than estimated
+because its authorization/retention paths remain necessary; the replaced reader
+was removed in Core. The second supporting slice exceeds its 180-line upper
+estimate by 58 lines to exercise fresh-BEAM restoration, real deployment
+replacement, cleanup and all four reset guards. The third exceeds by 72 lines
+because the repeatable PostgreSQL script and canonical adoption/testing guidance
+needed explicit setup and measurement limits. Overall supporting additions exceed
+the upper estimate by 27 lines; fewer supporting deletions reflect retaining
+useful existing lifecycle coverage. No production framework or dependency was
+introduced to reduce test setup code.
 
 ## Verification evidence
 
-Qualification is in progress. Final commands, counts, complexity and review
-verdict will be recorded before PR creation.
+All commands ran with `mise exec --`, `MIX_ENV=test` and the documented test
+runtime-input pin. PostgreSQL qualification used newly created disposable
+databases. Final owning files ran separately to avoid unrelated global-fixture
+state from other files. The table includes only final qualification after
+integrating PR #711.
+
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| `mix compile --warnings-as-errors` | Passed | Test build of the umbrella. |
+| Core fast suite | 478 passed | Includes 8-kind fresh writer/two-reader BEAM round trips, invalid/missing/embedded references, forged content, and expanded bounds. |
+| Orchestrator fast suite | 859 passed, 2 excluded | Includes admission, claim, retry, cancellation and recovery contracts. |
+| PostgreSQL runner-task file | 55 passed, 2 slow cases excluded | Includes real large-SQL claim/wire/execution, exact historical enqueue replay, fresh-BEAM SQL restoration, deployment replacement and concurrent cleanup. |
+| PostgreSQL write-resolution file | 14 passed | Missing/corrupt package handling and unresolved write fencing. |
+| PostgreSQL crash-recovery file, including slow | 15 passed | Includes SIGKILL at seven durable lifecycle barriers and two fresh recoveries. |
+| PostgreSQL runner-session file | 8 passed | Run in its own disposable database. |
+| Package and checkpoint migration files | 2 passed | All reset predicates, constraint/version agreement, rejection rollback, fresh adoption and ordinary restart. |
+| Deployment-artifact acceptance | 1 passed | Current published release-map artifact contract. |
+| Storage-format benchmark | Completed; final figures above | Representation/storage/WAL and restoration only; no end-to-end performance claim. |
+| Formatting, test-tier guard, local links and whitespace | Checked before review | GitHub diagram rendering awaits PR creation. |
+
+Wider storage runs are **not reported as green**. Before integrating PR #711,
+one whole-app candidate run passed 433/436 tests and failed two five-second
+admission fixtures and the global session busy-time assertion. These admission
+cases passed unchanged on focused recheck. The unchanged current-main baseline
+`4abf4fbf`, rebuilt in a separate worktree and fresh database with seed `921389`
+and four cases, passed 433/437 tests and failed four existing cases, including
+the same session assertion. The other baseline failures involved submission
+claim/recovery and a pipeline cancellation fixture. Inspection confirmed synthetic
+negative-duration task rows can affect the global session total. These tests and
+production calculations were not changed in this PR. CI and live deployment
+remain separate evidence; no full umbrella or hosted-environment pass is claimed.
 
 ## Final review
 
-Not yet requested. Astra xhigh will compare the implementation against `93296df7`
-after qualification; the reviewer will not edit the implementation.
+Astra xhigh review is requested only after implementation and qualification.
+The reviewer must compare the approved plan at `93296df7` and the implementation
+diff against current-main `4abf4fbf`, including the scoped performance evidence
+and wider-suite limitations. No PR is created before its verdict.
