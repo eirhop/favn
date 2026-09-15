@@ -6,7 +6,7 @@
 | Implementation state | Implemented and independently reviewed |
 | Type | Persistence and operator read-path change |
 | Primary issue | [#706](https://github.com/eirhop/favn/issues/706) |
-| Pull request | Pending implementation workflow |
+| Pull request | [#712](https://github.com/eirhop/favn/pull/712) |
 | Related work | [#704 retention](https://github.com/eirhop/favn/issues/704); [#705 normalization](https://github.com/eirhop/favn/issues/705) |
 | Affected areas | favn_orchestrator, favn_storage_postgres, shared log DTOs in favn_core, log consumers in favn_view |
 | Prior reviewed plan commit | `89705bd493da5722d0e974884db7951ee8fd93ad`; superseded by the reset-only scope below |
