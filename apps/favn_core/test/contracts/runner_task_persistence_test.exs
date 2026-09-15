@@ -5,6 +5,8 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
   alias Favn.Contracts.RunnerTask.PersistenceCodec, as: Codec
   alias Favn.Contracts.RunnerTask.PersistenceData, as: Data
   alias FavnTestSupport.RunnerTaskPersistence, as: Fixture
+  alias Favn.Manifest.Schedule
+  alias Favn.Window.{Anchor, Policy, Selection}
 
   test "all task kinds preserve exact supported values and hash identity" do
     version = Fixture.version()
@@ -18,6 +20,97 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
       assert {:ok, ^result} = Codec.decode_result(kind, :succeeded, encoded_result, version),
              inspect(kind)
     end
+  end
+
+  test "window policies round trip every supported kind, anchor and timezone source" do
+    for kind <- [:hour, :day, :month, :year],
+        anchor <- [:previous_complete_period, :current_period],
+        source <- [nil, :local, :application_default, :utc_fallback] do
+      policy =
+        Policy.new!(kind,
+          anchor: anchor,
+          timezone: "Europe/Oslo",
+          lookback: 3,
+          combine_windows: true,
+          allow_full_load: true
+        )
+
+      policy = %{policy | timezone_source: source}
+      assert {:ok, encoded} = Data.encode(policy, 262_144)
+      assert {:ok, ^policy} = Data.decode(encoded, 262_144)
+    end
+  end
+
+  test "schedules round trip every supported missed, overlap, origin and timezone source" do
+    for missed <- [:skip, :one, :all],
+        overlap <- [:forbid, :allow, :queue_one],
+        origin <- [:inline, :named],
+        source <- [:local, :application_default, :utc_fallback] do
+      schedule = %Schedule{
+        cron: "0 6 * * *",
+        timezone: "Europe/Oslo",
+        timezone_source: source,
+        missed: missed,
+        overlap: overlap,
+        origin: origin
+      }
+
+      assert {:ok, encoded} = Data.encode(schedule, 262_144)
+      assert {:ok, ^schedule} = Data.decode(encoded, 262_144)
+    end
+  end
+
+  test "window selections preserve scheduled, manual and backfill intents" do
+    anchor = Anchor.new!(:day, ~U[2026-09-14 00:00:00Z], ~U[2026-09-15 00:00:00Z])
+
+    for intent <- [:scheduled, :manual, :backfill] do
+      expansion = if intent == :scheduled, do: {:lookback, 2}, else: :none
+      assert {:ok, selection} = Selection.new(intent, [anchor], expansion, "Etc/UTC")
+      assert {:ok, encoded} = Data.encode(selection, 262_144)
+      assert {:ok, ^selection} = Data.decode(encoded, 262_144)
+    end
+  end
+
+  test "complete pipeline context preserves nested policies without retained artifacts" do
+    context = Fixture.pipeline_context()
+    assert {:ok, encoded} = Data.encode(context, 262_144)
+    assert {:ok, ^context} = Data.decode(encoded, 262_144)
+  end
+
+  test "scheduled pipeline triggers preserve on-time and missed occurrence metadata" do
+    for recovery <- [:on_time, :missed] do
+      context = put_in(Fixture.pipeline_context().trigger.occurrence.recovery, recovery)
+      assert {:ok, encoded} = Data.encode(context, 262_144)
+      assert {:ok, ^context} = Data.decode(encoded, 262_144)
+    end
+  end
+
+  test "manual pipeline metadata preserves latest-complete window resolution" do
+    context = Fixture.pipeline_context()
+    assert {:ok, selection} = Selection.manual(context.anchor_window, "Europe/Oslo")
+
+    metadata =
+      Fixture.submission_metadata(context)
+      |> Map.put(:window_selection, selection)
+      |> Map.put(:manual_window_resolution, %{
+        mode: :latest_complete,
+        evaluated_at: "2026-09-15T08:00:00Z",
+        availability_delay_seconds: 0
+      })
+
+    assert {:ok, encoded} = Data.encode(metadata, 262_144)
+    assert {:ok, ^metadata} = Data.decode(encoded, 262_144)
+  end
+
+  test "unsupported structs remain rejected in both directions" do
+    assert {:error, :invalid_runner_task_data} = Data.encode(%URI{}, 262_144)
+
+    forged = %{
+      "format" => "task-data-v1",
+      "data" => ["struct", "Elixir.URI", ["map", []]]
+    }
+
+    assert {:error, :invalid_runner_task_data} = Data.decode(forged, 262_144)
   end
 
   test "inspection and marker results must identify the dispatched relation and target" do
