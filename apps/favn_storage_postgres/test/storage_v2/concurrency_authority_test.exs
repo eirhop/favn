@@ -1237,6 +1237,8 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     FavnOrchestrator.Events.broadcast_persistence_publication()
     assert_receive :favn_logs_available, 5_000
 
+    assert {:ok, [_publication]} = Sequencer.sequence_batch(10)
+
     assert {:ok, historical} =
              Logs.page(fixture.workspace_context, filter, direction: :older, limit: 10)
 

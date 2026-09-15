@@ -26,6 +26,23 @@ defmodule FavnStoragePostgres.Projections.MissingRowBackfiller do
         event.workspace_id == ^workspace_id and not is_nil(event.publication_id) and
           event.publication_id > ^after_publication_id
       )
+      |> where(
+        [event],
+        fragment(
+          "NOT EXISTS (SELECT 1 FROM favn_control.runs member JOIN favn_control.runs root ON root.workspace_id=member.workspace_id AND root.run_id=member.root_execution_group_id WHERE member.workspace_id=? AND member.run_id=? AND root.retiring)",
+          event.workspace_id,
+          event.aggregate_id
+        )
+      )
+      |> where(
+        [event],
+        fragment(
+          "NOT EXISTS (SELECT 1 FROM favn_control.backfills b JOIN favn_control.runs root ON root.workspace_id=b.workspace_id AND root.run_id=b.root_run_id WHERE b.workspace_id=? AND b.backfill_id=COALESCE(?->>'backfill_id',?) AND root.retiring)",
+          event.workspace_id,
+          event.payload,
+          event.aggregate_id
+        )
+      )
       |> event_scope(projection)
       |> order_by([event], asc: event.publication_id)
       |> limit(^limit)

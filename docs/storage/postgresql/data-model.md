@@ -843,3 +843,8 @@ their lack of an FK is not permission to perform unscoped reads.
 - Derived projections retain a source publication cursor and are repairable.
 - Deletion is conservative: most operational relationships use `RESTRICT` and
   retention runs through explicit maintenance operations.
+
+## Retention
+
+See the [canonical retention inventory](retention.md) for table ownership, replay
+floors, retirement markers, reference guards and intentionally retained state.

@@ -108,7 +108,7 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   def open_session(_command), do: unavailable()
   def close_session(_command), do: unavailable()
   def reconcile_sessions(_command), do: unavailable()
-  def prune_sessions(_command), do: unavailable()
+
   def page_sessions(_query), do: unavailable()
   def session_window_totals(_query), do: unavailable()
   def page_session_tasks(_query), do: unavailable()

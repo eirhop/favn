@@ -34,7 +34,14 @@ defmodule FavnStoragePostgres.Admission.Store do
   @impl true
   def admit(%AdmitExecution{} = command) do
     with :ok <- validate_admit(command) do
-      transaction(fn -> admit!(command) end)
+      transaction(fn ->
+        FavnStoragePostgres.CancellationOwnership.lock!(
+          command.workspace_context.workspace_id,
+          command.run_id
+        )
+
+        admit!(command)
+      end)
     end
   end
 

@@ -30,6 +30,7 @@ defmodule FavnStoragePostgres.Schemas.ManifestVersion do
   @primary_key {:manifest_version_id, :string, autogenerate: false}
   @schema_prefix "favn_control"
   schema "manifest_versions" do
+    field(:retiring, :boolean, default: false)
     field(:content_hash, :binary)
     field(:schema_version, :integer)
     field(:runner_contract_version, :integer)
@@ -89,6 +90,7 @@ defmodule FavnStoragePostgres.Schemas.WorkspaceDeployment do
   @primary_key false
   @schema_prefix "favn_control"
   schema "workspace_deployments" do
+    field(:retiring, :boolean, default: false)
     field(:workspace_id, :string, primary_key: true)
     field(:deployment_id, :string, primary_key: true)
     field(:manifest_version_id, :string)

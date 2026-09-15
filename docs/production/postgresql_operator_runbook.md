@@ -372,13 +372,6 @@ mix favn.postgres.maintenance reconcile \
   --job-id capacity-audit-20260717 --invariant capacity-counters \
   --workspace salmon-one --repair --limit 500
 
-mix favn.postgres.maintenance purge \
-  --job-id expired-sessions-20260717 --target sessions \
-  --workspace salmon-one --cutoff 2026-07-10T00:00:00Z --limit 1000
-
-mix favn.postgres.maintenance purge \
-  --job-id orphaned-execution-packages-20260717 --target execution-packages \
-  --cutoff 2026-07-10T00:00:00Z --limit 1000
 ```
 
 The command identity includes its full configuration. Reusing a job id with changed
@@ -387,22 +380,77 @@ scope, cutoff, target, or limit is rejected.
 Run the `asset-attempts` backfill for each existing workspace after introducing or
 recreating that disposable projection so historical run detail is available.
 
-- completed idempotency records: purge after seven days;
-- expired/revoked sessions: retain for the approved audit window;
-- terminal claims and projection failures: bounded policy-driven retention;
-- stored diagnostic logs: purge in bounded batches after the approved audit window;
-  [derived lifecycle messages](../storage/postgresql/architecture.md#lifecycle-messages-and-independent-diagnostics)
-  remain available with their run events;
-- unreferenced execution packages: purge at platform scope after a publication grace
-  window; packages linked to any manifest are protected by the query and foreign key;
-- canonical runs, run events, backfills, manifests, audit records, and published
-  outbox rows are retained indefinitely in the initial production release. Monitor
-  their growth and introduce deletion only with explicit referential and SSE replay
-  watermarks.
+## Retention
 
-Monitor table/index size, dead tuples, autovacuum, transaction age, and batch duration.
-Tune per-table autovacuum only from production evidence. Do not use `VACUUM FULL`
-during ordinary operation.
+Optional history retention defaults to disabled. The built-in worker still cleans
+expired command receipts. All replicas and manual batches use one versioned policy
+and transaction lock. See the [table inventory and safety contract](../storage/postgresql/retention.md)
+for retained provenance, replay limits, ownership and holds.
+
+Create a policy file with all fields (durations are seconds):
+
+```json
+{
+  "enabled?": true,
+  "periods": {
+    "logs": 2592000,
+    "execution_history": 7776000,
+    "operations": 7776000,
+    "registry": 7776000,
+    "sessions": 2592000,
+    "idempotency": 604800,
+    "maintenance": 2592000
+  },
+  "excluded_workspace_ids": [],
+  "interval_ms": 60000,
+  "row_limit": 250,
+  "scan_limit": 1000,
+  "turn_budget_ms": 5000
+}
+```
+
+These periods are examples, not recommended compliance windows. Use
+`"retain_forever"` for any optional family to retain it. Logs, execution history,
+operations and registry have a minimum effective age of seven days plus five
+minutes. Receipt retention uses that fixed minimum and cannot be configured.
+
+```bash
+mix favn.postgres.maintenance retention-status
+mix favn.postgres.maintenance retention-configure --policy retention.json --expected-version 0
+mix favn.postgres.maintenance retention-preview --target execution_history
+mix favn.postgres.maintenance retention-status
+# Substitute the latest version reported by status:
+mix favn.postgres.maintenance retention-run --expected-version 2
+```
+
+Configure first, preview while workers are stopped, then start all replicas with
+`FAVN_RETENTION_POLICY_FILE` pointing to the same policy file. Alternatively use
+`:favn_orchestrator, :retention` application configuration. A different boot policy
+fails closed instead of overwriting the database policy. For later changes, read
+status, configure with its version, update all replica configuration and restart.
+A version conflict means another batch committed; read status before trying again.
+
+To pause optional cleanup, configure `"enabled?": false`. Add workspace IDs to
+`excluded_workspace_ids` to pause their physical deletion, including receipts.
+Policy updates wait for the current bounded transaction; they cannot undo it.
+
+Status reports last check, last deletion, cumulative deleted rows, phase cursors
+and version. Preview is read-only and bounded; incomplete counts are lower bounds.
+Owner counts and child-row counts are different units. Monitor eligible backlog
+separately from permanently protected growth. Empty batches alone do not establish
+that a sweep is complete. Batch telemetry uses `[:favn, :retention, :batch]` with
+`deleted_count`, native-time `duration`, and a bounded `family` label. Failures emit
+`[:favn, :retention, :failure]` and rate-limited warnings.
+
+This change requires a fresh control-plane schema and matching builds. Stop old
+execution, reset and bootstrap the control-plane database explicitly, then publish
+manifests and recreate configuration. Do not reuse old receipts or cursors. External
+datasets are not reset by this workflow and must be reconciled before execution
+resumes. Runtime startup never migrates or resets the database.
+
+Monitor table/index/TOAST size, WAL, dead tuples, autovacuum, transaction age, and
+batch duration. Normal deletion makes space reusable but need not shrink files.
+Do not use `VACUUM FULL` during ordinary operation.
 
 ## Required monitoring and alerts
 
@@ -478,7 +526,7 @@ can drain an existing backlog more slowly; measure oldest receipt age and rows
 pruned separately from new inserts. Normal vacuum makes deleted space reusable
 but does not normally shrink allocated table files. Table, index and TOAST bytes
 therefore need separate interpretation from live rows and current growth rate.
-Scheduled retention and broader data normalization remain separate work.
+Scheduled retention is described above; broader data normalization remains separate work.
 
 ## Task package reference adoption
 

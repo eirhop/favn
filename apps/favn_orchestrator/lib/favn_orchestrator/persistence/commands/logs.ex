@@ -48,30 +48,10 @@ defmodule FavnOrchestrator.Persistence.Queries.PageLogs do
           workspace_context: WorkspaceContext.t(),
           filter: map(),
           after:
-            %{
-              occurred_at: DateTime.t(),
-              kind: 0 | 1,
-              row_id: pos_integer(),
-              watermark: non_neg_integer()
-            }
-            | %{publication_id: non_neg_integer(), batch_offset: non_neg_integer()}
+            %{publication_id: non_neg_integer(), batch_offset: non_neg_integer()}
             | nil,
           direction: :older | :newer,
           limit: 1..500
-        }
-end
-
-defmodule FavnOrchestrator.Persistence.Commands.PurgeLogs do
-  @moduledoc "Deletes one bounded retention batch before a cutoff."
-
-  alias FavnOrchestrator.Persistence.WorkspaceContext
-  @enforce_keys [:workspace_context, :cutoff]
-  defstruct [:workspace_context, :cutoff, limit: 1_000]
-
-  @type t :: %__MODULE__{
-          workspace_context: WorkspaceContext.t(),
-          cutoff: DateTime.t(),
-          limit: 1..5_000
         }
 end
 
@@ -115,14 +95,6 @@ defmodule FavnOrchestrator.Persistence.Results.LogEntry do
           metadata: map(),
           occurred_at: DateTime.t()
         }
-end
-
-defmodule FavnOrchestrator.Persistence.Results.PurgeResult do
-  @moduledoc "One bounded retention deletion outcome."
-  @enforce_keys [:deleted_count]
-  defstruct [:deleted_count, :last_id]
-
-  @type t :: %__MODULE__{deleted_count: non_neg_integer(), last_id: pos_integer() | nil}
 end
 
 defmodule FavnOrchestrator.Persistence.Results.LifecycleLog do

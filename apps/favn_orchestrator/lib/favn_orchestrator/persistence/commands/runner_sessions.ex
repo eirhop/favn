@@ -50,13 +50,6 @@ defmodule FavnOrchestrator.Persistence.Commands.ReconcileRunnerSessions do
   @type t :: %__MODULE__{}
 end
 
-defmodule FavnOrchestrator.Persistence.Commands.PruneRunnerSessions do
-  @moduledoc "Deletes a bounded batch of closed runner sessions older than the cutoff."
-  @enforce_keys [:platform_context, :older_than]
-  defstruct @enforce_keys ++ [limit: 10_000]
-  @type t :: %__MODULE__{}
-end
-
 defmodule FavnOrchestrator.Persistence.Results.RunnerSession do
   @moduledoc "Durable runner session state returned by persistence."
   defstruct [

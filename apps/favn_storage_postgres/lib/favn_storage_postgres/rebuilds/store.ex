@@ -204,6 +204,10 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
   @impl true
   def get(%GetRebuild{} = query) do
+    FavnStoragePostgres.Maintenance.Replay.read(fn -> get_snapshot(query) end)
+  end
+
+  defp get_snapshot(%GetRebuild{} = query) do
     with :ok <- validate_get(query) do
       case operation_with_actions(query.workspace_context.workspace_id, query.operation_id) do
         nil -> {:error, ErrorMapper.map(:not_found)}
@@ -216,6 +220,10 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
   @impl true
   def page_items(%PageRebuildItems{} = page) do
+    FavnStoragePostgres.Maintenance.Replay.read(fn -> page_items_snapshot(page) end)
+  end
+
+  defp page_items_snapshot(%PageRebuildItems{} = page) do
     with :ok <- validate_page(page),
          true <- operation_exists?(page.workspace_context.workspace_id, page.operation_id) do
       query =
@@ -260,17 +268,24 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       from(operation in RebuildOperation,
         where:
           operation.workspace_id == ^workspace_id and
-            operation.operation_id == ^operation_id
+            operation.operation_id == ^operation_id and not operation.retiring
       )
     )
   end
 
   @impl true
-  def page_operations(%PageRebuildOperations{} = page) do
+  def page_operations(%PageRebuildOperations{} = page),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> page_operations_snapshot(page) end)
+
+  defp page_operations_snapshot(%PageRebuildOperations{} = page) do
     with :ok <- validate_operation_page(page) do
       query =
         RebuildOperation
-        |> where([operation], operation.workspace_id == ^page.workspace_context.workspace_id)
+        |> where(
+          [operation],
+          operation.workspace_id == ^page.workspace_context.workspace_id and
+            not operation.retiring
+        )
         |> maybe_operation_state(page.state)
         |> after_operation(page.after)
         |> order_by([operation], desc: operation.inserted_at, desc: operation.operation_id)
@@ -305,6 +320,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   end
 
   defp create_plan!(command) do
+    FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
     workspace_id = command.workspace_context.workspace_id
 
     existing =
@@ -333,6 +349,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   end
 
   defp begin_plan!(command) do
+    FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
     workspace_id = command.workspace_context.workspace_id
 
     existing =
@@ -962,6 +979,13 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   end
 
   defp transition_item!(command) do
+    if command.child_run_id,
+      do:
+        FavnStoragePostgres.RunIdentity.lock!(
+          command.workspace_context.workspace_id,
+          command.child_run_id
+        )
+
     now = database_now!()
 
     ensure_item_transition_owner!(
@@ -1010,6 +1034,20 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   end
 
   defp transition_action!(command) do
+    if command.child_operation_id,
+      do:
+        FavnStoragePostgres.Maintenance.OperationRetention.guard!(
+          command.workspace_context.workspace_id,
+          command.child_operation_id
+        )
+
+    if command.child_run_id,
+      do:
+        FavnStoragePostgres.RunIdentity.lock!(
+          command.workspace_context.workspace_id,
+          command.child_run_id
+        )
+
     now = database_now!()
 
     ensure_operation_fence!(
@@ -1301,6 +1339,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   end
 
   defp operation_result(operation, actions, progress) do
+    if operation.retiring, do: Repo.rollback(Error.new(:expired, "operation history is retiring"))
+
     %OperationResult{
       workspace_id: operation.workspace_id,
       operation_id: operation.operation_id,
@@ -1412,6 +1452,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     |> Repo.one()
     |> case do
       nil -> Repo.rollback(ErrorMapper.map(:not_found))
+      %{retiring: true} -> Repo.rollback(Error.new(:expired, "operation history is retiring"))
       operation -> operation
     end
   end

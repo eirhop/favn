@@ -27,7 +27,10 @@ defmodule FavnStoragePostgres.BackendSupervisor do
           {ManifestCache, []},
           {Sequencer, []},
           {Worker, []},
-          {NotificationListener, config.notification_options}
+          {NotificationListener, config.notification_options},
+          {Task.Supervisor, name: FavnStoragePostgres.Maintenance.Tasks},
+          {FavnStoragePostgres.Maintenance.Worker,
+           policy: Application.get_env(:favn_orchestrator, :retention, [])}
         ]
 
     Supervisor.init(children, strategy: :rest_for_one)

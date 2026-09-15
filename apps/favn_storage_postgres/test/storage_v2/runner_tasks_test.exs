@@ -875,7 +875,61 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
   end
 
-  test "command receipts have a bounded replay window and prune through indexed time", fixture do
+  test "expired receipt children are bounded and workspace holds protect the entire receipt",
+       fixture do
+    command = enqueue_command(fixture, "receipt-children")
+    assert {:ok, _task} = Store.enqueue(command)
+    scope = "workspace:" <> fixture.workspace_id
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runner_task_commands SET inserted_at=clock_timestamp()-interval '8 days', issued_at=clock_timestamp()-interval '8 days' WHERE scope_id=$1 AND command_id=$2",
+      [scope, command.command_id]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.runner_task_command_tasks
+        (scope_id,command_id,ordinal,workspace_id,task_id,outcome_assignment_generation,runtime_input_resolution_id,snapshot)
+      SELECT scope_id,command_id,n,workspace_id,task_id,outcome_assignment_generation,runtime_input_resolution_id,snapshot
+      FROM favn_control.runner_task_command_tasks CROSS JOIN generate_series(1,14) n
+      WHERE scope_id=$1 AND command_id=$2 AND ordinal=0
+      """,
+      [scope, command.command_id]
+    )
+
+    policy = %FavnOrchestrator.Retention.Policy{
+      row_limit: 5,
+      excluded_workspace_ids: [fixture.workspace_id]
+    }
+
+    cutoff = DateTime.add(fixture.now, -605_100, :second)
+
+    clean = fn policy, phase ->
+      Repo.transaction(fn ->
+        FavnStoragePostgres.Maintenance.Retention.lock!()
+
+        FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+          :receipts,
+          policy,
+          cutoff,
+          %{"phase" => phase},
+          fixture.workspace_id
+        )
+      end)
+    end
+
+    assert {:ok, %{deleted_count: 0}} = clean.(policy, 0)
+    policy = %{policy | excluded_workspace_ids: []}
+    assert {:ok, %{deleted_count: 5}} = clean.(policy, 0)
+    assert {:ok, %{deleted_count: 0}} = clean.(policy, 1)
+    assert {:ok, %{deleted_count: 5}} = clean.(policy, 0)
+    assert {:ok, %{deleted_count: 5}} = clean.(policy, 0)
+    assert {:ok, %{deleted_count: 1}} = clean.(policy, 1)
+  end
+
+  test "command receipts expire independently of coordinated physical cleanup", fixture do
     scope_id = "workspace:" <> fixture.workspace_id
     expired_command_id = "expired-receipt-#{random_id()}"
 
@@ -907,10 +961,24 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:ok, nil} =
              Store.claim(claim_command(fixture, "prune-expired-receipt", "current-runner"))
 
-    refute Repo.get_by(RunnerTaskCommand,
+    assert Repo.get_by(RunnerTaskCommand,
              scope_id: scope_id,
              command_id: expired_command_id
            )
+
+    assert {:ok, _} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :receipts,
+                 %FavnOrchestrator.Retention.Policy{},
+                 DateTime.add(fixture.now, -605_100, :second),
+                 %{"phase" => 1}
+               )
+             end)
+
+    refute Repo.get_by(RunnerTaskCommand, scope_id: scope_id, command_id: expired_command_id)
 
     assert {:ok, queued} = Store.enqueue(enqueue_command(fixture, "after-pruned-command"))
 
@@ -946,7 +1014,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert plan =~ "runner_task_commands_retention_idx"
   end
 
-  test "enqueue identity locking precedes bounded receipt pruning under contention", fixture do
+  test "enqueue identity locking preserves receipts under contention", fixture do
     expired_at = DateTime.add(fixture.now, -8 * 24 * 60 * 60, :second)
     scope_id = "workspace:" <> fixture.workspace_id
 
@@ -984,7 +1052,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert Enum.all?(results, &match?({:ok, _task}, &1))
     assert 1 == results |> Enum.map(fn {:ok, task} -> task.task_id end) |> Enum.uniq() |> length()
 
-    assert %{rows: [[0]]} =
+    assert %{rows: [[100]]} =
              SQL.query!(
                Repo,
                """
@@ -1843,6 +1911,116 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              })
   end
 
+  test "standalone task retirement bounds log children and rejects partial reads", fixture do
+    assert {:ok, _} = Store.enqueue(enqueue_command(fixture, "retention"))
+
+    assert {:ok, claimed} =
+             Store.claim(claim_command(fixture, "claim-retention", "runner-retention"))
+
+    entries = [%{"level" => "info", "message" => "retained task log"}]
+    {:ok, hash} = Favn.Contracts.RunnerTask.PersistenceCodec.hash_term(entries)
+
+    for n <- 1..12 do
+      assert {:ok, :persisted} =
+               Store.append_log_batch(%C.AppendRunnerTaskLogBatch{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "retention-log-#{n}",
+                 task_id: claimed.task_id,
+                 runner_instance_id: claimed.assigned_runner_instance_id,
+                 runner_session_generation: claimed.assigned_runner_session_generation,
+                 assignment_generation: claimed.assignment_generation,
+                 batch_id: "retention-#{n}",
+                 sequence: n,
+                 entries: entries,
+                 payload_hash: hash,
+                 issued_at: fixture.now,
+                 occurred_at: fixture.now
+               })
+    end
+
+    cancel = %C.RequestRunnerTaskCancellation{
+      workspace_context: fixture.workspace_context,
+      command_id: "cancel-retention",
+      task_id: claimed.task_id,
+      reason: :operator_request,
+      issued_at: fixture.now,
+      occurred_at: fixture.now
+    }
+
+    assert {:ok, _} = Store.request_cancellation(cancel)
+
+    complete = %{
+      complete_command(fixture, claimed, "complete-retention", nil)
+      | outcome: :cancelled,
+        error: RunnerError.cancelled(:operator_request)
+    }
+
+    assert {:ok, _} = Store.complete(complete)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runner_tasks SET terminal_at=terminal_at-interval '8 days', enqueued_at=enqueued_at-interval '8 days', inserted_at=inserted_at-interval '8 days', assigned_at=assigned_at-interval '8 days', deadline_at=deadline_at-interval '8 days', assignment_expires_at=assignment_expires_at-interval '8 days', cancellation_requested_at=cancellation_requested_at-interval '8 days' WHERE workspace_id=$1 AND task_id=$2",
+      [fixture.workspace_id, claimed.task_id]
+    )
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.runner_task_command_tasks WHERE workspace_id=$1 AND task_id=$2",
+      [fixture.workspace_id, claimed.task_id]
+    )
+
+    policy = %FavnOrchestrator.Retention.Policy{row_limit: 5}
+
+    batch = fn policy, cursor ->
+      Repo.transaction(fn ->
+        FavnStoragePostgres.Maintenance.Retention.lock!()
+
+        FavnStoragePostgres.Maintenance.TaskRetention.delete!(
+          policy,
+          DateTime.add(DateTime.utc_now(), -605_100, :second),
+          cursor
+        )
+      end)
+    end
+
+    assert {:ok, %{deleted_count: 5, cursor: cursor}} =
+             batch.(policy, %{"workspace_id" => fixture.workspace_id, "id" => claimed.task_id})
+
+    assert {:error, %{kind: :expired}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: claimed.task_id
+             })
+
+    assert {:error, %{kind: :expired}} =
+             Store.request_cancellation(%{cancel | command_id: "late-retention"})
+
+    assert {:ok, %{deleted_count: 0}} =
+             batch.(%{policy | excluded_workspace_ids: [fixture.workspace_id]}, cursor)
+
+    result =
+      Enum.reduce_while(1..30, cursor, fn _, cursor ->
+        assert {:ok, result} = batch.(policy, cursor)
+        assert result.deleted_count <= 5
+        if is_nil(result.cursor), do: {:halt, :complete}, else: {:cont, result.cursor}
+      end)
+
+    assert result == :complete
+
+    assert {:error, %{kind: :not_found}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: claimed.task_id
+             })
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_task_log_batches WHERE workspace_id=$1 AND task_id=$2",
+               [fixture.workspace_id, claimed.task_id]
+             )
+  end
+
   test "cancellation is durable for queued and assigned work", fixture do
     assert {:ok, queued} = Store.enqueue(enqueue_command(fixture, "cancel-queued"))
 
@@ -2342,7 +2520,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert replayed_failure.error == failed.error
   end
 
-  test "idle recovery writes no receipts and still prunes expired history", fixture do
+  test "idle recovery leaves receipt cleanup to retention", fixture do
     purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
     command = recovery_command(fixture, "idle")
 
@@ -2367,9 +2545,9 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     refute Enum.any?(queries, &String.starts_with?(&1, "INSERT"))
     refute Enum.any?(queries, &String.starts_with?(&1, "UPDATE"))
-    refute recovery_receipt(expired)
+    assert recovery_receipt(expired)
 
-    assert %{rows: [[0]]} =
+    assert %{rows: [[1]]} =
              SQL.query!(
                Repo,
                "SELECT count(*) FROM favn_control.runner_task_commands WHERE command_id LIKE $1",
@@ -2419,7 +2597,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert {:error, %{kind: :conflict}} = Store.recover_expired(command)
   end
 
-  test "locked candidates roll back only the provisional receipt and retain pruning", fixture do
+  test "locked candidates roll back the provisional receipt without cleanup", fixture do
     purge_expired_assignments!(DateTime.add(fixture.now, 2, :second))
     assigned = assign_recovery_task!(fixture, "locked")
     command = recovery_command(fixture, "locked")
@@ -2459,7 +2637,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert "ROLLBACK TO SAVEPOINT runner_recovery" in queries
     refute recovery_receipt(command)
-    refute recovery_receipt(expired)
+    assert recovery_receipt(expired)
     send(locker.pid, :unlock)
     assert {:ok, :ok} = Task.await(locker)
     assert {:ok, [recovered]} = Store.recover_expired(command)

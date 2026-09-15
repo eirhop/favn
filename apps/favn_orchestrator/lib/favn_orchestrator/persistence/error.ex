@@ -10,6 +10,7 @@ defmodule FavnOrchestrator.Persistence.Error do
   @type kind ::
           :conflict
           | :fenced
+          | :expired
           | :not_found
           | :invalid
           | :forbidden

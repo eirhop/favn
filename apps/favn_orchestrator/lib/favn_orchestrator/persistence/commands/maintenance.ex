@@ -32,29 +32,6 @@ defmodule FavnOrchestrator.Persistence.Commands.ReconcilePersistence do
         }
 end
 
-defmodule FavnOrchestrator.Persistence.Commands.PurgePersistence do
-  @moduledoc "Executes one explicitly selected bounded retention batch."
-
-  alias FavnOrchestrator.Persistence.PlatformContext
-  @enforce_keys [:platform_context, :job_id, :target, :cutoff]
-  defstruct [:platform_context, :job_id, :target, :workspace_id, :cutoff, limit: 1_000]
-
-  @type t :: %__MODULE__{
-          platform_context: PlatformContext.t(),
-          job_id: String.t(),
-          target:
-            :logs
-            | :sessions
-            | :idempotency
-            | :materialization_claims
-            | :projection_failures
-            | :execution_packages,
-          workspace_id: String.t() | nil,
-          cutoff: DateTime.t(),
-          limit: 1..5_000
-        }
-end
-
 defmodule FavnOrchestrator.Persistence.Results.MaintenanceOutcome do
   @moduledoc "One observable bounded maintenance job outcome."
 
@@ -68,5 +45,34 @@ defmodule FavnOrchestrator.Persistence.Results.MaintenanceOutcome do
           batch_count: non_neg_integer(),
           cursor: map() | nil,
           details: map() | nil
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.RetentionBatch do
+  @moduledoc "Executes at most one retention transaction at an expected job version."
+  alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Retention.Policy
+  @enforce_keys [:platform_context, :policy, :expected_version]
+  defstruct [:platform_context, :policy, :expected_version, scheduled?: false]
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          policy: Policy.t(),
+          expected_version: non_neg_integer(),
+          scheduled?: boolean()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.ConfigureRetention do
+  @moduledoc "Changes the effective platform retention policy under the batch lock."
+  alias FavnOrchestrator.Persistence.PlatformContext
+  alias FavnOrchestrator.Retention.Policy
+  @enforce_keys [:platform_context, :policy, :expected_version]
+  defstruct [:platform_context, :policy, :expected_version]
+
+  @type t :: %__MODULE__{
+          platform_context: PlatformContext.t(),
+          policy: Policy.t(),
+          expected_version: non_neg_integer()
         }
 end

@@ -23,7 +23,7 @@ defmodule FavnStoragePostgres.OperatorReads.CoverageTest do
   end
 
   setup do
-    :ok = Sandbox.checkout(Repo)
+    :ok = Sandbox.checkout(Repo, isolation: "REPEATABLE READ")
 
     suffix = System.unique_integer([:positive]) |> Integer.to_string()
     workspace_id = "coverage-workspace-" <> suffix

@@ -3,7 +3,8 @@ defmodule FavnOrchestrator.Logs do
   Bounded lifecycle and diagnostic log history and replay.
 
   Pages contain `items`, `has_more?`, `next_cursor`, and `replay_cursor`.
-  History uses its snapshot's publication watermark, including when empty.
+  The initial history page supplies a publication watermark, including when empty.
+  Keep its `replay_cursor` separately while walking older history pages.
   Replay continues with `replay_cursor`; drain while `has_more?` is true.
   Default limit is 200, maximum 500. Publication notifications are wakeups;
   callers read through the authorized facade rather than accepting payloads.
@@ -22,7 +23,14 @@ defmodule FavnOrchestrator.Logs do
   alias FavnOrchestrator.Persistence.Results.LogEntry, as: PersistedLogEntry
   alias FavnOrchestrator.Persistence.WorkspaceContext
 
-  @doc "Returns one bounded PostgreSQL log page under an explicit workspace authority."
+  @doc """
+  Returns a bounded published log page under an explicit workspace authority.
+
+  Both directions order by publication ID and position within the batch. Pass the
+  returned `%{publication_id: id, batch_offset: position}` as `:after`. Event time
+  remains available for display and filtering. Retention can expire a cursor;
+  restart from current history after an `:expired` persistence result.
+  """
   @spec page(WorkspaceContext.t(), Filter.t() | map(), keyword()) ::
           {:ok, map()} | {:error, term()}
   def page(%WorkspaceContext{} = context, filter, opts \\ []) when is_list(opts) do

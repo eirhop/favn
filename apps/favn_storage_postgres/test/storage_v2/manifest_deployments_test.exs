@@ -83,7 +83,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   setup do
-    :ok = Sandbox.checkout(Repo)
+    :ok = Sandbox.checkout(Repo, isolation: "REPEATABLE READ")
     unique = Integer.to_string(System.unique_integer([:positive]))
     workspace_id = "manifest-deployments-#{unique}"
 

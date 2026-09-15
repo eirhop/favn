@@ -153,9 +153,14 @@ defmodule FavnOrchestrator.API.SSE do
            after_sequence: sequence,
            limit: @replay_limit
          ) do
-      {:ok, page} -> {:ok, page}
-      {:error, %PersistenceError{kind: :invalid}} -> {:error, :cursor_invalid}
-      {:error, reason} -> {:error, reason}
+      {:ok, page} ->
+        {:ok, page}
+
+      {:error, %PersistenceError{kind: kind}} when kind in [:invalid, :expired] ->
+        {:error, :cursor_invalid}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -167,9 +172,14 @@ defmodule FavnOrchestrator.API.SSE do
            after_publication_id: publication_id,
            limit: @replay_limit
          ) do
-      {:ok, page} -> {:ok, page}
-      {:error, %PersistenceError{kind: :invalid}} -> {:error, :cursor_invalid}
-      {:error, reason} -> {:error, reason}
+      {:ok, page} ->
+        {:ok, page}
+
+      {:error, %PersistenceError{kind: kind}} when kind in [:invalid, :expired] ->
+        {:error, :cursor_invalid}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

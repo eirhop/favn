@@ -381,7 +381,7 @@ defmodule FavnStoragePostgres.Migrations.AddLogsIdentityAndOperationsV2 do
       constraint(:maintenance_jobs, :maintenance_jobs_values_valid,
         prefix: @prefix,
         check:
-          "job_kind IN ('projection_missing_row_backfill', 'reconcile', 'purge') " <>
+          "job_kind IN ('projection_missing_row_backfill', 'reconcile', 'purge', 'retention') " <>
             "AND scope_kind IN ('platform', 'workspace') " <>
             "AND ((scope_kind = 'platform' AND workspace_id IS NULL) OR " <>
             "     (scope_kind = 'workspace' AND workspace_id IS NOT NULL)) " <>

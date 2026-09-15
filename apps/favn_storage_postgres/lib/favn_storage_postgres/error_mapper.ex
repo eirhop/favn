@@ -6,6 +6,9 @@ defmodule FavnStoragePostgres.ErrorMapper do
   @spec map(term()) :: Error.t()
   def map(%Error{} = error), do: error
 
+  def map(%Postgrex.Error{postgres: %{constraint: "registry_history_retiring"}}),
+    do: Error.new(:expired, "registry history is retiring")
+
   def map(%Postgrex.Error{postgres: %{code: :unique_violation, constraint: constraint}}) do
     Error.new(:conflict, "persistence identity already exists",
       details: %{constraint: constraint}

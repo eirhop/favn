@@ -132,10 +132,14 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   ]
 
   @impl true
-  def page_manifests(%PageManifests{} = page) do
+  def page_manifests(%PageManifests{} = page),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> page_manifests_snapshot(page) end)
+
+  defp page_manifests_snapshot(%PageManifests{} = page) do
     with :ok <- validate_manifest_page(page) do
       query =
         ManifestVersion
+        |> where([manifest], not manifest.retiring)
         |> after_manifest(page.after)
         |> order_by([manifest], desc: manifest.inserted_at, desc: manifest.manifest_version_id)
         |> limit(^(page.limit + 1))
@@ -156,7 +160,11 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def page_execution_groups(%PageExecutionGroups{} = page) do
+  def page_execution_groups(%PageExecutionGroups{} = page),
+    do:
+      FavnStoragePostgres.Maintenance.Replay.read(fn -> page_execution_groups_snapshot(page) end)
+
+  defp page_execution_groups_snapshot(%PageExecutionGroups{} = page) do
     with :ok <- validate_group_page(page),
          {:ok, trigger_type} <- encoded_trigger(page.trigger_type) do
       query =
@@ -219,8 +227,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def get_execution_group(%GetExecutionGroup{} = query) do
+  def get_execution_group(%GetExecutionGroup{} = query),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> get_execution_group_snapshot(query) end)
+
+  defp get_execution_group_snapshot(%GetExecutionGroup{} = query) do
     with :ok <- validate_get_group(query),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             query.workspace_context.workspace_id,
+             query.root_run_id
+           ),
          %ExecutionGroupOverview{} = overview <-
            Repo.get_by(ExecutionGroupOverview,
              workspace_id: query.workspace_context.workspace_id,
@@ -308,8 +324,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def list_run_windows(%ListRunWindows{} = query) do
-    with :ok <- validate_run_windows(query) do
+  def list_run_windows(%ListRunWindows{} = query),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> list_run_windows_snapshot(query) end)
+
+  defp list_run_windows_snapshot(%ListRunWindows{} = query) do
+    with :ok <- validate_run_windows(query),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             query.workspace_context.workspace_id,
+             query.run_id
+           ) do
       # Outer joins fold the "does this run exist?" probe into this statement. A
       # run with no backfill, or a backfill that has not started a window yet,
       # returns exactly one placeholder row whose window columns are null, while
@@ -371,8 +395,17 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def get_run_asset_attempt(%GetRunAssetAttempt{} = query) do
-    with :ok <- validate_run_asset_attempt(query) do
+  def get_run_asset_attempt(%GetRunAssetAttempt{} = query),
+    do:
+      FavnStoragePostgres.Maintenance.Replay.read(fn -> get_run_asset_attempt_snapshot(query) end)
+
+  defp get_run_asset_attempt_snapshot(%GetRunAssetAttempt{} = query) do
+    with :ok <- validate_run_asset_attempt(query),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             query.workspace_context.workspace_id,
+             query.run_id
+           ) do
       case Repo.get_by(AssetAttemptOverview,
              workspace_id: query.workspace_context.workspace_id,
              run_id: query.run_id,
@@ -387,8 +420,19 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def list_run_event_summaries(%ListRunEventSummaries{} = query) do
+  def list_run_event_summaries(%ListRunEventSummaries{} = query),
+    do:
+      FavnStoragePostgres.Maintenance.Replay.read(fn ->
+        list_run_event_summaries_snapshot(query)
+      end)
+
+  defp list_run_event_summaries_snapshot(%ListRunEventSummaries{} = query) do
     with :ok <- validate_run_event_summaries(query),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             query.workspace_context.workspace_id,
+             query.run_id
+           ),
          true <- exact_run_exists?(query.workspace_context.workspace_id, query.run_id) do
       rows =
         from(event in RunEvent,
@@ -450,8 +494,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def page_group_runs(%PageGroupRuns{} = page) do
-    with :ok <- validate_group_runs(page) do
+  def page_group_runs(%PageGroupRuns{} = page),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> page_group_runs_snapshot(page) end)
+
+  defp page_group_runs_snapshot(%PageGroupRuns{} = page) do
+    with :ok <- validate_group_runs(page),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             page.workspace_context.workspace_id,
+             page.root_run_id
+           ) do
       query =
         Run
         |> where(
@@ -472,8 +524,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def page_group_windows(%PageGroupWindows{} = page) do
-    with :ok <- validate_group_windows(page) do
+  def page_group_windows(%PageGroupWindows{} = page),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> page_group_windows_snapshot(page) end)
+
+  defp page_group_windows_snapshot(%PageGroupWindows{} = page) do
+    with :ok <- validate_group_windows(page),
+         :ok <-
+           FavnStoragePostgres.Maintenance.History.readable!(
+             page.workspace_context.workspace_id,
+             page.root_run_id
+           ) do
       workspace_id = page.workspace_context.workspace_id
 
       query =
@@ -527,7 +587,10 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   @impl true
-  def page_target_runs(%PageTargetRuns{} = page) do
+  def page_target_runs(%PageTargetRuns{} = page),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fn -> page_target_runs_snapshot(page) end)
+
+  defp page_target_runs_snapshot(%PageTargetRuns{} = page) do
     with :ok <- validate_target_runs(page) do
       after_event_id = page.after && page.after.submitted_event_id
       after_root_run_id = page.after && page.after.run_id
@@ -541,6 +604,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
             FROM favn_control.runs AS root
             WHERE root.workspace_id = $1
               AND root.run_id = root.root_execution_group_id
+              AND NOT root.retiring
               AND ($4::bigint IS NULL
                    OR root.submitted_event_id < $4
                    OR (root.submitted_event_id = $4 AND root.run_id < $5))
@@ -1239,11 +1303,17 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     )
   end
 
-  # One table. When the group started, what triggered it, and when it finished are
-  # projected onto the group row, so ordering, the window filters, and the keyset
-  # all read the same index instead of joining every group in the workspace to its
-  # root run and sorting the result.
-  defp group_query, do: from(group in ExecutionGroupOverview, as: :group)
+  defp group_query do
+    from(group in ExecutionGroupOverview,
+      as: :group,
+      where:
+        fragment(
+          "NOT EXISTS (SELECT 1 FROM favn_control.runs r WHERE r.workspace_id=? AND r.run_id=? AND r.retiring)",
+          group.workspace_id,
+          group.root_run_id
+        )
+    )
+  end
 
   defp group_scope(query, %WorkspaceContext{workspace_id: workspace_id}),
     do: where(query, [group: group], group.workspace_id == ^workspace_id)
@@ -1428,6 +1498,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
   end
 
   defp exact_run_header(workspace_id, run_id) do
+    FavnStoragePostgres.Maintenance.History.readable!(workspace_id, run_id)
+
     %{rows: rows} =
       SQL.query!(
         Repo,
@@ -1748,38 +1820,8 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
     end
   end
 
-  defp exact_read_transaction(fun) do
-    # SQL Sandbox hides its outer transaction to mimic production. It cannot
-    # change isolation after fixture setup; normal pools set it before reading.
-    set_transaction_mode? = not Repo.in_transaction?() and not ownership_pool?()
-
-    Repo.transaction(
-      fn ->
-        if set_transaction_mode? do
-          SQL.query!(
-            Repo,
-            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
-            [],
-            timeout: 1_000
-          )
-        end
-
-        fun.()
-      end,
-      timeout: 2_000
-    )
-    |> transaction_result()
-  end
-
-  defp ownership_pool? do
-    Ecto.Adapter.lookup_meta(Repo).opts[:pool] == DBConnection.Ownership
-  end
-
-  defp transaction_result({:ok, {:ok, result}}), do: {:ok, result}
-  defp transaction_result({:ok, {:error, %Error{} = error}}), do: {:error, error}
-  defp transaction_result({:ok, result}), do: {:ok, result}
-  defp transaction_result({:error, %Error{} = error}), do: {:error, error}
-  defp transaction_result({:error, reason}), do: {:error, ErrorMapper.map(reason)}
+  defp exact_read_transaction(fun),
+    do: FavnStoragePostgres.Maintenance.Replay.read(fun, timeout: 2_000)
 
   defp validate_run_flow(query) do
     if workspace_context?(query.workspace_context) and valid_id?(query.run_id) and

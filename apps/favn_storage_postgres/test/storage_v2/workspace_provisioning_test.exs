@@ -67,7 +67,7 @@ defmodule FavnStoragePostgres.StorageV2.WorkspaceProvisioningTest do
   end
 
   setup do
-    :ok = Sandbox.checkout(Repo)
+    :ok = Sandbox.checkout(Repo, isolation: "REPEATABLE READ")
     Process.delete(:workspace_provisioning_after_step)
     :ok
   end

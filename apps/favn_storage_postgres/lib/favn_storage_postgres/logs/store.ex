@@ -8,14 +8,12 @@ defmodule FavnStoragePostgres.Logs.Store do
   alias Ecto.Adapters.SQL
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.LogEntry, as: LogEntryCommand
-  alias FavnOrchestrator.Persistence.Commands.PurgeLogs
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.PageLogs
   alias FavnOrchestrator.Persistence.Results.LogPage
   alias FavnOrchestrator.Persistence.Results.LifecycleLog
   alias FavnStoragePostgres.Logs.Query
   alias FavnOrchestrator.Persistence.Results.LogEntry, as: LogEntryResult
-  alias FavnOrchestrator.Persistence.Results.PurgeResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias Favn.Log.Identity
   alias FavnOrchestrator.Redaction
@@ -24,6 +22,8 @@ defmodule FavnStoragePostgres.Logs.Store do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Payload
+  alias FavnStoragePostgres.Maintenance.Replay
+  alias FavnStoragePostgres.Maintenance.Retention
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.LogBatch
   alias FavnStoragePostgres.Schemas.LogEntry
@@ -54,27 +54,35 @@ defmodule FavnStoragePostgres.Logs.Store do
 
   @impl true
   def page(%PageLogs{} = page) do
-    with :ok <- validate_page(page),
-         {:ok, filter} <- prepare_filter(page.filter) do
-      {sql, params} = Query.statement(page, filter)
-      %{rows: rows} = SQL.query!(Repo, sql, params)
-      [[watermark, current | _] | _] = rows
+    with :ok <- validate_page(page), {:ok, filter} <- prepare_filter(page.filter) do
+      Replay.read(fn ->
+        floor = Replay.check!(page.workspace_context.workspace_id, ["logs", "events"], page.after)
+        {sql, params} = Query.statement(page, filter, floor)
+        %{rows: rows} = SQL.query!(Repo, sql, params)
+        [[watermark, current | _] | _] = rows
 
-      if watermark > current or
-           ((page.direction == :newer and page.after) && page.after.publication_id > current) do
-        {:error, ErrorMapper.map(:invalid)}
-      else
-        result_page(rows, page, watermark)
-      end
+        if page.after && page.after.publication_id > current do
+          {:error, Error.new(:invalid, "cursor is ahead of published history")}
+        else
+          result_page(rows, page, watermark, floor)
+        end
+      end)
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
 
-  defp result_page(rows, page, watermark) do
+  defp result_page(rows, page, watermark, floor) do
     entries = rows |> Enum.map(&Enum.drop(&1, 2)) |> Enum.reject(&(hd(&1) == nil))
     page_rows = Enum.take(entries, page.limit)
-    has_more? = length(entries) > page.limit
+
+    if ((page.direction == :older and page.after) && entries == []) and floor > {0, 0},
+      do: Repo.rollback(Error.new(:expired, "history cursor expired"))
+
+    has_more? =
+      length(entries) > page.limit or
+        (page.direction == :older and floor > {0, 0} and entries != [])
+
     last = List.last(page_rows)
 
     replay_cursor =
@@ -125,30 +133,29 @@ defmodule FavnStoragePostgres.Logs.Store do
     }
   end
 
-  defp next_cursor([kind, id, at | _], :older, watermark),
-    do: %{occurred_at: utc(at), kind: kind, row_id: id, watermark: watermark}
-
-  defp next_cursor([_, _, _, publication, offset | _], :newer, _),
+  defp next_cursor([_, _, _, publication, offset | _], _direction, _watermark),
     do: %{publication_id: publication, batch_offset: offset}
 
   defp utc(%NaiveDateTime{} = at), do: DateTime.from_naive!(at, "Etc/UTC")
   defp utc(%DateTime{} = at), do: at
 
-  @impl true
-  def purge(%PurgeLogs{} = command) do
-    with :ok <- validate_purge(command),
-         {:ok, result} <- Repo.transaction(fn -> purge!(command) end) do
-      {:ok, result}
-    else
-      {:error, %Error{} = error} -> {:error, error}
-      {:error, reason} -> {:error, ErrorMapper.map(reason)}
-    end
-  rescue
-    error -> {:error, ErrorMapper.map(error)}
-  end
-
   defp append_or_replay!(command, normalized, batch_hash) do
+    normalized
+    |> Enum.map(& &1.run_id)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.each(
+      &FavnStoragePostgres.RunIdentity.lock!(command.workspace_context.workspace_id, &1)
+    )
+
     workspace_id = command.workspace_context.workspace_id
+    now = Retention.now!()
+
+    if DateTime.compare(command.occurred_at, DateTime.add(now, -604_800, :second)) == :lt or
+         DateTime.compare(command.occurred_at, DateTime.add(now, 300, :second)) == :gt do
+      Repo.rollback(Error.new(:invalid, "log batch is outside the replay window"))
+    end
 
     existing =
       from(batch in LogBatch,
@@ -172,6 +179,7 @@ defmodule FavnStoragePostgres.Logs.Store do
   end
 
   defp insert_batch!(command, normalized, batch_hash) do
+    now = Retention.now!()
     workspace_id = command.workspace_context.workspace_id
 
     outbox =
@@ -193,7 +201,7 @@ defmodule FavnStoragePostgres.Logs.Store do
       batch_hash: batch_hash,
       entry_count: length(normalized),
       outbox_event_id: outbox.outbox_event_id,
-      inserted_at: command.occurred_at
+      inserted_at: now
     }
     |> Repo.insert!()
 
@@ -205,7 +213,7 @@ defmodule FavnStoragePostgres.Logs.Store do
           workspace_id: workspace_id,
           batch_id: command.batch_id,
           position: position,
-          inserted_at: command.occurred_at
+          inserted_at: now
         })
       end)
 
@@ -220,53 +228,6 @@ defmodule FavnStoragePostgres.Logs.Store do
     )
     |> Repo.all()
     |> Enum.map(&entry_result/1)
-  end
-
-  defp purge!(command) do
-    %{rows: rows} =
-      SQL.query!(
-        Repo,
-        """
-        WITH candidates AS (
-          SELECT log_id
-          FROM favn_control.log_entries
-          WHERE workspace_id = $1 AND occurred_at < $2
-          ORDER BY log_id
-          LIMIT $3
-          FOR UPDATE SKIP LOCKED
-        )
-        DELETE FROM favn_control.log_entries entry
-        USING candidates
-        WHERE entry.log_id = candidates.log_id
-        RETURNING entry.log_id, entry.batch_id
-        """,
-        [command.workspace_context.workspace_id, command.cutoff, command.limit]
-      )
-
-    batch_ids = rows |> Enum.map(&Enum.at(&1, 1)) |> Enum.uniq()
-    delete_empty_batches(command.workspace_context.workspace_id, batch_ids)
-    ids = Enum.map(rows, &hd/1)
-
-    %PurgeResult{deleted_count: length(ids), last_id: Enum.max(ids, fn -> nil end)}
-  end
-
-  defp delete_empty_batches(_workspace_id, []), do: :ok
-
-  defp delete_empty_batches(workspace_id, batch_ids) do
-    SQL.query!(
-      Repo,
-      """
-      DELETE FROM favn_control.log_batches batch
-      WHERE batch.workspace_id = $1 AND batch.batch_id = ANY($2::text[])
-        AND NOT EXISTS (
-          SELECT 1 FROM favn_control.log_entries entry
-          WHERE entry.workspace_id = batch.workspace_id AND entry.batch_id = batch.batch_id
-        )
-      """,
-      [workspace_id, batch_ids]
-    )
-
-    :ok
   end
 
   defp normalize_entries(entries) do
@@ -422,28 +383,15 @@ defmodule FavnStoragePostgres.Logs.Store do
   defp valid_log_cursor?(nil, _direction), do: true
 
   defp valid_log_cursor?(
-         %{occurred_at: %DateTime{}, kind: kind, row_id: id, watermark: watermark},
-         :older
-       ),
-       do:
-         kind in [0, 1] and is_integer(id) and id > 0 and is_integer(watermark) and watermark >= 0
-
-  defp valid_log_cursor?(
          %{publication_id: publication_id, batch_offset: batch_offset},
-         :newer
-       ),
+         direction
+       )
+       when direction in [:newer, :older],
        do:
          is_integer(publication_id) and publication_id >= 0 and is_integer(batch_offset) and
            batch_offset >= 0 and batch_offset < @max_entries
 
   defp valid_log_cursor?(_cursor, _direction), do: false
-
-  defp validate_purge(command) do
-    if workspace_context?(command.workspace_context) and match?(%DateTime{}, command.cutoff) and
-         valid_bound?(command.limit, 1, 5_000),
-       do: :ok,
-       else: {:error, ErrorMapper.map(:invalid)}
-  end
 
   defp valid_entry?(%LogEntryCommand{} = entry) do
     valid_id?(entry.source) and entry.level in @levels and is_binary(entry.message) and

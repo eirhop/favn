@@ -72,6 +72,7 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
 
   defp claim_run!(command) do
     workspace_id = command.workspace_context.workspace_id
+    FavnStoragePostgres.RunIdentity.lock!(workspace_id, command.run_id)
     ownership = lock_ownership!(workspace_id, command.run_id)
 
     cond do
@@ -171,6 +172,7 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
 
   defp renew_run!(command) do
     workspace_id = command.workspace_context.workspace_id
+    FavnStoragePostgres.RunIdentity.lock!(workspace_id, command.run_id)
     ownership = lock_ownership!(workspace_id, command.run_id)
 
     cond do
@@ -211,6 +213,7 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
 
   defp release_run!(command) do
     workspace_id = command.workspace_context.workspace_id
+    FavnStoragePostgres.RunIdentity.lock!(workspace_id, command.run_id)
     ownership = lock_ownership!(workspace_id, command.run_id)
 
     if matching_owner?(ownership, command) do

@@ -35,6 +35,7 @@ defmodule FavnStoragePostgres.Schemas.Run do
     field(:deployment_id, :string)
     field(:manifest_version_id, :string)
     field(:root_execution_group_id, :string)
+    field(:retiring, :boolean, default: false)
     field(:cancellation_owner_run_id, :string)
     field(:cancellation_requested_at, :utc_datetime_usec)
     field(:cancellation_status, :string)

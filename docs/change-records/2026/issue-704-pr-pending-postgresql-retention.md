@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature and migration |
 | Primary issue | [#704: Built-in retention policies and scheduled PostgreSQL cleanup](https://github.com/eirhop/favn/issues/704) |
 | Pull request | Pending |
 | Related work | #703 crash-safe runner tasks; #708 bounded runner recovery |
 | Affected areas | `favn_orchestrator`, `favn_storage_postgres`, maintenance CLI, event/log reads, operator documentation |
-| Approved plan commit | Not yet established |
+| Approved plan commit | `896eb78d` |
 | Last updated | 2026-09-15 |
 
 ## One-minute summary
@@ -471,14 +471,42 @@ warnings-as-errors compile, fast, acceptance/slow and tag-tier checks from
 
 ## Implementation outcome
 
-Not implemented. Only the planning record is being prepared. The approved plan,
-actual per-slice diff, canonical documentation changes, and runtime limitations
-will be compared before final implementation review.
+Implementation and qualification are in progress in the isolated issue worktree.
+The approved baseline remains commit `896eb78d`.
+
+The implementation uses one PostgreSQL worker, the existing maintenance-job row,
+a fixed family rotation, five owner retirement fields, and one replay-floor table.
+The old purge/prune APIs are removed. Run groups own their backfill cleanup;
+rebuilds own their operation tasks; registry owners reject new references while
+their children are removed. Readers use a consistent snapshot and report expired
+history during retirement. The canonical contract and operator commands are in
+[PostgreSQL retention](../../storage/postgresql/retention.md).
+
+There is no new dependency, queue, generic collector, policy table, or View feature.
+Qualification results and final review will be completed below before publication.
 
 ## Deviations from the approved plan
 
-No implementation deviations yet. The reviewed planning commit is established
-before implementation. Record later deviations here without rewriting the plan.
+The reviewed baseline is commit `896eb78d`.
+
+| Planned | Actual decision | Reason | Review |
+| --- | --- | --- | --- |
+| Publish a planning draft before implementation | Keep implementation local until final Astra xhigh review, then create the PR | Explicit user instruction on 2026-09-15 overrides the repository default sequence | Final review pending |
+| Independent backfill retirement | Retire backfills with their execution group under the existing group marker and execution-history period | Independent backfill deletion could otherwise expose incomplete window history through a retained group; one owner removes a second lifecycle and marker | Final review pending |
+| Reuse existing purge entry points | Remove separate purge and session-pruning commands; one versioned retention command owns deletion | User-approved breaking change avoids duplicate retry and policy semantics | Final review pending |
+| Settled claim cleanup | Retain reusable materialization-claim fencing identities | Keys are reused across runs; deleting their counters can make stale writers appear current | Final review pending |
+| Registry reference guards in lifecycle stores | Fixed PostgreSQL triggers check exact manifest/deployment reference columns under row locks | Covers logical references and foreign keys consistently without a runtime graph or per-writer copies | Final review pending |
+| Broad deferred foreign-key adjustment | Change only the three circular run/event constraints to deferred `NO ACTION` | Other references retain their existing restrictive behavior | Final review pending |
+| Preview continuation and full protection breakdown | One bounded preview with completeness flags; owner counts include aggregate reference/unsettled protection, while row families report eligible counts | Avoid a second durable scan lifecycle or CLI cursor protocol; incomplete previews are explicitly not whole-database totals | Final review pending |
+| Persist failed-job diagnostics | Rate-limited warnings and telemetry with bounded error categories; durable last-check/deletion progress only on committed batches | A failed transaction cannot commit diagnostics; avoid a separate failure-write transaction that could obscure its rollback | Final review pending |
+| Physical scan budgets | Bound returned candidates, deleted rows, lock waits, SQL statements and total transaction duration | PostgreSQL reference checks can inspect more pages than returned candidates; no claim of a physical-page bound | Final review pending |
+| Standalone terminal tasks | One task retirement field and four fixed child phases, alternating with group cleanup | Tasks without a run or rebuild owner otherwise never become removable; the marker prevents partial task reads while removing large log histories | Final review pending |
+| Target-recovery cleanup | Retain recovery operations and their task history as dataset evidence | The schema requires materialization and generation links; conservative evidence retention avoids losing recovery proof | Final review pending |
+| Retry/supersession chains | Conservatively retain execution groups containing linked submission history | Avoid rewriting retained retry identities or introducing a second lineage cleanup lifecycle | Final review pending |
+
+
+Implementation and verification are in progress. The entries below document
+pre-baseline review history, not a rewrite of the committed baseline.
 
 Before establishing that commit, the user removed the backward-compatibility
 requirement on 2026-09-15: no production installations exist and environments can
@@ -497,8 +525,8 @@ job state replace a separate policy registry; a transaction lock replaces worker
 leases; conservative evidence retention avoids a projection/provenance redesign.
 The user-approved environment reset removes backward-compatibility work. Astra
 review further simplified receipt deletion into one coordinated path and log
-pagination into one cursor shape. These are plan decisions; implementation has
-not started.
+pagination into one cursor shape. These are the pre-implementation plan decisions. Later changes are recorded in
+the deviation table above.
 
 ## Verification evidence
 
@@ -511,9 +539,10 @@ not started.
 
 ### Not verified
 
-No implementation, migration, concurrency test, sustained-load benchmark, or live
-deployment has been run. GitHub diagram rendering is checked after publication
-of the planning draft and before implementation starts.
+Local PostgreSQL qualification is ongoing. No live-environment reset, deployment,
+production-load qualification, or GitHub-rendering verification has been performed.
+The accelerated fixture workload does not represent production scale or prove a
+production latency SLO; it measures concurrent log cleanup, enqueue and reads.
 
 ## Final review
 

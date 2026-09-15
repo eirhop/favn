@@ -1263,7 +1263,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
     assert diagnostics.missing_critical_constraints == []
   end
 
-  test "expired receipts are pruned and their commands cannot mutate later work", fixture do
+  test "expired receipts are coordinated and their commands cannot mutate later work", fixture do
     old_command = %ClaimRunSubmissions{
       workspace_context: fixture.workspace_context,
       command_id: "expired-command-#{random_id()}",
@@ -1295,6 +1295,19 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
 
     assert {:ok, []} =
              Store.claim(claim_command(fixture, "trigger-receipt-prune", "current-worker"))
+
+    assert {:ok, %{deleted_count: 1}} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :receipts,
+                 %FavnOrchestrator.Retention.Policy{row_limit: 5},
+                 DateTime.add(DateTime.utc_now(), -7, :day),
+                 %{"phase" => 2},
+                 fixture.workspace_id
+               )
+             end)
 
     %{rows: [[0]]} =
       SQL.query!(
@@ -1426,7 +1439,15 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
         assert "run_submissions_stale_claim_idx" in index_names(discovery)
         assert "run_submissions_page_idx" in index_names(page)
         assert "run_submissions_status_page_idx" in index_names(status_page)
-        assert "run_submission_commands_retention_idx" in index_names(retention)
+
+        assert Enum.any?(
+                 index_names(retention),
+                 &(&1 in [
+                     "run_submission_commands_retention_idx",
+                     "run_submission_commands_global_retention_idx"
+                   ])
+               )
+
         {claim, stale, discovery, page, status_page, retention}
       end)
   end
