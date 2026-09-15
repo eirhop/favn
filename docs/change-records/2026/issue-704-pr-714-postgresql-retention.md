@@ -5,7 +5,7 @@
 | Status | Implemented; approved for PR review |
 | Type | Feature and migration |
 | Primary issue | [#704: Built-in retention policies and scheduled PostgreSQL cleanup](https://github.com/eirhop/favn/issues/704) |
-| Pull request | Pending |
+| Pull request | [#714](https://github.com/eirhop/favn/pull/714) |
 | Related work | #703 crash-safe runner tasks; #708 bounded runner recovery |
 | Affected areas | `favn_orchestrator`, `favn_storage_postgres`, maintenance CLI, event/log reads, operator documentation |
 | Approved plan commit | `896eb78d` |
