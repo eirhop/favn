@@ -70,7 +70,7 @@ defmodule FavnStoragePostgres.Maintenance.Worker do
       reason = failure_kind(error)
 
       Logger.warning("retention batch failed; check policy and PostgreSQL availability",
-        retention_reason: reason
+        reason: reason
       )
 
       :telemetry.execute([:favn, :retention, :failure], %{count: 1}, %{reason: reason})

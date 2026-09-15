@@ -6,10 +6,12 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Migrations.AddAssetEvidenceBindingsV2
+  alias FavnStoragePostgres.Migrations.AddRetentionV2
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @migration_version 20_260_728_010_000
   @migration {@migration_version, AddAssetEvidenceBindingsV2}
+  @retention_version 20_260_915_010_000
   @evidence_generation_id "ag_#{String.duplicate("a", 64)}"
   @runner_release_id "rr_#{String.duplicate("b", 64)}"
   @workspace_id "evidence-migration"
@@ -57,7 +59,7 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
     end)
 
     assert :ok = Migrations.migrate!(UpgradeRepo)
-    assert [@migration_version] = migrate(:down)
+    assert [@retention_version, @migration_version] = migrate(:down)
     refute table_present?()
 
     insert_active_deployment()
@@ -85,7 +87,7 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
               definition_fingerprint_matches?: true
             }} = Migrations.diagnostics(UpgradeRepo)
 
-    assert [@migration_version] = migrate(:down)
+    assert [@retention_version, @migration_version] = migrate(:down)
     refute table_present?()
   end
 
@@ -174,7 +176,7 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
   defp migrate(direction) do
     Ecto.Migrator.run(
       UpgradeRepo,
-      [@migration],
+      [@migration, {@retention_version, AddRetentionV2}],
       direction,
       all: true,
       prefix: "favn_control"

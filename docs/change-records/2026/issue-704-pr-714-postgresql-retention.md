@@ -565,9 +565,9 @@ slice 4. Mixed files are counted entirely in their primary slice.
 | --- | ---: | ---: | ---: | ---: |
 | 1 | 181 | 26 | 224 | 0 |
 | 2 | 448 | 347 | 494 | 11 |
-| 3 | 2,008 | 145 | 1,082 | 69 |
-| 4 | 504 | 226 | 389 | 45 |
-| Total | 3,141 | 744 | 2,189 | 125 |
+| 3 | 2,008 | 145 | 1,097 | 78 |
+| 4 | 510 | 226 | 405 | 45 |
+| Total | 3,147 | 744 | 2,220 | 134 |
 
 Slice 3 exceeds the production estimate by 708 lines. The additional code is
 explicit retirement phases, references and reader/writer guards across existing
@@ -700,3 +700,35 @@ and bounded cleanup. The reduced benchmark does not block PR review, but the
 original representative execution-load/CPU/I/O acceptance criterion remains
 incomplete and must not be claimed complete. Final formatting and
 warnings-as-errors compilation passed.
+
+## PR CI follow-up
+
+The first published CI run passed fast tests, acceptance tests, Dialyzer and image
+qualification, but exposed gaps in local qualification:
+
+- Quick checks rejected an unregistered log field. The worker now uses the existing
+  `reason` metadata field.
+- The events HTTP route mapped missing-run persistence results to 500. It now
+  returns 404 for missing runs and 410 for retired history; internal failures still
+  return 500. The owning route suite passes 19 cases.
+- The historical evidence migration test dropped a table without rolling back the
+  newer retention migration that installs its index and trigger. Its isolated
+  rollback now includes that dependent migration and re-applies both.
+- Query-count budgets omitted fixed retirement locks/readability checks and snapshot
+  setup. Updated ceilings are transition 12, Flow 9, subscription plus facade 16,
+  backfill page 8, and claim 9. Existing sibling-count equality, bounded result,
+  no-plan-read, index, buffer and execution-time assertions remain enforced.
+
+The corrections add no new abstraction, dependency, or retention behavior.
+
+Local qualification after these corrections: 11/11 affected slow tests passed on
+fresh disposable database `favn_ci_714` (seed 821607); all 19 API route tests,
+quick static/security checks, formatting and warnings-as-errors compile passed.
+A prior reused-database run chose a different status index; it passed unchanged
+on the fresh database. Logs: `/tmp/favn-714-ci-owning-fresh.log`,
+`/tmp/favn-714-ci-api.log`, `/tmp/favn-714-quick.log`, `/tmp/favn-714-compile.log`.
+
+Astra (`gpt-6-astra`, xhigh) independently approved these CI corrections against
+`b44cb6ea` with no actionable findings. It confirmed the fixed query costs,
+migration isolation, HTTP mappings and simplicity. Remote CI must qualify the
+pushed correction; the representative-load/CPU/I/O limitation is unchanged.

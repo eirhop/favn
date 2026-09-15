@@ -196,7 +196,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert {:ok, _committed} = large_result
 
     assert large_queries == small_queries
-    assert large_queries <= 8
+    # Includes the fixed retirement owner checks; sibling count adds no queries.
+    assert large_queries <= 12
 
     plan =
       explain(
@@ -256,7 +257,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert snapshot.header.counts.total == 1_001
     assert snapshot.overflow?
     assert Enum.all?(snapshot.observed, &(&1.run_id == run.id))
-    assert length(queries) <= 7
+    # Includes the fixed run/root readability checks.
+    assert length(queries) <= 9
 
     # The run has a 1,001-node plan and the read must never open it. Expanding
     # it per refresh is what this page stopped doing.
@@ -289,7 +291,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert {:ok, %{kind: :run, detail: %{assets: facade_assets}}} = facade_result
     assert length(facade_assets) == 1_000
     # Cancellation scope adds one indexed read.
-    assert length(subscription_queries) + length(facade_queries) <= 13
+    # Includes fixed retirement guards in subscription and facade reads.
+    assert length(subscription_queries) + length(facade_queries) <= 16
 
     candidates_query = query_containing!(queries, "ORDER BY attempt.asset_ref")
 
@@ -535,7 +538,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
 
     assert {:ok, %{items: items, has_more?: true}} = page_result
     assert length(items) == 100
-    assert page_queries == 1
+    # Snapshot setup, backfill/run/root checks, and one bounded window query.
+    assert page_queries == 8
 
     {claim_result, claim_queries} =
       measure_queries(fn ->
@@ -551,8 +555,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
 
     assert {:ok, claimed} = claim_result
     assert length(claimed) == 100
-    # The batch now takes its owner identity lock before claiming member rows.
-    assert claim_queries <= 6
+    # Owner identity and retirement checks precede the bounded claim.
+    assert claim_queries <= 9
 
     page_plan =
       explain(

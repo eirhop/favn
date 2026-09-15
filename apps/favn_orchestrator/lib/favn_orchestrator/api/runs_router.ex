@@ -128,6 +128,12 @@ defmodule FavnOrchestrator.API.RunsRouter do
       {:error, reason} when reason in [:forbidden, :service_unauthorized, :unauthenticated] ->
         authentication_error(conn, reason)
 
+      {:error, %{kind: :not_found}} ->
+        Response.error(conn, 404, "not_found", "Run was not found")
+
+      {:error, %{kind: :expired}} ->
+        Response.error(conn, 410, "history_expired", "Run history has expired")
+
       {:error, _reason} ->
         Logger.error("persisted run events are unavailable", run_id: run_id)
         Response.error(conn, 500, "run_events_unavailable", "Run events could not be loaded")
