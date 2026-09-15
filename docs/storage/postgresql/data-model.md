@@ -335,6 +335,23 @@ normal run retention removes it through the run foreign key.
 Runner-task orchestration context remains independently bounded after decoding;
 the PostgreSQL JSONB bound includes typed-envelope overhead.
 
+Task serialization uses a closed registry of structs and atoms, augmented only
+by validated retained manifest/package data. Backfill dispatcher metadata is
+part of this contract, including window/group/root identities and nested
+operator metadata. Built-in rerun, rebuild, operator timeline/context, resource
+recovery and stage-draining metadata also round-trip. Unknown atoms remain
+rejected. Enqueue validation reports the specific codec reason in
+`details.reason_code`.
+
+Pipeline and sequential execution remove an intended task reference after a
+local validation/size rejection or invalid enqueue only when an authoritative
+read proves the task was not saved. Pipeline cleanup fails the unsubmitted
+materialization claim and releases admission resources. Sequential cleanup
+uses the guarded release of ownership-only claims, which refuses bound tasks.
+Existing or unconfirmed tasks retain their references. Removing an unsaved
+reference updates the snapshot without advancing its event sequence; the
+failure event advances it once.
+
 `RUN_SUBMISSIONS` is authoritative before `RUNS` exists, so its intended
 deployment, manifest, target, run identity, redacted authority, and normalized
 intent are stored without a run foreign key. `submitted` is nevertheless

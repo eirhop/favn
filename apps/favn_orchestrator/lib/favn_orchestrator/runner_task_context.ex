@@ -20,7 +20,7 @@ defmodule FavnOrchestrator.RunnerTaskContext do
     target_generation_id evidence_generation_id owner_id status claimed_at heartbeat_at
     expires_at claimed succeeded failed completed_at result error attempt payload_hash
     revision sequence stage version resource probe? target_id operation_id operation_type
-    lease_owner lease_expires_at inserted_at updated_at materialization rebuild recovery
+    lease_owner lease_expires_at inserted_at updated_at materialization rebuild recovery target_recovery
     stale fresh missing forced reason reasons upstream_versions freshness_version
     consumed_version ref policy refresh forced? materialize? skip? decision_at
     window_start window_end start end from to connection storage source

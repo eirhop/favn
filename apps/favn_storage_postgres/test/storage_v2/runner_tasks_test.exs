@@ -595,6 +595,27 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              })
   end
 
+  test "enqueue retains the codec validation reason and saves no task", fixture do
+    run_id = "invalid-metadata-run"
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [run_id])
+
+    command =
+      enqueue_command(fixture, "invalid-metadata",
+        task_kind: :asset_attempt,
+        run_id: run_id,
+        payload: %RunnerWork{run_id: run_id, metadata: %{unregistered_runner_metadata: "example"}}
+      )
+
+    assert {:error, %{kind: :invalid, details: %{reason_code: "invalid_runner_task_data"}}} =
+             Store.enqueue(command)
+
+    assert {:error, %{kind: :not_found}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: command.task_id
+             })
+  end
+
   test "enqueue rejects payload and scalar run identity mismatch", fixture do
     FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["payload-run"])
 

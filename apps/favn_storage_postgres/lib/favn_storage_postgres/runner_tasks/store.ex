@@ -1843,8 +1843,18 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          :ok <- valid_deadline(command.occurred_at, command.deadline_at) do
       :ok
     else
-      {:error, %Error{} = error} -> Repo.rollback(error)
-      _other -> Repo.rollback(Error.new(:invalid, "invalid runner task enqueue command"))
+      {:error, %Error{} = error} ->
+        Repo.rollback(error)
+
+      {:error, reason} when is_atom(reason) ->
+        Repo.rollback(
+          Error.new(:invalid, "invalid runner task enqueue command",
+            details: %{reason_code: Atom.to_string(reason)}
+          )
+        )
+
+      _other ->
+        Repo.rollback(Error.new(:invalid, "invalid runner task enqueue command"))
     end
   end
 

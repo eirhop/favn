@@ -3,6 +3,7 @@ Code.require_file("../../favn_test_support/fixtures/runner_task_persistence.exs"
 defmodule FavnOrchestrator.RunnerTaskContextTest do
   use ExUnit.Case, async: true
   alias FavnOrchestrator.RunnerTaskContext
+  alias FavnOrchestrator.Persistence.Results.TargetOperationLock
   alias FavnOrchestrator.Persistence.Results.MaterializationClaim
   alias FavnOrchestrator.Persistence.Results.ResourceCircuitPermit
   alias FavnTestSupport.RunnerTaskPersistence, as: Fixture
@@ -54,6 +55,27 @@ defmodule FavnOrchestrator.RunnerTaskContextTest do
     }
 
     for context <- [%{}, %{kind: :sequential, materialization_claim: nil}, sequential, pipeline] do
+      assert {:ok, encoded} = RunnerTaskContext.encode(context)
+      assert {:ok, ^context} = RunnerTaskContext.decode(encoded, version)
+    end
+
+    for operation_type <- [:materialization, :rebuild, :target_recovery] do
+      lock = %TargetOperationLock{
+        workspace_id: "workspace",
+        target_id: "target",
+        operation_id: "operation",
+        operation_type: operation_type,
+        lease_owner: "owner",
+        fencing_token: 7,
+        version: 1,
+        lease_expires_at: ~U[2026-09-04 15:00:00Z]
+      }
+
+      context = %{
+        sequential
+        | materialization_claim: Map.put(claim, :target_operation_lock, lock)
+      }
+
       assert {:ok, encoded} = RunnerTaskContext.encode(context)
       assert {:ok, ^context} = RunnerTaskContext.decode(encoded, version)
     end

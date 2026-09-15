@@ -170,12 +170,31 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     end
   end
 
-  setup do
+  defmodule RejectedTaskStore do
+    alias FavnOrchestrator.Persistence.Error
+
+    def enqueue(command) do
+      send(self(), {:rejected_enqueue, command})
+
+      {:error,
+       Error.new(:invalid, "invalid task", details: %{reason_code: "invalid_runner_task_data"})}
+    end
+
+    def get(query) do
+      send(self(), {:enqueue_recovery_read, query})
+      Process.get({__MODULE__, :read_result})
+    end
+
+    def request_cancellation(_command),
+      do: {:error, Error.new(:unavailable, "cancellation unavailable")}
+  end
+
+  setup context do
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
       run_submissions: FakeStore,
-      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
+      runner_tasks: Map.get(context, :runner_task_store, FavnOrchestrator.TestRunnerTaskStore),
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -209,6 +228,84 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     end)
 
     {:ok, fixture: fixture()}
+  end
+
+  @tag runner_task_store: RejectedTaskStore
+  test "rejected enqueue releases only the proven missing task's ownership", %{fixture: fixture} do
+    Process.put({FakeStore, :claimable_target_ids}, [
+      TargetIdentity.for_asset(elem(fixture.b_key, 0))
+    ])
+
+    Process.put(
+      {RejectedTaskStore, :read_result},
+      {:error, Error.new(:not_found, "task not found")}
+    )
+
+    assert {:cont, awaiting} = Execution.handle_event(fixture.state, :continue)
+    assert_receive {:rejected_enqueue, command}
+    assert_receive {:enqueue_recovery_read, %{task_id: task_id}}
+    assert task_id == command.task_id
+    assert_receive {:materialization_finish, %{status: :failed}}
+    refute task_id in ActiveTaskSet.active_runner_task_ids(awaiting.run)
+    assert @held_task_id in ActiveTaskSet.active_runner_task_ids(awaiting.run)
+  end
+
+  for kind <- [:unsupported_struct, :oversized_payload] do
+    @tag runner_task_store: RejectedTaskStore
+    test "local #{kind} rejection clears only a proven missing task", %{
+      fixture: fixture
+    } do
+      Process.put({FakeStore, :claimable_target_ids}, [
+        TargetIdentity.for_asset(elem(fixture.b_key, 0))
+      ])
+
+      Process.put(
+        {RejectedTaskStore, :read_result},
+        {:error, Error.new(:not_found, "task not found")}
+      )
+
+      rejected_value =
+        if unquote(kind) == :unsupported_struct,
+          do: %URI{},
+          else:
+            String.duplicate(
+              "x",
+              Favn.Contracts.RunnerTask.Limits.payload_bytes(:asset_attempt) + 1
+            )
+
+      run = %{
+        fixture.state.run
+        | metadata: Map.put(fixture.state.run.metadata, :operator_metadata, rejected_value)
+      }
+
+      state = %{fixture.state | run: run, stage_state: %{fixture.state.stage_state | run: run}}
+      assert {:cont, awaiting} = Execution.handle_event(state, :continue)
+      assert_receive {:enqueue_recovery_read, %{task_id: task_id}}
+      refute_received {:rejected_enqueue, _command}
+      assert_receive {:materialization_finish, %{status: :failed}}
+      refute task_id in ActiveTaskSet.active_runner_task_ids(awaiting.run)
+      assert @held_task_id in ActiveTaskSet.active_runner_task_ids(awaiting.run)
+    end
+  end
+
+  for {name, read_result} <- [
+        {"existing task",
+         {:ok, %FavnOrchestrator.Persistence.Results.RunnerTask{status: :queued}}},
+        {"unavailable read", {:error, Error.new(:unavailable, "read unavailable")}}
+      ] do
+    @tag runner_task_store: RejectedTaskStore
+    test "rejected enqueue retains ownership after #{name}", %{fixture: fixture} do
+      Process.put({FakeStore, :claimable_target_ids}, [
+        TargetIdentity.for_asset(elem(fixture.b_key, 0))
+      ])
+
+      Process.put({RejectedTaskStore, :read_result}, unquote(Macro.escape(read_result)))
+      assert {:cont, awaiting} = Execution.handle_event(fixture.state, :continue)
+      assert_receive {:rejected_enqueue, command}
+      assert command.task_id in ActiveTaskSet.active_runner_task_ids(awaiting.run)
+      refute_received {:materialization_finish, _finish}
+      refute_received {:release_execution_lease, _release}
+    end
   end
 
   test "a node-specific claim conflict fails only its node and leaves the sibling running", %{
@@ -474,7 +571,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
         workspace_id: "workspace-admission-sibling-drain",
         deployment_id: "deployment-admission-sibling-drain",
         manifest_version_id: "manifest-admission-sibling-drain",
-        manifest_content_hash: "sha256:admission-sibling-drain",
+        manifest_content_hash: String.duplicate("a", 64),
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         asset_ref: a_ref,
         target_refs: [a_ref, b_ref, c_ref, f_ref, d_ref, e_ref],
@@ -523,7 +620,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
 
     decisions =
       Map.new([a_key, b_key, c_key, f_key], fn node_key ->
-        {node_key, %{decision: :run, reason: :forced, freshness_key: "latest"}}
+        {node_key,
+         %{decision: :run, reason: :forced, node_key: node_key, freshness_key: "latest"}}
       end)
 
     entry =

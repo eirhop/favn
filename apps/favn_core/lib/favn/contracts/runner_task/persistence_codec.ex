@@ -54,6 +54,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
          :ok <- Limits.validate_payload(task_kind, value) do
       {:ok, value}
     else
+      {:error, :invalid_runner_task_data} = error -> error
       _other -> {:error, :invalid_runner_task_persistence_envelope}
     end
   rescue
@@ -205,6 +206,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
          :ok <- apply_validation(validate, task_kind, outcome, value) do
       {:ok, value}
     else
+      {:error, :invalid_runner_task_data} = error -> error
       _other -> {:error, :invalid_runner_task_persistence_envelope}
     end
   rescue

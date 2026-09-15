@@ -8,6 +8,7 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RunnerTasks
+  alias FavnOrchestrator.Persistence.Error
 
   @spec enqueue(
           RunState.t(),
@@ -66,6 +67,26 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
       {:ok, task, work}
     end
   end
+
+  @doc false
+  @spec rejected_without_task?(RunState.t(), String.t(), term()) :: boolean()
+  def rejected_without_task?(run, task_id, reason) do
+    rejected_enqueue?(reason) and
+      match?({:error, %Error{kind: :not_found}}, RunnerTasks.fetch(run.workspace_id, task_id))
+  end
+
+  defp rejected_enqueue?(%Error{kind: :invalid}), do: true
+  defp rejected_enqueue?({:runner_task_payload_too_large, _size, _limit}), do: true
+  defp rejected_enqueue?({:invalid_runner_pool, _value}), do: true
+
+  defp rejected_enqueue?(reason),
+    do:
+      reason in [
+        :invalid_runner_task_data,
+        :invalid_runner_task_orchestration_context,
+        :invalid_runner_work_fields,
+        :invalid_runner_task_package_reference
+      ]
 
   defp prepare_payload(work, task_id) do
     metadata =

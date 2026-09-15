@@ -22,6 +22,68 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
     end
   end
 
+  test "backfill metadata keys round trip independently without retained artifacts" do
+    for key <- [
+          :backfill_id,
+          :backfill_window_id,
+          :backfill_window_key,
+          :backfill_execution_group_id,
+          :backfill_root_run_id,
+          :operator_metadata
+        ] do
+      value = %{key => "example"}
+      assert {:ok, encoded} = Data.encode(value, 1_048_576)
+      assert {:ok, ^value} = Data.decode(encoded, 1_048_576), inspect(key)
+    end
+  end
+
+  test "an existing unknown metadata atom is still rejected" do
+    assert {:ok, encoded} = Data.encode(%{unregistered_runner_metadata: "example"}, 1_048_576)
+    assert {:error, :invalid_runner_task_data} = Data.decode(encoded, 1_048_576)
+  end
+
+  test "framework retry, rebuild, recovery and draining metadata survive complete work round trips" do
+    version = Fixture.version()
+    {:asset_attempt, work, _result} = hd(Fixture.tasks(version))
+
+    cases = [
+      {%{kind: :rerun},
+       %{
+         runtime_input_expectation: %{
+           resolver: "example",
+           input_identity: "input",
+           payload_fingerprint: "fingerprint"
+         }
+       }},
+      {%{
+         kind: :resource_recovery,
+         source_run_id: "source",
+         resource_kind: :connection,
+         resource_name: "warehouse"
+       },
+       %{
+         resource_recovery_source_run_id: "source",
+         resource_recovery_resource: Favn.Resource.Ref.new!(:connection, "warehouse"),
+         resource_recovery_candidate_ids: ["candidate"]
+       }},
+      {work.trigger,
+       %{
+         stage_draining_after_failure: %{
+           stage: 0,
+           attempt: 1,
+           failed_asset_ref: work.asset_ref,
+           pending_task_ids: ["rt_pending"]
+         }
+       }}
+    ]
+
+    for {trigger, metadata} <- cases do
+      value = %{work | trigger: trigger, metadata: Map.merge(work.metadata, metadata)}
+      assert {:ok, encoded, _hash} = Codec.encode_payload(:asset_attempt, value)
+      assert {:ok, ^value} = Codec.decode_payload(:asset_attempt, encoded, version)
+    end
+  end
+
   test "window policies round trip every supported kind, anchor and timezone source" do
     for kind <- [:hour, :day, :month, :year],
         anchor <- [:previous_complete_period, :current_period],
