@@ -825,6 +825,9 @@ their lack of an FK is not permission to perform unscoped reads.
 - Global immutable content uses SHA-256 hashes and is shared safely.
 - Fencing tokens and claim generations are monotonically increasing scalars.
 - JSONB payloads are bounded and versioned; queryable lifecycle fields are scalar.
+  Task payload version 2 stores a package hash with execution-specific work;
+  package bodies remain in the immutable registry. See
+  [task package references](architecture.md#task-package-references).
 - Growing histories use identity keys plus workspace-aware keyset indexes.
 - Coverage counts and exact-key lookups read `asset_window_states` only through
   workspace, active evidence generation, target, successful status, and bounded

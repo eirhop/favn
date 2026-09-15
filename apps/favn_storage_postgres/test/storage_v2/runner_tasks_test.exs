@@ -248,8 +248,54 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
         write_claim_fence: claim.fencing_token
       })
 
-    assert byte_size(Jason.encode!(command.payload["payload"])) > 2_097_152
+    assert byte_size(Jason.encode!(command.payload)) < 20_000
+    assert command.payload["execution_package_hash"] == package.content_hash
     assert {:ok, queued} = Store.enqueue(command)
+
+    assert {:ok, %{payload: ^work}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
+
+    file = Path.join(System.tmp_dir!(), "favn-package-" <> random_id() <> ".json")
+
+    File.write!(
+      file,
+      Jason.encode!(%{
+        workspace: fixture.workspace_id,
+        task_id: queued.task_id,
+        package_hash: package.content_hash,
+        digest:
+          Base.encode16(:crypto.hash(:sha256, :erlang.term_to_binary(work, [:deterministic])))
+      })
+    )
+
+    on_exit(fn -> File.rm(file) end)
+    script = Path.expand("../support/crash_recovery_process.exs", __DIR__)
+    paths = :code.get_path() |> Enum.flat_map(fn path -> ["-pa", to_string(path)] end)
+
+    {output, status} =
+      System.cmd(System.find_executable("elixir"), paths ++ [script, "package", "queued", file],
+        stderr_to_stdout: true,
+        env: [{"ERL_FLAGS", "+S 2:2"}]
+      )
+
+    assert status == 0, output
+    assert output =~ "PACKAGE restored exactly"
+
+    purge = %C.PurgePersistence{
+      platform_context: fixture.platform_context,
+      job_id: "package-purge-" <> random_id(),
+      target: :execution_packages,
+      cutoff: DateTime.add(DateTime.utc_now(), 1, :second),
+      limit: 100
+    }
+
+    # Competing operations use separate connections; retention must protect the reference.
+    cleanup = Task.async(fn -> FavnStoragePostgres.Maintenance.Store.purge(purge) end)
+    assert {:ok, ^queued} = Store.enqueue(command)
+    assert {:ok, _} = Task.await(cleanup)
 
     assert {:ok, %{payload: ^work}} =
              Store.get(%Q.GetRunnerTask{
@@ -367,6 +413,96 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              })
 
     assert completed.status == :succeeded
+    assert {:ok, ^queued} = Store.enqueue(command)
+
+    next_sql = "SELECT 2 AS id"
+
+    {:ok, next_package} =
+      ExecutionPackage.new(ref, %SQLExecution{
+        sql: next_sql,
+        template: Favn.SQL.Template.compile!(next_sql, file: "replacement.sql", line: 1)
+      })
+
+    :ok =
+      RegistryStore.register_execution_packages(%C.RegisterExecutionPackages{
+        platform_context: fixture.platform_context,
+        packages: [next_package]
+      })
+
+    {:ok, next_version} =
+      Version.new(%{
+        manifest
+        | assets: [
+            FavnTestSupport.with_target_descriptor(%{
+              asset
+              | execution_package_hash: next_package.content_hash
+            })
+          ]
+      })
+
+    {:ok, _} =
+      RegistryStore.register_manifest(%C.RegisterManifest{
+        platform_context: fixture.platform_context,
+        version: next_version
+      })
+
+    target = asset.target_descriptor.target_id
+
+    {:ok, binding} =
+      FavnStoragePostgres.TargetGenerations.Store.get_binding(%Q.GetTargetBinding{
+        workspace_context: fixture.workspace_context,
+        target_id: target
+      })
+
+    {:ok, _} =
+      RegistryStore.deploy_manifest(%C.DeployManifest{
+        platform_context: fixture.platform_context,
+        workspace_context: fixture.workspace_context,
+        deployment_id: "replacement-" <> random_id(),
+        manifest_version_id: next_version.manifest_version_id,
+        configuration: %{"resources" => %{}},
+        occurred_at: DateTime.utc_now(),
+        targets: [
+          %C.DeploymentTarget{
+            target_kind: :asset,
+            target_id: target,
+            selection_source: :common,
+            customer_visible: true,
+            descriptor: %{"target_id" => target, "label" => target}
+          }
+        ],
+        target_compatibilities: [
+          %C.DeploymentTargetCompatibility{
+            target_id: target,
+            desired_descriptor_hash:
+              hd(next_version.manifest.assets).target_descriptor.descriptor_hash,
+            compatibility_status: :rebuild_required,
+            reason_code: "contract_changed",
+            compatibility_diff: %{},
+            expected_binding_version: binding.version,
+            active_physical_fingerprint: nil,
+            expected_active_generation_id: binding.active_generation_id
+          }
+        ]
+      })
+
+    assert {:ok, %{payload: ^work}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
+
+    assert {:ok, _} =
+             FavnStoragePostgres.Maintenance.Store.purge(%{
+               purge
+               | job_id: "after-deploy-" <> random_id()
+             })
+
+    assert {:ok, %{payload: ^work}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: queued.task_id
+             })
   end
 
   test "PostgreSQL accepts a maximum asset payload and rejects above its JSONB bound", fixture do

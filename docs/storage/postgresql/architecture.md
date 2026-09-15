@@ -281,6 +281,23 @@ Redis is not required for correctness or initial multi-node scale.
 - Schema changes require migrations, readiness updates, PostgreSQL integration
   tests, and an update to the ER documentation.
 
+## Task package references
+
+Persisted task payload version 2 uses `runner-task-payload-v2`. Its outer
+`execution_package_hash` identifies the immutable package; the typed `RunnerWork`
+inside has `execution_package: nil`. Non-SQL work has a nil reference. The task's
+`payload_hash` covers the complete compact envelope. Result, context, and receipt
+formats are unchanged.
+
+Enqueue verifies the attached package before stripping it. Reads verify the
+payload hash, resolve the exact manifest/asset/package through the existing
+registry lookup, then attach and validate complete work, including its size
+limit. A changed active deployment cannot redirect a retained task. Manifest
+foreign keys and package links retain the required artifacts. Missing or corrupt
+artifacts make executable detail unavailable; scalar receipts and unresolved
+write evidence remain available. No compatibility reader or automatic conversion
+exists; see [adoption](../../production/postgresql_operator_runbook.md#task-package-reference-adoption).
+
 ## Runner restart recovery
 
 Runner task lifecycle commands read scalar state independently of executable

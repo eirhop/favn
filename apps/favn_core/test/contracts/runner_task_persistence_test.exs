@@ -203,6 +203,14 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
     assert {:error, _} = Codec.decode_payload(:asset_attempt, encoded, version)
     assert {:ok, ^work} = Codec.decode_payload(:asset_attempt, encoded, version, [package])
 
+    assert {:error, _} =
+             Codec.decode_payload(
+               :asset_attempt,
+               %{encoded | "execution_package_hash" => nil},
+               version,
+               []
+             )
+
     {other, wrong} =
       Fixture.package_version("Elixir.WrongPackage", "other", "Elixir.OtherResolver")
 
@@ -215,58 +223,84 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
              ])
 
     for replacement <- ["not-a-hash", String.duplicate("A", 64), String.duplicate("a", 65)] do
-      changed =
-        update_package_hash(encoded, fn _ ->
-          [["atom", "content_hash"], ["binary", Base.encode64(replacement)]]
-        end)
-
-      assert {:error, _} = Codec.package_hash(changed)
+      assert {:error, _} =
+               Codec.package_hash(%{encoded | "execution_package_hash" => replacement})
     end
 
-    duplicate =
-      update_in(encoded, ["payload", "data"], fn ["struct", name, ["map", pairs]] ->
-        ["struct", name, ["map", pairs ++ [hd(pairs)]]]
-      end)
+    assert {:error, _} = Codec.package_hash(Map.put(encoded, "extra", true))
 
-    assert {:error, _} = Codec.package_hash(duplicate)
+    assert {:error, _} =
+             Codec.decode_payload(
+               :asset_attempt,
+               %{encoded | "encoding" => "task-data-v1"},
+               version,
+               [package]
+             )
 
-    duplicate_hash =
-      update_in(encoded, ["payload", "data"], fn ["struct", name, ["map", pairs]] ->
-        pairs =
-          Enum.map(pairs, fn
-            [["atom", "execution_package"], ["struct", package_name, ["map", fields]]] ->
-              hash = Enum.find(fields, &match?([["atom", "content_hash"], _], &1))
-              [["atom", "execution_package"], ["struct", package_name, ["map", fields ++ [hash]]]]
+    assert {:ok, embedded} =
+             Data.encode(work, Favn.Contracts.RunnerTask.Limits.payload_bytes(:asset_attempt))
 
-            pair ->
-              pair
-          end)
+    assert {:error, _} =
+             Codec.decode_payload(:asset_attempt, %{encoded | "payload" => embedded}, version, [
+               package
+             ])
 
-        ["struct", name, ["map", pairs]]
-      end)
+    assert {:error, _} =
+             Codec.encode_payload(
+               :asset_attempt,
+               %{
+                 work
+                 | execution_package: %{
+                     package
+                     | sql_execution: %{package.sql_execution | sql: "SELECT 2"}
+                   }
+               }
+             )
 
-    assert {:error, _} = Codec.package_hash(duplicate_hash)
+    assert {:ok, stripped} = Data.decode(encoded["payload"], 8_388_608, version, [], [package])
+    assert stripped.execution_package == nil
+    assert encoded["encoding"] == "runner-task-payload-v2"
+    assert encoded["protocol_version"] == Favn.Contracts.RunnerTask.version()
+    assert {:ok, ^encoded, _} = Codec.encode_payload(:asset_attempt, work)
   end
 
-  defp update_package_hash(envelope, change) do
-    update_in(envelope, ["payload", "data"], fn ["struct", name, ["map", pairs]] ->
-      pairs =
-        Enum.map(pairs, fn
-          [["atom", "execution_package"], ["struct", package_name, ["map", fields]]] ->
-            fields =
-              Enum.map(fields, fn
-                [["atom", "content_hash"], _] = field -> change.(field)
-                field -> field
-              end)
+  test "compact references cannot bypass expanded work bounds" do
+    alias Favn.Manifest.{ExecutionPackage, SQLExecution, Version}
+    alias Favn.Contracts.RunnerTask.Limits
+    version = Fixture.version()
+    asset = hd(version.manifest.assets)
+    sql = "SELECT 1 /*" <> String.duplicate("x", 4_200_000) <> "*/"
 
-            [["atom", "execution_package"], ["struct", package_name, ["map", fields]]]
+    {:ok, package} =
+      ExecutionPackage.new(asset.ref, %SQLExecution{
+        sql: sql,
+        template: Favn.SQL.Template.compile!(sql, file: "large.sql", line: 1)
+      })
 
-          pair ->
-            pair
-        end)
+    {:ok, version} =
+      Version.new(%{
+        version.manifest
+        | assets: [
+            %{asset | type: :sql, execution_package_hash: package.content_hash}
+          ]
+      })
 
-      ["struct", name, ["map", pairs]]
-    end)
+    {:asset_attempt, stripped, _} = hd(Fixture.tasks(version))
+    assert {:ok, encoded, _} = Codec.encode_payload(:asset_attempt, stripped)
+    work = %{stripped | execution_package: package}
+
+    assert {:error, {:runner_task_payload_too_large, _, _}} =
+             Limits.validate_payload(:asset_attempt, work)
+
+    assert {:error, _} = Codec.encode_payload(:asset_attempt, work)
+
+    assert {:error, _} =
+             Codec.decode_payload(
+               :asset_attempt,
+               %{encoded | "execution_package_hash" => package.content_hash},
+               version,
+               [package]
+             )
   end
 
   test "writer and two fresh readers recover consumer atoms from retained artifacts" do

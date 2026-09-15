@@ -477,3 +477,46 @@ pruned separately from new inserts. Normal vacuum makes deleted space reusable
 but does not normally shrink allocated table files. Table, index and TOAST bytes
 therefore need separate interpretation from live rows and current growth rate.
 Scheduled retention and broader data normalization remain separate work.
+
+## Task package reference adoption
+
+Task payload version 2 is a breaking, reset-only change. The migration refuses
+any existing workspace, task command receipt, runner capacity partition, or
+runner session, including a provisioned environment with no remaining tasks.
+It does not delete data. Its transaction rolls back on rejection; bootstrap's
+preceding identity, role, and database-policy preparation is outside that
+transaction. Once adopted, ordinary startup does not repeat the empty-state guard.
+
+For the repository's disposable local environment:
+
+1. Stop `mix favn.dev` and all connected runners. Stop or reconcile any backend
+   query still executing; stopping BEAM alone cannot prove an external write stopped.
+2. Inventory the Favn-owned managed targets and their catalog/object-storage
+   state. Reset those outputs using the project's existing data-system reset
+   procedure, together with control-plane state. Do not silently adopt leftover
+   targets whose generation/ownership records will be lost. Source and unrelated
+   consumer data are excluded. The repository cannot infer a consuming project's
+   target locations; record its exact reset commands and affected targets before
+   running the reset.
+3. With the selected local PostgreSQL port exported, run the existing reset command (which also bootstraps) from the umbrella root:
+
+   ```bash
+   export FAVN_POSTGRES_PORT=5433
+   mise exec -- scripts/postgres/reset
+   ```
+
+   `scripts/postgres/reset` deletes the repository's disposable PostgreSQL volume,
+   including every database in that volume. Use this only when all of those
+   databases are disposable. A shared or hosted PostgreSQL server instead needs
+   a separately created empty control-plane database and the deployment's existing
+   bootstrap Job; do not run local volume commands against it.
+4. Register manifests/packages and deploy matching control-plane and runner
+   builds using the project's normal deployment workflow. Rebuild or reingest
+   the managed outputs. Verify a SQL run, then restart the processes and verify
+   retained task detail and recovery without another database reset.
+
+Each hosted environment must record its writer-stop, empty-database bootstrap,
+managed-output reset and rebuild commands before adoption. No live environment
+reset is performed by the migration or qualification tests. Downgrade requires
+a separately compatible environment or another coordinated reset; an old binary
+cannot read new-format tasks.
