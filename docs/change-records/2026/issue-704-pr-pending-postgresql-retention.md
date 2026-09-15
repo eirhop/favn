@@ -526,6 +526,7 @@ The reviewed baseline is commit `896eb78d`.
 | Retry/supersession chains | Conservatively retain execution groups containing linked submission history | Avoid rewriting retained retry identities or introducing a second lineage cleanup lifecycle | Final review pending |
 | Main advanced during implementation | Rebase onto `b98fed79`, preserving #712 lifecycle log messages and #713 compact task package references | Requested by the user; the combined feed checks event and diagnostic floors in one snapshot, and the retention migration follows the package reset migration | Final review pending |
 | Full production workload benchmark | A repeatable concurrent log-write, enqueue and read fixture plus separate owner/concurrency tests | This is local pre-v1 qualification. It does not measure full run admission, database CPU/physical I/O, or production-scale growth; these remain unverified | Final review pending |
+| Unadmitted submission cleanup | One bounded atomic header cleanup under execution history; no retirement marker | Safe/permanent preparation failures and queued cancellations otherwise have no run-group owner and never expire. Existing cancellation/run authority and submission locks protect replay and concurrent retries | Final recheck pending |
 
 
 The entries below document
@@ -562,15 +563,16 @@ slice 4. Mixed files are counted entirely in their primary slice.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
-| 1 | 181 | 26 | 218 | 0 |
-| 2 | 448 | 347 | 473 | 11 |
-| 3 | 1,859 | 145 | 800 | 64 |
-| 4 | 500 | 226 | 386 | 44 |
-| Total | 2,988 | 744 | 1,877 | 119 |
+| 1 | 181 | 26 | 224 | 0 |
+| 2 | 448 | 347 | 494 | 11 |
+| 3 | 2,007 | 145 | 1,041 | 69 |
+| 4 | 504 | 226 | 389 | 45 |
+| Total | 3,140 | 744 | 2,148 | 125 |
 
-Slice 3 exceeds the production estimate by 559 lines. The additional code is
+Slice 3 exceeds the production estimate by 707 lines. The additional code is
 explicit retirement phases, references and reader/writer guards across existing
-owners, including standalone tasks; it adds no general graph, queue or policy
+owners, including standalone tasks and atomic unadmitted-submission cleanup identified
+during final review; it adds no general graph, queue or policy
 framework. The reviewer must assess whether those guards can be simplified while
 preserving bounded deletion and concurrent reference safety. Slices 2 and 4 remove
 more production code than estimated because the old purge/prune implementations
@@ -578,7 +580,7 @@ and historical cursor branch are removed completely.
 
 Supporting deletions are below the estimate because the inventory and policy are
 new, existing lifecycle tests stay, and obsolete purge assertions are replaced in
-place. Supporting additions are below the estimate because the benchmark uses a
+place. Slice 4 supporting additions are below the estimate because the benchmark uses a
 narrow fixture workload; the unmeasured production workload is explicitly listed
 as a limitation, rather than covered by additional tests that merely repeat SQL.
 
@@ -591,12 +593,12 @@ database URLs and fixed test pin key.
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| PostgreSQL fast suite | 455/458 passed initially; the three failed cases then passed in a 15-test owning regression run | Two existing five-second admission deadlines expired under suite load; one new cursor test omitted the normalized filter fixture and was corrected. The admission cases needed no implementation change. |
-| Retention, runner tasks, concurrency, package migration and package query-plan checks | 97 passed, including the relevant slow cases | Final package index, current schema fingerprint, worker restart, receipts/holds, real runner recovery and compact package references |
+| PostgreSQL fast suite and review regressions | 461 cases exercised; all five initial failures corrected and passed in a 286-case affected-layer follow-up (284 plus two focused reruns) | Three older fixtures now create registry parents; the durable task fixture respects its persisted enqueue timestamp; the connected SSE fixture starts PubSub and waits for the actual ready event. |
+| Retention, runner tasks, concurrency, package migration and package query-plan checks | 97 passed before final review, including the relevant slow cases | Package age index, worker restart, receipts/holds, real runner recovery and compact package references; post-review owning tests cover the added reference guards and submission cleanup |
 | Orchestrator fast suite | 867 passed: 861 tests and six doctests | Current orchestration and public contract regressions |
 | Log View support/model/component tests | 15 passed | Existing mixed lifecycle/diagnostic rendering and replay integration; no browser changes |
 | Clean-schema retention load fixture | Passed; numbers below | Concurrent local fixture, not production scale |
-| Fresh schema and drift diagnostics | Exact 79-table inventory; no missing/unexpected columns; fingerprint `711c04c9664b5907f8a42b6d2759a5f44b802dec28d938b6bf0100f5007cacaf` | Disabled registry trigger is detected; reset-only package migration and restart passed |
+| Fresh schema and drift diagnostics | Exact 79-table inventory; no missing/unexpected columns; fingerprint `c1bd5d700242f66fb221e058d61719949ea29f92d7be2fe2feba40e09e57dafe` | Disabled registry trigger is detected; reset-only package migration and restart passed |
 | CLI status, preview, configure and run | Passed; stale expected version rejected | Actual Mix task against disposable PostgreSQL |
 | Formatting, compile, whitespace and tag guard | Passed | `mix format --check-formatted`, `mix compile --warnings-as-errors`, `git diff --check`, `elixir scripts/check_test_tag_tiers.exs` via mise |
 | Documentation | All changed relative links resolve; balanced fences and simple flowcharts checked | GitHub rendering must be checked after PR publication, per the user's review-before-PR sequence |
@@ -606,9 +608,11 @@ The 97-test selection includes `retention_test.exs`, `runner_tasks_test.exs`,
 `concurrency_authority_test.exs`, `task_package_migration_test.exs`, and the
 execution-package case in `performance_contract_test.exs`. The focused View
 selection is `logs_live_support_test.exs`, `logs_view_model_test.exs`, and
-`components/log_viewer_test.exs`. The owning regression selection is
-`write_resolution_test.exs` plus the large-history retirement case in
-`core_authority_test.exs`.
+`components/log_viewer_test.exs`. The post-review owning selection is `core_authority_test.exs`,
+`run_submissions_test.exs`, `manifest_deployments_test.exs`,
+`operator_reads/coverage_test.exs`, `retention_test.exs` and `runner_tasks_test.exs`.
+Earlier five-second admission timing failures passed unchanged in a focused
+`write_resolution_test.exs` rerun.
 
 ### Load fixture results
 
@@ -625,13 +629,13 @@ cleanup and preserve 40 queued tasks.
 | Remaining log rows | 1,500 | 0 |
 | Deleted rows, including batch/outbox pairs | 0 | 1,620 |
 | Protected queued tasks | 40 | 40 |
-| Elapsed seconds including recovery tail | 5.04 | 3.45 |
-| Log write p95 / p99, milliseconds | 20.28 / 34.82 | 12.49 / 13.97 |
-| Task enqueue p95 / p99, milliseconds | 41.86 / 55.35 | 16.82 / 19.25 |
-| History read p95 / p99, milliseconds | 12.69 / 20.54 | 10.93 / 15.09 |
-| WAL bytes during fixture | 83,781,224 | 8,420,384 |
-| Allocated control-plane bytes, before → after | 4,808,704 → 46,596,096 | 48,095,232 → 53,329,920 |
-| Estimated dead tuples, before → after | 0 → 32,566 | 34,809 → 39,328 |
+| Elapsed seconds including recovery tail | 4.36 | 3.22 |
+| Log write p95 / p99, milliseconds | 10.55 / 11.92 | 11.62 / 12.37 |
+| Task enqueue p95 / p99, milliseconds | 26.39 / 45.26 | 17.46 / 27.67 |
+| History read p95 / p99, milliseconds | 6.63 / 10.40 | 6.89 / 9.82 |
+| WAL bytes during fixture | 82,573,952 | 8,304,376 |
+| Allocated control-plane bytes, before → after | 4,825,088 → 59,359,232 | 60,874,752 → 66,199,552 |
+| Estimated dead tuples, before → after | 0 → 37,071 | 43,267 → 49,018 |
 
 All enabled p99 observations are below the fixture's predeclared 250 ms regression
 ceiling. The workload recovers its eligible backlog while preserving queued work.
@@ -654,6 +658,21 @@ GitHub rendering remains pending until publication.
 
 ## Final review
 
-Pending independent Astra (`gpt-6-astra`) xhigh review. The reviewer must compare
-commit `896eb78d`, the final record and every deviation, the diff against
-`b98fed79`, the complexity overrun, canonical docs and verification evidence.
+Astra (`gpt-6-astra`) xhigh reviewed `d23151ac` against baseline `896eb78d` and
+requested changes. It accepted the fixed-family design and found the complexity
+overrun substantially justified by required guards, with no generic framework or
+unnecessary dependency to remove. The reduced benchmark remains a limitation of
+acceptance evidence, not a production execution-load qualification.
+
+| Finding | Correction | Recheck |
+| --- | --- | --- |
+| P1: evidence-only manifest could lose package links | Add the initial evidence-manifest reference predicate, indexed writer guard, and schema-wide FK guard coverage; prove all package links remain | Pending |
+| P1: logical references could point to deleted registry owners | Reject missing owners; use real registry fixtures; test missing manifests and deployments | Pending |
+| P1: late child-task commands could create receipts after parent retirement | Nonblocking parent locks in the shared task-command lock path; prove late cancellation creates no receipt for retiring runs/rebuilds | Pending |
+| P2: unadmitted terminal submissions never expired | Atomic fixed cleanup with unknown/retry/result/receipt protections; check every ID in multi-submission receipts | Pending |
+| P2: connected SSE stalled after run deletion | Treat not-found as terminal during delivery; exercise an open stream across complete deletion | Pending |
+
+Standalone task and submission reference checks also use a new statement after
+acquiring the row lock, so a reference committed just before lock acquisition is
+visible. Initial SSE error behavior stays unchanged. All review reproductions
+rolled back; corrections are qualified on another disposable database.

@@ -10,17 +10,27 @@ defmodule FavnStoragePostgres.Maintenance.RetentionFamilies do
     phase = cursor["phase"] || 0
 
     {key, result} =
-      if phase == 0 do
-        {"groups",
-         FavnStoragePostgres.Maintenance.History.delete!(policy, cutoff, cursor["groups"])}
-      else
-        {"tasks",
-         FavnStoragePostgres.Maintenance.TaskRetention.delete!(policy, cutoff, cursor["tasks"])}
+      case phase do
+        0 ->
+          {"groups",
+           FavnStoragePostgres.Maintenance.History.delete!(policy, cutoff, cursor["groups"])}
+
+        1 ->
+          {"tasks",
+           FavnStoragePostgres.Maintenance.TaskRetention.delete!(policy, cutoff, cursor["tasks"])}
+
+        2 ->
+          {"submissions",
+           FavnStoragePostgres.Maintenance.SubmissionRetention.delete!(
+             policy,
+             cutoff,
+             cursor["submissions"]
+           )}
       end
 
     %{
       result
-      | cursor: cursor |> Map.put(key, result.cursor) |> Map.put("phase", rem(phase + 1, 2))
+      | cursor: cursor |> Map.put(key, result.cursor) |> Map.put("phase", rem(phase + 1, 3))
     }
   end
 
@@ -103,13 +113,14 @@ defmodule FavnStoragePostgres.Maintenance.RetentionFamilies do
   def preview!(:execution_history, policy, cutoff) do
     groups = FavnStoragePostgres.Maintenance.History.preview!(policy, cutoff)
     tasks = FavnStoragePostgres.Maintenance.TaskRetention.preview!(policy, cutoff)
+    submissions = FavnStoragePostgres.Maintenance.SubmissionRetention.preview!(policy, cutoff)
 
     %{
       family: :execution_history,
       cutoff: cutoff,
-      owners: [groups, tasks],
-      eligible_count: groups.eligible_count + tasks.eligible_count,
-      complete?: groups.complete? and tasks.complete?
+      owners: [groups, tasks, submissions],
+      eligible_count: groups.eligible_count + tasks.eligible_count + submissions.eligible_count,
+      complete?: groups.complete? and tasks.complete? and submissions.complete?
     }
   end
 

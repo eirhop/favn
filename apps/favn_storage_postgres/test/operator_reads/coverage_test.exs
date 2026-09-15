@@ -29,6 +29,8 @@ defmodule FavnStoragePostgres.OperatorReads.CoverageTest do
     workspace_id = "coverage-workspace-" <> suffix
     other_workspace_id = "coverage-other-workspace-" <> suffix
 
+    FavnStoragePostgres.TestSupport.RunFixture.create(workspace_id, [])
+    FavnStoragePostgres.TestSupport.RunFixture.create(other_workspace_id, [])
     {:ok, context} = WorkspaceContext.new(workspace_id, "operator", [:customer_reader])
 
     {:ok, other_context} =
@@ -103,7 +105,7 @@ defmodule FavnStoragePostgres.OperatorReads.CoverageTest do
     Repo.insert!(%AssetWindowState{
       workspace_id: workspace_id,
       evidence_generation_id: generation_id,
-      manifest_version_id: "manifest-coverage",
+      manifest_version_id: "mv-" <> workspace_id,
       target_id: target_id,
       window_key: window_key,
       window_start: window_start,

@@ -46,7 +46,7 @@ defmodule FavnStoragePostgres.Maintenance.History do
     AND NOT EXISTS (SELECT 1 FROM members m JOIN favn_control.run_submissions x ON x.workspace_id=m.workspace_id AND (x.run_id=m.run_id OR x.cancellation_owner_run_id=m.run_id)
   WHERE x.terminal_at IS NULL OR x.terminal_at >= $3 OR x.status IN ('queued','preparing','admitting')
     OR x.retry_of_submission_id IS NOT NULL OR x.superseded_by_submission_id IS NOT NULL
-    OR EXISTS (SELECT 1 FROM favn_control.run_submission_commands c WHERE c.workspace_id=x.workspace_id AND c.submission_id=x.submission_id)
+    OR EXISTS (SELECT 1 FROM favn_control.run_submission_commands c WHERE c.workspace_id=x.workspace_id AND (c.submission_id=x.submission_id OR (c.result->'submission_ids') ? x.submission_id))
     OR EXISTS (SELECT 1 FROM favn_control.run_submissions retry WHERE retry.workspace_id=x.workspace_id
       AND (retry.retry_of_submission_id=x.submission_id OR retry.retry_root_id=x.submission_id)
       AND NOT EXISTS (SELECT 1 FROM members r WHERE r.run_id=retry.run_id OR r.run_id=retry.cancellation_owner_run_id)))

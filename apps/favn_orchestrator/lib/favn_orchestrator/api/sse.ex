@@ -140,6 +140,10 @@ defmodule FavnOrchestrator.API.SSE do
         Process.cancel_timer(heartbeat_ref)
         conn
 
+      {:error, %PersistenceError{kind: :not_found}} ->
+        Process.cancel_timer(heartbeat_ref)
+        conn
+
       {:error, reason} ->
         Logger.error("sse.persistence_delivery failed: #{inspect(reason)}")
         persistence_loop(conn, context, stream, cursor, heartbeat_ref)

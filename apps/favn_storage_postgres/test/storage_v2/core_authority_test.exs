@@ -1,6 +1,19 @@
 defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   use ExUnit.Case, async: false
 
+  defmodule SSEProbe do
+    def send_chunked(observer, _status, _headers), do: {:ok, "", observer}
+
+    def chunk(observer, body) do
+      if String.contains?(IO.iodata_to_binary(body), "event: stream.ready") do
+        send(observer, {:sse_ready, self()})
+        receive do: (:release_sse -> :ok)
+      end
+
+      :ok
+    end
+  end
+
   import Ecto.Query
   import ExUnit.CaptureLog
 
@@ -3011,7 +3024,42 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       end)
     end
 
+    # Evidence alone protects the entire manifest before any package link disappears.
+    evidence_sql = """
+    INSERT INTO favn_control.asset_evidence_bindings
+      (workspace_id,target_id,evidence_generation_id,initial_manifest_id,created_at)
+    VALUES ($1,'retention-evidence',$2,$3,clock_timestamp())
+    """
+
+    evidence_params = [fixture.workspace_id, "ag_" <> String.duplicate("a", 64), id]
+    SQL.query!(Repo, evidence_sql, evidence_params)
+    assert {:ok, %{deleted_count: 0}} = batch.(cursor, policy)
+
+    assert {:ok, %{manifest_version_id: ^id}} =
+             RegistryStore.get_manifest(
+               %FavnOrchestrator.Persistence.Queries.ManifestSelector.ById{
+                 manifest_version_id: id
+               }
+             )
+
+    assert %{rows: [[12]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.manifest_execution_packages WHERE manifest_version_id=$1",
+               [id]
+             )
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.asset_evidence_bindings WHERE workspace_id=$1 AND target_id='retention-evidence'",
+      [fixture.workspace_id]
+    )
+
     assert {:ok, %{deleted_count: 5, cursor: cursor}} = batch.(cursor, policy)
+
+    assert {:error, %Postgrex.Error{postgres: %{constraint: "registry_history_retiring"}}} =
+             SQL.query(Repo, evidence_sql, evidence_params)
+
     assert {:error, %{kind: :expired}} = RegistryStore.register_manifest(register)
 
     assert {:error, %{kind: :expired}} =
@@ -3043,6 +3091,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  manifest_version_id: id
                }
              )
+
+    # Logical references have no FK, so the trigger must also reject a deleted owner.
+    freshness_sql = """
+    INSERT INTO favn_control.asset_freshness_states
+      (workspace_id,deployment_id,target_id,freshness_key,status,payload,source_publication_id,updated_at,evidence_generation_id,manifest_version_id)
+    VALUES ($1,$2,'retention-evidence','key','ok','{}',1,clock_timestamp(),'generation',$3)
+    """
+
+    for {deployment, manifest} <- [
+          {fixture.deployment_id, id},
+          {"missing-deployment", fixture.version.manifest_version_id}
+        ] do
+      assert {:error, %Postgrex.Error{postgres: %{constraint: "registry_history_retiring"}}} =
+               SQL.query(Repo, freshness_sql, [fixture.workspace_id, deployment, manifest])
+    end
 
     # Formerly linked packages become eligible; their first_linked_at is not a permanent hold.
     hashes =
@@ -5348,6 +5411,25 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:error, %{kind: :expired}} = RunnerTaskStore.enqueue(late)
 
+    assert {:error, %{kind: :expired}} =
+             RunnerTaskStore.request_cancellation(
+               %FavnOrchestrator.Persistence.Commands.RequestRunnerTaskCancellation{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "late-cancel:" <> id,
+                 task_id: hd(commands).task_id,
+                 reason: :operator_request,
+                 issued_at: now,
+                 occurred_at: now
+               }
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_task_command_tasks WHERE workspace_id=$1 AND command_id=$2",
+               [fixture.workspace_id, "late-cancel:" <> id]
+             )
+
     assert {:ok, %{deleted_count: 0}} =
              batch.(%{policy | excluded_workspace_ids: [fixture.workspace_id]}, cursor)
 
@@ -5521,6 +5603,29 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       end)
     end
 
+    {:ok, _} = Application.ensure_all_started(:phoenix_pubsub)
+
+    if is_nil(Process.whereis(FavnOrchestrator.PubSub)),
+      do: start_supervised!({Phoenix.PubSub, name: FavnOrchestrator.PubSub})
+
+    observer = self()
+
+    stream =
+      Task.async(fn ->
+        receive do: (:start_sse -> :ok)
+
+        conn = %{
+          Plug.Test.conn(:get, "/api/orchestrator/v1/streams/runs")
+          | adapter: {SSEProbe, observer}
+        }
+
+        SSE.stream(conn, fixture.workspace_context, {:run, run.id, 0})
+      end)
+
+    Sandbox.allow(Repo, self(), stream.pid)
+    send(stream.pid, :start_sse)
+    assert_receive {:sse_ready, _}, 5_000
+
     assert {:ok, %{cursor: cursor}} = batch.(cursor)
 
     assert {:error, %{kind: :expired}} =
@@ -5568,6 +5673,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       end)
 
     assert final == :complete
+    send(stream.pid, :release_sse)
+    send(stream.pid, :sse_heartbeat)
+    assert %{state: :chunked} = Task.await(stream, 5_000)
 
     assert {:error, %{kind: :expired}} =
              RunStore.page_events(%PagePublishedRunEvents{
@@ -7626,7 +7734,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
            retry_class: retry_class,
            result: if(outcome == :succeeded, do: result, else: nil),
            error: error,
-           finished_at: DateTime.utc_now()
+           finished_at: Enum.max([DateTime.utc_now(), task.enqueued_at], DateTime)
          }) do
       {:ok, _ack} -> :ok
       {:error, reason} -> raise "failed to complete durable test task: #{inspect(reason)}"

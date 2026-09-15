@@ -1305,6 +1305,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       )
 
     if task.retiring, do: Repo.rollback(Error.new(:expired, "task history is retiring"))
+    # Parent locks are nonblocking: a cleaner holding the owner makes this writer roll back.
+    if task.run_id, do: FavnStoragePostgres.Maintenance.History.guard!(workspace_id, task.run_id)
+
+    if task.operation_id,
+      do:
+        FavnStoragePostgres.Maintenance.OperationRetention.guard!(workspace_id, task.operation_id)
+
     task
   end
 

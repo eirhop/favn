@@ -3596,6 +3596,39 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
   end
 
+  test "terminal child commands cannot create receipts after its run starts retiring", fixture do
+    run_id = "retiring-owner-#{random_id()}"
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [run_id])
+    assert {:ok, task} = Store.enqueue(enqueue_command(fixture, "retiring-owned", run_id: run_id))
+
+    cancel = %C.RequestRunnerTaskCancellation{
+      workspace_context: fixture.workspace_context,
+      command_id: "initial-cancel",
+      task_id: task.task_id,
+      reason: :operator_request,
+      issued_at: fixture.now,
+      occurred_at: fixture.now
+    }
+
+    assert {:ok, %{status: :cancelled}} = Store.request_cancellation(cancel)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET retiring=true WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, run_id]
+    )
+
+    assert {:error, %{kind: :expired}} =
+             Store.request_cancellation(%{cancel | command_id: "late-parent-cancel"})
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_task_command_tasks WHERE workspace_id=$1 AND command_id='late-parent-cancel'",
+               [fixture.workspace_id]
+             )
+  end
+
   test "operation cancellation fences queued claims and preserves shared work", fixture do
     run_id = "cancel-owned-#{random_id()}"
     FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [run_id])

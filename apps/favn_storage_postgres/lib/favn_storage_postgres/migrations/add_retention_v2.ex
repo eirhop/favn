@@ -4,6 +4,8 @@ defmodule FavnStoragePostgres.Migrations.AddRetentionV2 do
   @prefix "favn_control"
 
   def up do
+    create(index(:asset_evidence_bindings, [:initial_manifest_id], prefix: @prefix))
+
     drop(
       index(:execution_packages, [],
         prefix: @prefix,
@@ -74,12 +76,16 @@ defmodule FavnStoragePostgres.Migrations.AddRetentionV2 do
         SELECT retiring INTO retired FROM favn_control.workspace_deployments
           WHERE workspace_id=workspace AND deployment_id=identity FOR SHARE;
       END IF;
-      IF retired THEN
-        RAISE EXCEPTION 'registry history is retiring' USING ERRCODE='23514', CONSTRAINT='registry_history_retiring';
+      IF NOT FOUND OR retired THEN
+        RAISE EXCEPTION 'registry history is missing or retiring' USING ERRCODE='23514', CONSTRAINT='registry_history_retiring';
       END IF;
       RETURN NEW;
     END $$
     """)
+
+    execute(
+      "CREATE TRIGGER retention_initial_manifest_id BEFORE INSERT OR UPDATE OF initial_manifest_id ON favn_control.asset_evidence_bindings FOR EACH ROW EXECUTE FUNCTION favn_control.guard_retained_registry_reference('manifest', 'initial_manifest_id')"
+    )
 
     execute(
       "CREATE TRIGGER retention_manifest_version_id BEFORE INSERT OR UPDATE OF manifest_version_id ON favn_control.asset_freshness_states FOR EACH ROW EXECUTE FUNCTION favn_control.guard_retained_registry_reference('manifest', 'manifest_version_id')"
@@ -207,6 +213,8 @@ defmodule FavnStoragePostgres.Migrations.AddRetentionV2 do
   end
 
   def down do
+    drop(index(:asset_evidence_bindings, [:initial_manifest_id], prefix: @prefix))
+
     drop(index(:execution_packages, [], prefix: @prefix, name: :execution_packages_retention_idx))
 
     create(

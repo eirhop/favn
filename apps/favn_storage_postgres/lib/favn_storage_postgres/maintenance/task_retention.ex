@@ -28,7 +28,7 @@ defmodule FavnStoragePostgres.Maintenance.TaskRetention do
             AND (item.workspace_id,item.task_id)>($5,$6)
           ORDER BY item.workspace_id,item.task_id LIMIT 1 FOR UPDATE OF item SKIP LOCKED
         )
-        SELECT item.workspace_id,item.task_id,(#{@eligible}) FROM candidate item
+        SELECT item.workspace_id,item.task_id FROM candidate item
         """,
         [
           cutoff,
@@ -39,6 +39,19 @@ defmodule FavnStoragePostgres.Maintenance.TaskRetention do
           (cursor || %{})["after_id"] || ""
         ]
       )
+
+    # Eligibility uses a fresh statement after the task lock, so a just-committed receipt is visible.
+    rows =
+      Enum.map(rows, fn [workspace, id] ->
+        %{rows: [[eligible]]} =
+          SQL.query!(
+            Repo,
+            "SELECT #{@eligible} FROM favn_control.runner_tasks item WHERE item.workspace_id=$3 AND item.task_id=$4",
+            [cutoff, policy.excluded_workspace_ids, workspace, id]
+          )
+
+        [workspace, id, eligible]
+      end)
 
     case rows do
       [] ->

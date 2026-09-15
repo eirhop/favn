@@ -240,6 +240,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "acceptance is atomic and permanent operation ids replay or conflict", context do
+    FavnStoragePostgres.TestSupport.RunFixture.create(context.workspace_id, [])
     command = accept_command(context)
 
     assert {:ok, :accepted, accepted} = Store.accept_manifest_deployment(command)
@@ -291,7 +292,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       owner: claim.owner,
       fence: activating.claim_fence,
       state: :succeeded,
-      deployment_id: "deployment-one",
+      deployment_id: "deploy-" <> context.workspace_id,
       activation_diagnostics: ManifestActivationDiagnostics.to_map(nil),
       occurred_at: DateTime.utc_now()
     }
@@ -309,7 +310,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
              })
 
     assert persisted.state == :succeeded
-    assert persisted.deployment_id == "deployment-one"
+    assert persisted.deployment_id == completion.deployment_id
     assert persisted.inspection_completed == 20
     assert persisted.inspection_total == 100
   end

@@ -119,7 +119,8 @@ defmodule FavnStoragePostgres.Maintenance.RegistryRetention do
 
   defp predicate(:manifest),
     do: """
-    NOT EXISTS (SELECT 1 FROM favn_control.asset_freshness_states r WHERE r.manifest_version_id=item.manifest_version_id)
+    NOT EXISTS (SELECT 1 FROM favn_control.asset_evidence_bindings r WHERE r.initial_manifest_id=item.manifest_version_id)
+    AND NOT EXISTS (SELECT 1 FROM favn_control.asset_freshness_states r WHERE r.manifest_version_id=item.manifest_version_id)
     AND NOT EXISTS (SELECT 1 FROM favn_control.asset_target_bindings r WHERE r.desired_manifest_id=item.manifest_version_id)
     AND NOT EXISTS (SELECT 1 FROM favn_control.asset_target_generations r WHERE r.creating_manifest_id=item.manifest_version_id)
     AND NOT EXISTS (SELECT 1 FROM favn_control.asset_window_states r WHERE r.manifest_version_id=item.manifest_version_id)

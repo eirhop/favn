@@ -59,7 +59,8 @@ already connected stream. Restart from a current snapshot instead of treating ex
 successful complete replay.
 
 Registry references are checked by explicit PostgreSQL triggers under owner row
-locks. This covers both foreign keys and logical references. A matching cached
+locks. This covers both foreign keys and logical references, and rejects references to
+missing owners as well as retiring owners. A matching cached
 manifest cannot make a retired or deleted identity readable again. Registry
 periods use original publication/insertion age; references still protect content
 while in use. Global packages remain protected by every manifest link and pin.
@@ -125,7 +126,7 @@ Eligibility always includes workspace holds and the relevant replay protections.
 | `run_ownerships` | execution_history | Terminal execution group, expired replay, settled descendants, no retained external reference; children first. |
 | `run_plans` | execution_history | Terminal execution group, expired replay, settled descendants, no retained external reference; children first. |
 | `run_submission_commands` | receipts | Seven-day replay plus clock-skew safety; explicit child budgets and workspace holds. |
-| `run_submissions` | execution_history | Terminal execution group, expired replay, settled descendants, no retained external reference; children first. |
+| `run_submissions` | execution_history | Retire with a group, or atomically after unadmitted cancellation or known failure; receipts, retry chains, unknown outcomes and allocated-run references protect them. |
 | `run_targets` | execution_history | Terminal execution group, expired replay, settled descendants, no retained external reference; children first. |
 | `runner_capacity_demands` | retained | Current coordination, identity, or reusable fencing state; lifecycle commands own settlement. |
 | `runner_sessions` | sessions | Expired sessions and settled intents; unresolved attribution and replay remain protected. |
@@ -162,12 +163,17 @@ result identities. Current task outcome and runtime-input error versions remain
 until their owning task can retire. Pins retire with their execution owner.
 
 Groups containing submission retry or supersession chains remain protected.
+Submissions that finish without creating a run can expire atomically after
+cancellation or a known failure. Cleanup locks cancellation/run authority and the
+submission before rechecking references; multi-submission receipts protect every
+listed identity. Unknown failures remain protected.
 Standalone terminal tasks retire in bounded child phases under the execution-history
 policy. Target-recovery operations always reference a materialization and generation;
 those records and their tasks remain protected as recovery evidence. This can also
 retain their manifest and deployment references.
 
-Registry predicates enumerate exact manifest/deployment columns across runs,
+Registry predicates include the initial manifest of each retained evidence binding
+and enumerate exact manifest/deployment columns across runs,
 submissions, tasks, operations, target/evidence state, scheduling and workspace
 activation. Deployment targets and package links retire with their registry owner.
 Permanent deployment operation identities can keep their registry content forever.

@@ -51,6 +51,27 @@ defmodule FavnStoragePostgres.RetentionTest do
     assert length(classified) == MapSet.size(MapSet.new(classified))
   end
 
+  test "registry reference guards cover every foreign-key reference, including evidence" do
+    %{rows: unguarded} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT c.conrelid::regclass::text, a.attname
+        FROM pg_constraint c
+        CROSS JOIN LATERAL unnest(c.conkey) AS key(attnum)
+        JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=key.attnum
+        WHERE c.contype='f'
+          AND c.confrelid IN ('favn_control.manifest_versions'::regclass, 'favn_control.workspace_deployments'::regclass)
+          AND a.attname <> 'workspace_id'
+          AND NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid=c.conrelid
+            AND t.tgname='retention_' || a.attname AND t.tgenabled='O')
+        """,
+        []
+      )
+
+    assert unguarded == []
+  end
+
   test "schema readiness detects a disabled retention reference guard" do
     assert {:ok, %{definition_fingerprint_matches?: true}} = Migrations.diagnostics(Repo)
 
