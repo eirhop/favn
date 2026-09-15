@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented; approved for PR review |
 | Type | Feature and migration |
 | Primary issue | [#704: Built-in retention policies and scheduled PostgreSQL cleanup](https://github.com/eirhop/favn/issues/704) |
 | Pull request | Pending |
@@ -666,11 +666,11 @@ acceptance evidence, not a production execution-load qualification.
 
 | Finding | Correction | Recheck |
 | --- | --- | --- |
-| P1: evidence-only manifest could lose package links | Add the initial evidence-manifest reference predicate, indexed writer guard, and schema-wide FK guard coverage; prove all package links remain | Pending |
-| P1: logical references could point to deleted registry owners | Reject missing owners; use real registry fixtures; test missing manifests and deployments | Pending |
-| P1: late child-task commands could create receipts after parent retirement | Nonblocking parent locks in the shared task-command lock path; prove late cancellation creates no receipt for retiring runs/rebuilds | Pending |
-| P2: unadmitted terminal submissions never expired | Atomic fixed cleanup with unknown/retry/result/receipt protections; check every ID in multi-submission receipts | Pending |
-| P2: connected SSE stalled after run deletion | Treat not-found as terminal during delivery; exercise an open stream across complete deletion | Pending |
+| P1: evidence-only manifest could lose package links | Add the initial evidence-manifest reference predicate, indexed writer guard, and schema-wide FK guard coverage; prove all package links remain | Passed |
+| P1: logical references could point to deleted registry owners | Reject missing owners; use real registry fixtures; test missing manifests and deployments | Passed |
+| P1: late child-task commands could create receipts after parent retirement | Nonblocking parent locks in the shared task-command lock path; prove late cancellation creates no receipt for retiring runs/rebuilds | Passed |
+| P2: unadmitted terminal submissions never expired | Atomic fixed cleanup with unknown/retry/result/receipt protections; check every ID in multi-submission receipts | Passed |
+| P2: connected SSE stalled after run deletion | Treat not-found as terminal during delivery; exercise an open stream across complete deletion | Passed |
 
 Standalone task and submission reference checks also use a new statement after
 acquiring the row lock, so a reference committed just before lock acquisition is
@@ -688,3 +688,15 @@ the new rotation regression; the existing worker-recovery test hit its 100 ms
 message timeout and passed unchanged in isolation (1 passed, 49 excluded).
 Evidence: `/tmp/favn-704-final-submissions.log` and
 `/tmp/favn-704-final-submission-retry.log`.
+
+### Final verdict at `5933fb7a`
+
+Astra (`gpt-6-astra`, xhigh) approved PR creation with no remaining actionable
+findings. All five original corrections and the submission-rotation correction
+passed recheck, including the independent rollback reproduction. The reviewer
+confirmed the approved baseline is unchanged and accepted the documented
+complexity overrun: no simpler structural change preserves the reference guards
+and bounded cleanup. The reduced benchmark does not block PR review, but the
+original representative execution-load/CPU/I/O acceptance criterion remains
+incomplete and must not be claimed complete. Final formatting and
+warnings-as-errors compilation passed.
