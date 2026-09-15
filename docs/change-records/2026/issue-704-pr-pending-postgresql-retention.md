@@ -565,11 +565,11 @@ slice 4. Mixed files are counted entirely in their primary slice.
 | --- | ---: | ---: | ---: | ---: |
 | 1 | 181 | 26 | 224 | 0 |
 | 2 | 448 | 347 | 494 | 11 |
-| 3 | 2,007 | 145 | 1,041 | 69 |
+| 3 | 2,008 | 145 | 1,082 | 69 |
 | 4 | 504 | 226 | 389 | 45 |
-| Total | 3,140 | 744 | 2,148 | 125 |
+| Total | 3,141 | 744 | 2,189 | 125 |
 
-Slice 3 exceeds the production estimate by 707 lines. The additional code is
+Slice 3 exceeds the production estimate by 708 lines. The additional code is
 explicit retirement phases, references and reader/writer guards across existing
 owners, including standalone tasks and atomic unadmitted-submission cleanup identified
 during final review; it adds no general graph, queue or policy
@@ -676,3 +676,15 @@ Standalone task and submission reference checks also use a new statement after
 acquiring the row lock, so a reference committed just before lock acquisition is
 visible. Initial SSE error behavior stays unchanged. All review reproductions
 rolled back; corrections are qualified on another disposable database.
+
+The recheck found one further liveness edge: a cancelled uncreated child of a
+retiring run reached the submission guard and rolled back family rotation. The
+initial candidate query now excludes existing run/owner rows; the fresh post-lock
+reference check remains. A regression proves the child survives and rotation
+advances from submissions back to groups.
+
+Final submission owning suite exercised 50 cases: 49 passed initially, including
+the new rotation regression; the existing worker-recovery test hit its 100 ms
+message timeout and passed unchanged in isolation (1 passed, 49 excluded).
+Evidence: `/tmp/favn-704-final-submissions.log` and
+`/tmp/favn-704-final-submission-retry.log`.

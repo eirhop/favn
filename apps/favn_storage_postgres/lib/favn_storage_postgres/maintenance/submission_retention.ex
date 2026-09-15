@@ -8,6 +8,7 @@ defmodule FavnStoragePostgres.Maintenance.SubmissionRetention do
   item.terminal_at<$1 AND NOT (item.workspace_id=ANY($2::text[]))
   AND (item.status='cancelled' OR (item.status='failed' AND item.failure_kind IN ('safe','permanent')))
   AND item.failure_kind IS DISTINCT FROM 'unknown'
+  AND NOT EXISTS (SELECT 1 FROM favn_control.runs r WHERE r.workspace_id=item.workspace_id AND r.run_id IN (item.run_id,item.cancellation_owner_run_id))
   """
   @unreferenced """
   item.retry_of_submission_id IS NULL AND item.superseded_by_submission_id IS NULL

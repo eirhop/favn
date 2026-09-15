@@ -823,6 +823,47 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
              })
   end
 
+  test "submission cleanup skips retiring group children and advances rotation", fixture do
+    {:ok, child} = Store.enqueue(enqueue_command(fixture, "retiring-child"))
+
+    assert {:ok, _} =
+             Store.request_cancellation(cancellation_command(fixture, child, "not needed"))
+
+    root = "retiring-submission-owner"
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [root])
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET retiring=true WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, root]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.run_submissions SET cancellation_owner_run_id=$3, terminal_at=clock_timestamp()-interval '8 days' WHERE workspace_id=$1 AND submission_id=$2",
+      [fixture.workspace_id, child.submission_id, root]
+    )
+
+    assert {:ok, %{deleted_count: 0, cursor: %{"phase" => 0, "submissions" => nil}}} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.Maintenance.Retention.lock!()
+
+               FavnStoragePostgres.Maintenance.RetentionFamilies.delete!(
+                 :execution_history,
+                 %FavnOrchestrator.Retention.Policy{},
+                 DateTime.add(DateTime.utc_now(), -605_100, :second),
+                 %{"phase" => 2}
+               )
+             end)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.run_submissions WHERE workspace_id=$1 AND submission_id=$2",
+               [fixture.workspace_id, child.submission_id]
+             )
+  end
+
   test "distinct deliberate commands create immutable retries only from safe failures", fixture do
     safe_failure = fail_submission(fixture, "safe-retry", :safe)
 
