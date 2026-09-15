@@ -390,7 +390,9 @@ recreating that disposable projection so historical run detail is available.
 - completed idempotency records: purge after seven days;
 - expired/revoked sessions: retain for the approved audit window;
 - terminal claims and projection failures: bounded policy-driven retention;
-- logs: purge in bounded batches after the approved audit window;
+- stored diagnostic logs: purge in bounded batches after the approved audit window;
+  [derived lifecycle messages](../storage/postgresql/architecture.md#lifecycle-messages-and-independent-diagnostics)
+  remain available with their run events;
 - unreferenced execution packages: purge at platform scope after a publication grace
   window; packages linked to any manifest are protected by the query and foreign key;
 - canonical runs, run events, backfills, manifests, audit records, and published

@@ -1175,14 +1175,17 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     assert late_log_id < early_entry.log_id
 
     assert {:ok, [_early_publication]} = Sequencer.sequence_batch(10)
-    assert {:ok, [early_replay]} = Logs.replay(fixture.workspace_context, 0, %{}, limit: 10)
+
+    assert {:ok, %{items: [early_replay]}} =
+             Logs.replay(fixture.workspace_context, 0, %{}, limit: 10)
+
     assert early_replay.message == early_command.entries |> hd() |> Map.fetch!(:message)
 
     send(late.pid, :commit)
     assert {:ok, ^late_log_id} = Task.await(late, 10_000)
     assert {:ok, [_late_publication]} = Sequencer.sequence_batch(10)
 
-    assert {:ok, [late_replay]} =
+    assert {:ok, %{items: [late_replay]}} =
              Logs.replay(
                fixture.workspace_context,
                early_replay.global_sequence,
@@ -1230,22 +1233,23 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
                command_id: "identity-log-command:" <> suffix
              )
 
-    assert_receive {:favn_log_entry, live}, 5_000
-    assert String.starts_with?(live.metadata["node_key"], "node:")
-    assert live.metadata["asset_ref"] == "asset:Elixir.MyApp.ConcurrentAsset:asset"
+    assert {:ok, [_publication]} = Sequencer.sequence_batch(10)
+    FavnOrchestrator.Events.broadcast_persistence_publication()
+    assert_receive :favn_logs_available, 5_000
 
     assert {:ok, historical} =
              Logs.page(fixture.workspace_context, filter, direction: :older, limit: 10)
 
-    assert Enum.map(historical.items, & &1.message) == ["canonical identity"]
+    assert [live] = historical.items
+    assert live.message == "canonical identity"
+    assert String.starts_with?(live.node_key, "node:")
+    assert live.asset_ref == "asset:Elixir.MyApp.ConcurrentAsset:asset"
 
-    assert {:ok, [_publication]} = Sequencer.sequence_batch(10)
-
-    assert {:ok, [replayed]} =
+    assert {:ok, %{items: [replayed]}} =
              Logs.replay(fixture.workspace_context, 0, filter, limit: 10)
 
-    assert replayed.node_key == live.metadata["node_key"]
-    assert replayed.asset_ref == live.metadata["asset_ref"]
+    assert replayed.node_key == live.node_key
+    assert replayed.asset_ref == live.asset_ref
   end
 
   test "log replay applies asset filters before its bounded publication page", fixture do
@@ -1289,7 +1293,7 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     assert length(persisted) == 201
     assert {:ok, [_publication]} = Sequencer.sequence_batch(10)
 
-    assert {:ok, [matching]} =
+    assert {:ok, %{items: [matching]}} =
              Logs.replay(
                fixture.workspace_context,
                0,
@@ -1298,6 +1302,407 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
              )
 
     assert matching.message == "matching log"
+  end
+
+  test "step events replace routine writes and mix with independent diagnostics", fixture do
+    run = create_run!(fixture)
+    running = RunState.transition(run, status: :running)
+    command = transition_command(fixture, running, :step_running)
+
+    command = %{
+      command
+      | event:
+          Map.merge(command.event, %{
+            entity: :step,
+            asset_ref: {MyApp.ConcurrentAsset, :asset},
+            data: %{
+              asset_step_id: "step",
+              runner_task_id: "task",
+              attempt: 2,
+              node_key: {{MyApp.ConcurrentAsset, :asset}, nil}
+            }
+          })
+    }
+
+    assert {:ok, committed} = RunStore.commit_transition(command)
+
+    assert :ok =
+             FavnOrchestrator.TransitionWriter.publish_committed(
+               fixture.workspace_context,
+               committed
+             )
+
+    assert {:ok, %{replayed?: true}} = RunStore.commit_transition(command)
+
+    assert {:error, %{kind: :conflict}} =
+             RunStore.commit_transition(%{
+               command
+               | event: Map.put(command.event, :status, :error)
+             })
+
+    for table <- ["log_entries", "log_batches"] do
+      assert %{rows: [[0]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT count(*) FROM favn_control.#{table} WHERE workspace_id = $1",
+                 [fixture.workspace_id]
+               )
+    end
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.outbox_events WHERE workspace_id = $1 AND event_kind = 'logs.batch.appended'",
+               [fixture.workspace_id]
+             )
+
+    assert {:ok, %{items: [], replay_cursor: before}} = Logs.page(fixture.workspace_context, %{})
+    drain_outbox()
+
+    assert {:ok, %{items: [entry], replay_cursor: after_event}} =
+             Logs.replay(fixture.workspace_context, before, %{})
+
+    assert entry.message == "asset execution started on a runner"
+    assert entry.attempt == 2
+    assert entry.runner_task_id == "task"
+
+    for filter <- [
+          %{run_id: run.id},
+          %{asset_step_id: "step"},
+          %{runner_task_id: "task"},
+          %{node_key: {{MyApp.ConcurrentAsset, :asset}, nil}},
+          %{asset_ref: {MyApp.ConcurrentAsset, :asset}},
+          %{levels: [:info], sources: [:orchestrator], stream: :system},
+          %{since: running.updated_at, until: running.updated_at}
+        ] do
+      assert {:ok, %{items: [^entry]}} = Logs.page(fixture.workspace_context, filter)
+    end
+
+    for filter <- [
+          %{levels: [:error]},
+          %{sources: [:runner]},
+          %{stream: :stderr},
+          %{runner_task_id: "other"}
+        ] do
+      assert {:ok, %{items: []}} = Logs.page(fixture.workspace_context, filter)
+    end
+
+    diagnostic = log_batch_command(fixture, "mixed-" <> random_id())
+
+    diagnostic = %{
+      diagnostic
+      | entries: [%{hd(diagnostic.entries) | occurred_at: running.updated_at}]
+    }
+
+    assert {:ok, [_]} = LogStore.append_batch(diagnostic)
+    drain_outbox()
+
+    assert {:ok, %{items: [diagnostic_entry]}} =
+             Logs.replay(fixture.workspace_context, after_event, %{})
+
+    assert diagnostic_entry.stream == :system
+
+    assert {:ok, %{items: [first], next_cursor: next, has_more?: true}} =
+             Logs.page(fixture.workspace_context, %{}, limit: 1)
+
+    assert {:ok, %{items: [second], has_more?: false}} =
+             Logs.page(fixture.workspace_context, %{}, after: next, limit: 1)
+
+    assert MapSet.new([first.id, second.id]) == MapSet.new([entry.id, diagnostic_entry.id])
+
+    assert {:ok, %{deleted_count: 1}} =
+             LogStore.purge(%FavnOrchestrator.Persistence.Commands.PurgeLogs{
+               workspace_context: fixture.workspace_context,
+               cutoff: DateTime.add(running.updated_at, 1, :second)
+             })
+
+    assert {:ok, %{items: [^entry]}} = Logs.page(fixture.workspace_context, %{})
+  end
+
+  test "replay drains a thousand-entry batch and makes progress across zero matches", fixture do
+    batch = log_batch_command(fixture, "large-" <> random_id())
+    batch = %{batch | entries: Enum.map(1..1_000, &%{hd(batch.entries) | message: "entry #{&1}"})}
+    assert {:ok, _} = LogStore.append_batch(batch)
+    drain_outbox()
+
+    assert {:ok, %{items: a, has_more?: true, replay_cursor: cursor}} =
+             Logs.replay(fixture.workspace_context, 0, %{}, limit: 499)
+
+    assert length(a) == 499
+    assert cursor.batch_offset == 498
+
+    assert {:ok, %{items: b, has_more?: true, replay_cursor: cursor}} =
+             Logs.replay(fixture.workspace_context, cursor, %{}, limit: 499)
+
+    assert {:ok, %{items: c, has_more?: false, replay_cursor: caught_up}} =
+             Logs.replay(fixture.workspace_context, cursor, %{}, limit: 499)
+
+    assert Enum.map(a ++ b ++ c, & &1.message) == Enum.map(1..1_000, &"entry #{&1}")
+
+    assert {:ok, %{items: [], replay_cursor: ^caught_up}} =
+             Logs.replay(fixture.workspace_context, 0, %{runner_task_id: "missing"})
+
+    assert {:error, _} =
+             Logs.page(fixture.workspace_context, %{},
+               after: %{log_id: 1, occurred_at: DateTime.utc_now()}
+             )
+
+    assert {:error, _} =
+             Logs.replay(
+               fixture.workspace_context,
+               %{publication_id: 1, batch_offset: 1_000},
+               %{}
+             )
+  end
+
+  test "history retains its snapshot when a later publication has an earlier occurrence",
+       fixture do
+    batch = log_batch_command(fixture, "snapshot-" <> random_id())
+    at = batch.occurred_at
+    batch = %{batch | entries: Enum.map(1..3, &%{hd(batch.entries) | message: "old #{&1}"})}
+    assert {:ok, _} = LogStore.append_batch(batch)
+    drain_outbox()
+
+    assert {:ok, %{items: [_], next_cursor: next, replay_cursor: replay}} =
+             Logs.page(fixture.workspace_context, %{}, limit: 1)
+
+    late = log_batch_command(fixture, "later-" <> random_id())
+    late = %{late | entries: [%{hd(late.entries) | occurred_at: DateTime.add(at, -1, :second)}]}
+    assert {:ok, _} = LogStore.append_batch(late)
+    drain_outbox()
+    assert {:ok, %{items: old}} = Logs.page(fixture.workspace_context, %{}, after: next)
+    assert length(old) == 2
+    assert Enum.all?(old, &String.starts_with?(&1.message, "old"))
+    assert {:ok, %{items: [new]}} = Logs.replay(fixture.workspace_context, replay, %{})
+    assert new.message == hd(late.entries).message
+  end
+
+  test "a late event commit is replayed after an earlier diagnostic publication", fixture do
+    drain_outbox()
+    assert {:ok, %{items: [], replay_cursor: start}} = Logs.page(fixture.workspace_context, %{})
+    run = create_run!(fixture)
+    running = RunState.transition(run, status: :running)
+    command = transition_command(fixture, running, :step_finished)
+    owner = self()
+
+    late =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          assert {:ok, _} = RunStore.commit_transition(command)
+          send(owner, :event_inserted)
+
+          receive do
+            :commit -> :ok
+          after
+            5_000 -> Repo.rollback(:commit_signal_timeout)
+          end
+        end)
+      end)
+
+    assert_receive :event_inserted, 5_000
+    assert {:ok, [_]} = LogStore.append_batch(log_batch_command(fixture, random_id()))
+    drain_outbox()
+
+    assert {:ok, %{items: [diagnostic], replay_cursor: cursor}} =
+             Logs.replay(fixture.workspace_context, start, %{})
+
+    assert diagnostic.source == :runner
+    send(late.pid, :commit)
+    assert {:ok, :ok} = Task.await(late)
+    drain_outbox()
+    assert {:ok, %{items: [event]}} = Logs.replay(fixture.workspace_context, cursor, %{})
+    assert event.message == "asset execution finished"
+    assert event.global_sequence > diagnostic.global_sequence
+
+    assert {:error, _} =
+             Logs.replay(
+               fixture.workspace_context,
+               %{publication_id: 9_999_999_999, batch_offset: 0},
+               %{}
+             )
+  end
+
+  @tag :slow
+  @tag :lifecycle_measurement
+  @tag timeout: 300_000
+  test "measures lifecycle write cost and actual bounded query plans", fixture do
+    scenarios = [
+      success: [:step_started, :step_running, :step_finished],
+      retry: [
+        :step_started,
+        :step_running,
+        :step_retry_scheduled,
+        :step_retry_started,
+        :step_running,
+        :step_finished
+      ],
+      cancellation: [:step_started, :step_running, :step_cancelled]
+    ]
+
+    samples =
+      Enum.map(scenarios, fn {name, types} ->
+        before = lifecycle_sizes()
+        %{rows: [[lsn]]} = SQL.query!(Repo, "SELECT pg_current_wal_insert_lsn()::text", [])
+        sql_counter = :ets.new(:lifecycle_query_counts, [:public])
+        handler = "lifecycle-count-#{fixture.workspace_id}"
+        on_exit(fn -> :telemetry.detach(handler) end)
+
+        :telemetry.attach(
+          handler,
+          [:favn_storage_postgres, :repo, :query],
+          fn _, _, metadata, table ->
+            verb =
+              metadata.query
+              |> to_string()
+              |> String.trim_leading()
+              |> String.split(" ", parts: 2)
+              |> hd()
+              |> String.upcase()
+
+            :ets.update_counter(table, verb, {2, 1}, {verb, 0})
+          end,
+          sql_counter
+        )
+
+        {microseconds, runs} =
+          :timer.tc(fn ->
+            Enum.map(1..100, fn _ ->
+              run = create_run!(fixture)
+
+              Enum.reduce(types, run, fn type, previous ->
+                run = RunState.transition(previous, status: :running)
+                command = transition_command(fixture, run, type)
+
+                command = %{
+                  command
+                  | command_id: "measure:#{run.id}:#{run.event_seq}",
+                    expected_sequence: previous.event_seq,
+                    event:
+                      %{command.event | sequence: run.event_seq}
+                      |> Map.merge(%{
+                        entity: :step,
+                        asset_ref: {MyApp.ConcurrentAsset, :asset},
+                        data: %{
+                          asset_step_id: "step-#{run.id}",
+                          runner_task_id: "task-#{run.id}",
+                          attempt: 1,
+                          node_key: {{MyApp.ConcurrentAsset, :asset}, nil}
+                        }
+                      })
+                }
+
+                assert {:ok, committed} = RunStore.commit_transition(command)
+
+                assert :ok =
+                         FavnOrchestrator.TransitionWriter.publish_committed(
+                           fixture.workspace_context,
+                           committed
+                         )
+
+                run
+              end)
+            end)
+          end)
+
+        :telemetry.detach(handler)
+        sql_counts = Map.new(:ets.tab2list(sql_counter))
+        :ets.delete(sql_counter)
+
+        %{rows: [[wal]]} =
+          SQL.query!(
+            Repo,
+            "SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(), $1::text::pg_lsn)::bigint",
+            [lsn]
+          )
+
+        after_sizes = lifecycle_sizes()
+
+        %{
+          scenario: name,
+          executions: 100,
+          transitions: length(types) * 100,
+          duration_us: microseconds,
+          wal_bytes: wal,
+          sql_counts: sql_counts,
+          before: before,
+          after: after_sizes,
+          run_id: List.last(runs).id
+        }
+      end)
+
+    drain_outbox()
+
+    for table <- ["run_events", "outbox_events", "log_entries", "log_batches"],
+        do: SQL.query!(Repo, "ANALYZE favn_control.#{table}", [])
+
+    run_id = List.last(samples).run_id
+
+    plans =
+      for {name, filter} <- [
+            workspace: %{},
+            run: %{run_id: run_id},
+            step: %{asset_step_id: "step-#{run_id}"},
+            task: %{runner_task_id: "task-#{run_id}"},
+            node: %{node_key: {{MyApp.ConcurrentAsset, :asset}, nil}},
+            asset: %{asset_ref: {MyApp.ConcurrentAsset, :asset}}
+          ],
+          direction <- [:older, :newer] do
+        owner = self()
+        handler = "lifecycle-query-#{fixture.workspace_id}"
+
+        :telemetry.attach(
+          handler,
+          [:favn_storage_postgres, :repo, :query],
+          fn _, _, metadata, owner ->
+            if String.contains?(to_string(metadata.query), "log_entries"),
+              do: send(owner, {:measured_query, metadata.query, metadata.params})
+          end,
+          owner
+        )
+
+        assert {:ok, _} =
+                 Logs.page(fixture.workspace_context, filter, direction: direction, limit: 200)
+
+        :telemetry.detach(handler)
+
+        {sql, params} =
+          receive do
+            {:measured_query, sql, params} -> {sql, params}
+          after
+            1_000 -> flunk("production log query was not captured")
+          end
+
+        %{rows: [[plan]]} =
+          SQL.query!(Repo, "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " <> sql, params)
+
+        %{filter: name, direction: direction, plan: plan}
+      end
+
+    result = %{samples: samples, plans: plans}
+
+    if path = System.get_env("FAVN_LOG_MEASUREMENT_PATH"),
+      do: File.write!(path, Jason.encode!(result, pretty: true))
+
+    assert length(plans) == 12
+  end
+
+  defp lifecycle_sizes do
+    for table <- ["runs", "run_events", "log_entries", "log_batches", "outbox_events"],
+        into: %{} do
+      %{rows: [[count, heap, indexes, total, toast]]} =
+        SQL.query!(
+          Repo,
+          """
+          SELECT (SELECT count(*) FROM favn_control.#{table}),
+            pg_relation_size('favn_control.#{table}'), pg_indexes_size('favn_control.#{table}'),
+            pg_total_relation_size('favn_control.#{table}'),
+            COALESCE((SELECT pg_total_relation_size(reltoastrelid) FROM pg_class WHERE oid = 'favn_control.#{table}'::regclass AND reltoastrelid != 0), 0)
+          """,
+          []
+        )
+
+      {table, %{rows: count, heap: heap, indexes: indexes, total: total, toast: toast}}
+    end
   end
 
   test "competing projectors advance one durable ordered cursor", fixture do

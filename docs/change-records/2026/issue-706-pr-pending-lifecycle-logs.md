@@ -2,15 +2,15 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
-| Implementation state | Record only; implementation has not started |
+| Status | Implementing |
+| Implementation state | Implementation complete; qualification and final review in progress |
 | Type | Persistence and operator read-path change |
 | Primary issue | [#706](https://github.com/eirhop/favn/issues/706) |
 | Pull request | Pending implementation workflow |
 | Related work | [#704 retention](https://github.com/eirhop/favn/issues/704); [#705 normalization](https://github.com/eirhop/favn/issues/705) |
 | Affected areas | favn_orchestrator, favn_storage_postgres, shared log DTOs in favn_core, log consumers in favn_view |
 | Prior reviewed plan commit | `89705bd493da5722d0e974884db7951ee8fd93ad`; superseded by the reset-only scope below |
-| Revised plan baseline | Independently reviewed locally; publish before implementation |
+| Revised plan baseline | `28952509`; approved reset-only plan preserved in Git |
 | Last updated | 2026-09-15 |
 
 ## One-minute summary
@@ -382,8 +382,26 @@ runtime tests, migration runs and benchmarks are not executed merely to write it
 
 ## Implementation outcome
 
-Not started. This request creates the planning record only. Runtime behavior,
-canonical product documentation and historical data are unchanged.
+Implemented the reset-only design in the issue worktree:
+
+- `Logs.Lifecycle` renders step events; `TransitionWriter` no longer writes logs.
+- The event codec preserves canonical identities across its bounded JSON passes.
+- PostgreSQL returns tagged lifecycle/diagnostic rows with one filtered, bounded
+  SQL snapshot, independent replay progress, and validated current cursors.
+- Four partial indexes cover history and event identity filters. The exact catalog
+  fingerprint was regenerated from a freshly bootstrapped PostgreSQL 18 database.
+- Publication wakeups replace log-payload delivery. The existing subscription
+  forwarder remains owned by its caller. View replay drains pages and retains
+  progress independently of display trimming; level/source changes reset history.
+- Canonical storage, retention, and feature documentation describe the new behavior.
+
+No existing development, staging, or production environment was reset. Verification
+uses a separate PostgreSQL Compose project and disposable databases created for
+this task. Runner transport batch storage remains unchanged; its pre-existing
+operator-visibility gap remains outside this implementation. The PR must reference
+#706 without claiming that outstanding criterion is complete.
+
+Final validation, measurements, complexity counts, and review follow below.
 
 ## Deviations from the approved plan
 
@@ -398,7 +416,19 @@ previous plan and its budgets remain in commit
 | In-place reader upgrade and compatible-reader rollback | Fresh bootstrap for deployment and rollback | Reset-only environment contract | Approved; justified |
 | Production additions 480-840; supporting additions 840-1,300 | Production additions 400-690; supporting additions 620-990 | Remove compatibility code and its test matrix | Approved; justified |
 
+### Implementation deviations
+
+| Approved plan | Actual change | Reason |
+| --- | --- | --- |
+| Push reviewed plan and open a draft before coding | PR creation follows implementation and final independent review | User explicitly requested this order on 2026-09-15 |
+| Retain independent diagnostic writes | Retain writes and remove unused payload-broadcast helpers | All log consumers now wake from committed publications; keeping a second, unused delivery API would add stale code |
+| Historical query implementation left open within SQL design | Small `Logs.Query` module builds the two-source statement | Keeps the store's mutation/validation code separate from the real, directly measurable SQL; no additional read service |
+
 ## Decision log
+
+- On 2026-09-15 the user authorized implementation, asked the primary agent to do
+  the work without implementation sub-agents, and requested Astra at xhigh for
+  final review before PR creation. This supersedes the usual draft-first order.
 
 - On 2026-09-15 the user removed backward compatibility and accepted environment
   resets. Remove lifecycle markers, legacy reads and cross-upgrade replay paths.
@@ -412,17 +442,120 @@ previous plan and its budgets remain in commit
 
 ## Verification evidence
 
-| Check | Result | Evidence boundary |
-| --- | --- | --- |
-| Issue and source inspection | Complete at origin/main `046f59d5` | Static findings; not live database behavior |
-| Independent plan review | Reset-only revision approved; all four deviations justified | Plan only; runner diagnostic visibility gate remains explicit |
-| Links, diagrams and whitespace | Eleven local links resolve; fences and flowchart node references checked; Mermaid syntax/meaning manually reviewed; whitespace check passed | Documentation only; rendered GitHub diagram verification remains before implementation |
+### Behavior and schema
 
-### Not verified
+- Warnings-as-errors compilation passed. The final renderer/codec/subscription
+  checks passed (17 tests). Whitespace and test-tier checks passed.
+- Orchestrator fast suite: 862/863 checks passed; the remaining unchanged
+  slot-owner monitor race passed on isolated rerun (5 tests). An earlier parallel
+  attempt had four 100 ms timing failures, all covered by the sequential run.
+- View fast suite: all 837 checks passed, including 135 doctests. This includes
+  empty bootstrap, page draining, duplicate wakeups, failed authorization/read,
+  backend-filter snapshot reset, local search, and periodic reconciliation tests.
+- PostgreSQL fast suite: 436/440 checks passed. The four failures involved existing
+  admission deadlines and runner-task timestamp fixtures; all passed on isolated
+  rerun (16 tests). No unrelated production or fixture changes were made for them.
+- New concurrency tests prove mixed history, every filter dimension, current
+  cursor validation, exact replay/conflicts, zero duplicate writes, unsequenced
+  events, late event/log commits, snapshot stability, 1,000-entry batch drainage,
+  empty-page progress, and diagnostic purge preserving lifecycle history.
+- The fast storage suite includes independent diagnostic redaction and accepted
+  runner-batch preservation, and fresh bootstrap/schema qualification. The new
+  catalog fingerprint is `d32ef8a8d9aea4e56cee626a41cb7918ab57e057e6790b13cf0c247929ab091b`.
+- Both record diagrams were rendered with Mermaid and visually inspected locally.
+  GitHub rendering is checked after PR creation under the user-directed workflow.
 
-Implementation correctness, fresh bootstrap, database query plans, net byte
-savings, environment reset, live deployment behavior and runner diagnostic
-operator visibility.
+The broad suites were not clean on their first invocation. Compilation during an
+initial parallel run also caused transient missing-module failures; verification
+was repeated sequentially after compilation. The results above retain the actual
+suite failures and isolated recheck boundaries rather than claiming one entirely
+green broad-suite invocation.
+
+### Measured write cost
+
+The slow `lifecycle_measurement` test uses the real transition store and
+`TransitionWriter.publish_committed/2`. It creates 100 run fixtures for each of
+three step-transition sequences: success (3 events), retry (6 events), and
+cancellation (3 events). These are persistence fixtures, not runner/SQL workload
+benchmarks. Run-state updates, event writes, canonical identities and indexes are
+included. Both benchmark runs passed.
+
+Baseline: source commit `046f59d5` in a temporary checkout with the same measurement
+test copied in. Candidate: this implementation. Each ran sequentially, with four
+BEAM schedulers, on its own freshly bootstrapped PostgreSQL 18 database in the
+isolated task container. No other task database writes ran during these final
+measurements. Earlier overlapping/timeout attempts were discarded.
+
+| Per 100 fixtures | Step events | Transactions before → after | SQL statements before → after | WAL bytes before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Success | 300 | 700 → 400 | 6,900 → 4,800 | 4,631,528 → 3,472,744 |
+| Retry | 600 | 1,300 → 700 | 11,400 → 7,200 | 8,195,096 → 5,781,256 |
+| Cancellation | 300 | 700 → 400 | 6,900 → 4,800 | 4,487,432 → 3,591,640 |
+
+Each routine transition removes exactly three inserts (entry, batch, log outbox),
+one transaction and two SELECTs. Event/run UPDATE counts are unchanged. Across
+all 300 fixtures, log entries and batches each go from 1,200 new rows to zero;
+outbox rows go from 2,700 to 1,500. Both builds retain 1,500 run events.
+
+| Relation | Added rows before → after | Heap bytes before → after | Index bytes before → after | Total bytes before → after |
+| --- | ---: | ---: | ---: | ---: |
+| `runs` | 300 → 300 | 1,269,760 → 851,968 | 1,785,856 → 1,818,624 | 3,088,384 → 2,703,360 |
+| `run_events` | 1,500 → 1,500 | 1,622,016 → 1,622,016 | 868,352 → 1,720,320 | 2,514,944 → 3,375,104 |
+| `log_entries` | 1,200 → 0 | 1,384,448 → 0 | 1,515,520 → 0 | 2,924,544 → 0 |
+| `log_batches` | 1,200 → 0 | 671,744 → 0 | 753,664 → 0 | 1,449,984 → 0 |
+| `outbox_events` | 2,700 → 1,500 | 1,400,832 → 622,592 | 696,320 → 344,064 | 2,121,728 → 999,424 |
+
+All measured TOAST deltas were zero. Totals include PostgreSQL relation auxiliary
+storage, so they need not equal heap plus indexes. Event/log/outbox total growth
+fell from 9,011,200 to 4,374,528 bytes, including the additional event indexes.
+Page allocation, dead tuples, checkpoints and timing affect these small local
+samples; they do not establish a production savings percentage or file shrinkage.
+WAL covers the write phase before sequencing; it does not claim downstream
+sequencer/projector cost. SQL counts include transaction-control statements.
+
+### Measured reads and tradeoff
+
+The same test captures the actual SQL and bound parameters emitted by `Logs.page`,
+then runs `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` after ANALYZE with ordinary
+planner settings. No index is forced. Dataset: 300 runs, 1,200 step events; the
+baseline also has 1,200 lifecycle log rows. Each call requests 200 entries plus
+one for continuation. This establishes local query behavior, not a large-scale
+latency SLO or a benchmark with maximum-size event payloads.
+
+| Filter | History ms before → after | Replay ms before → after |
+| --- | ---: | ---: |
+| workspace | 2.951 → 6.054 | 2.102 → 3.371 |
+| run | 0.138 → 0.306 | 0.252 → 0.266 |
+| step | 1.036 → 0.425 | 1.133 → 0.492 |
+| task | 0.203 → 0.281 | 0.222 → 0.226 |
+| node | 0.119 → 1.297 | 0.102 → 6.164 |
+| asset | 1.776 → 1.557 | 2.326 → 4.952 |
+
+The candidate's broad workspace plan scans 1,500 event rows (1,200 step matches)
+and 1,502 outbox rows, then bounds the returned page; it hits 289 shared buffers.
+Run/step/task queries use their targeted indexes, returning three matching rows
+with 20–53 buffer hits. Node/asset history uses the new partial indexes and reads
+201 matching events. Their broad first replay pages inspect 1,200 matching events;
+selective replay and larger retained histories still require workload monitoring.
+All recorded plans used warm shared buffers (zero shared reads).
+
+The baseline node query returned **zero** rows because its post-codec node identity
+was different from the canonical filter; its small time is not a valid performance
+comparison. The candidate returns the expected 201 rows. This is covered by the
+canonical-identity round-trip and filter tests.
+
+The chosen tradeoff is fewer writes and less retained storage in exchange for
+some slower broad reads. No additional projection table or worker was introduced
+to chase small-fixture query timings. Full JSON EXPLAIN outputs and per-scenario
+sizes were inspected locally; reproduce them with the slow tagged test and
+`FAVN_LOG_MEASUREMENT_PATH` pointing at a local JSON artifact.
+
+### Complexity and remaining boundaries
+
+Final counts, excluding this record: **554 production lines added, 448 deleted; 756 supporting lines added, 27 deleted**. Additions remain within the approved ranges. More production deletions come from removing obsolete broadcast/topic helpers. Fewer supporting deletions reflect adding coverage to the small existing log test surface; no legacy-compatibility tests were introduced. No reset of an existing
+environment, production workload test, mixed-version rollout or legacy-history
+conversion was performed. Runner diagnostic operator visibility remains the
+explicit pre-existing acceptance gap; this PR must not auto-close all of #706.
 
 ## Final review
 

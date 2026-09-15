@@ -38,8 +38,8 @@ defmodule FavnView.RunLogsLive do
   end
 
   @impl true
-  def handle_info({:favn_log_entry, entry}, socket),
-    do: {:noreply, LogsLiveSupport.add_live_log(socket, entry)}
+  def handle_info(:favn_logs_available, socket),
+    do: {:noreply, LogsLiveSupport.wakeup(socket)}
 
   def handle_info(:poll_logs, socket), do: {:noreply, LogsLiveSupport.poll(socket)}
 

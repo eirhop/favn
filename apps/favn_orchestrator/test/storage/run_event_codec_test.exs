@@ -32,7 +32,11 @@ defmodule FavnOrchestrator.Storage.RunEventCodecTest do
     assert normalized.entity == :step
     assert normalized.stage == 3
     assert normalized.occurred_at == occurred_at
-    assert normalized.data == %{"attempt" => 1}
+
+    assert normalized.data == %{
+             "attempt" => 1,
+             "log_asset_ref" => "asset:Elixir.MyApp.Asset:asset"
+           }
   end
 
   test "normalizes valid string event types" do

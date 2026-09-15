@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Storage.RunEventCodec do
   @moduledoc false
 
+  alias Favn.Log.Identity
   alias FavnOrchestrator.RunEvents.EventType
   alias FavnOrchestrator.Storage.JsonSafe
 
@@ -78,7 +79,8 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
          {:ok, asset_ref} <-
            normalize_asset_ref(Map.get(event, :asset_ref), Map.get(event, :data)),
          {:ok, stage} <- normalize_stage(Map.get(event, :stage), Map.get(event, :data)),
-         {:ok, data} <- normalize_data(Map.get(event, :data)) do
+         {:ok, data} <- normalize_data(Map.get(event, :data)),
+         {:ok, data} <- log_identities(data, Map.get(event, :data), asset_ref) do
       {:ok,
        %{
          schema_version: schema_version,
@@ -99,6 +101,37 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
   end
 
   def normalize(_run_id, event), do: {:error, {:invalid_run_event, event}}
+
+  defp log_identities(data, original, asset_ref) do
+    original = original || %{}
+
+    with {:ok, data} <-
+           put_identity(
+             data,
+             "log_node_key",
+             Map.get(original, :node_key, Map.get(original, "node_key")),
+             &Identity.node_key/1
+           ),
+         {:ok, data} <- put_identity(data, "log_asset_ref", asset_ref, &Identity.asset_ref/1) do
+      {:ok, data}
+    end
+  end
+
+  defp put_identity(data, key, value, normalizer) do
+    case Map.fetch(data, key) do
+      {:ok, identity} when is_binary(identity) ->
+        with {:ok, identity} <- normalizer.(identity), do: {:ok, Map.put(data, key, identity)}
+
+      {:ok, _invalid} ->
+        {:error, {:invalid_run_event_identity, key}}
+
+      :error when is_nil(value) ->
+        {:ok, data}
+
+      :error ->
+        with {:ok, identity} <- normalizer.(value), do: {:ok, Map.put(data, key, identity)}
+    end
+  end
 
   defp normalize_schema_version(nil), do: {:ok, 1}
   defp normalize_schema_version(value) when is_integer(value) and value > 0, do: {:ok, value}
@@ -193,13 +226,17 @@ defmodule FavnOrchestrator.Storage.RunEventCodec do
     do: {:error, {:invalid_run_event_field, :stage, value}}
 
   defp normalize_data(nil), do: {:ok, %{}}
-  defp normalize_data(data) when is_map(data), do: {:ok, JsonSafe.data(data)}
+
+  defp normalize_data(data) when is_map(data) do
+    identities = Map.take(data, ["log_node_key", "log_asset_ref"])
+    {:ok, Map.merge(JsonSafe.data(Map.drop(data, Map.keys(identities))), identities)}
+  end
 
   defp normalize_data(value),
     do: {:error, {:invalid_run_event_field, :data, value}}
 
   defp event_to_dto(event) when is_map(event) do
-    data = JsonSafe.data(Map.get(event, :data, %{}))
+    data = Map.get(event, :data, %{})
 
     %{
       "format" => @format,

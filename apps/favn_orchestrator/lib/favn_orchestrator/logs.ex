@@ -1,19 +1,26 @@
 defmodule FavnOrchestrator.Logs do
   @moduledoc """
-  Operator-facing PubSub topics and helpers for persisted backend logs.
-  """
+  Bounded lifecycle and diagnostic log history and replay.
 
-  require Logger
+  Pages contain `items`, `has_more?`, `next_cursor`, and `replay_cursor`.
+  History uses its snapshot's publication watermark, including when empty.
+  Replay continues with `replay_cursor`; drain while `has_more?` is true.
+  Default limit is 200, maximum 500. Publication notifications are wakeups;
+  callers read through the authorized facade rather than accepting payloads.
+
+  """
 
   alias Favn.Log.Cursor
   alias Favn.Log.Entry
   alias Favn.Log.Filter
+  alias FavnOrchestrator.Events
+  alias FavnOrchestrator.Logs.Lifecycle
+  alias FavnOrchestrator.Persistence.Results.LifecycleLog
+  alias FavnOrchestrator.Persistence.Results.LogPage
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Queries.PageLogs
   alias FavnOrchestrator.Persistence.Results.LogEntry, as: PersistedLogEntry
   alias FavnOrchestrator.Persistence.WorkspaceContext
-
-  @workspace_topic_prefix "favn:orchestrator:logs:workspace:"
 
   @doc "Returns one bounded PostgreSQL log page under an explicit workspace authority."
   @spec page(WorkspaceContext.t(), Filter.t() | map(), keyword()) ::
@@ -29,20 +36,27 @@ defmodule FavnOrchestrator.Logs do
              direction: Keyword.get(opts, :direction, :older),
              limit: Keyword.get(opts, :limit, 200)
            }) do
-      entries = Enum.map(page.items, &public_entry/1)
-
-      {:ok, %{page | items: entries}}
+      Enum.reduce_while(page.items, {:ok, []}, fn row, {:ok, entries} ->
+        case render_entry(row) do
+          {:ok, entry} -> {:cont, {:ok, [entry | entries]}}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, entries} -> {:ok, %{page | items: Enum.reverse(entries)}}
+        error -> error
+      end
     end
   end
 
   @doc "Replays logs newer than a commit-safe publication-and-batch-offset cursor."
   @spec replay(
           WorkspaceContext.t(),
-          Cursor.t() | non_neg_integer(),
+          Cursor.t() | map() | non_neg_integer(),
           Filter.t() | map(),
           keyword()
         ) ::
-          {:ok, [Entry.t()]} | {:error, term()}
+          {:ok, LogPage.t()} | {:error, term()}
   def replay(%WorkspaceContext{} = context, cursor, filter, opts \\ []) when is_list(opts) do
     with {:ok, publication_cursor} <- publication_cursor(cursor),
          {:ok, page} <-
@@ -53,7 +67,7 @@ defmodule FavnOrchestrator.Logs do
              direction: :newer,
              limit: Keyword.get(opts, :limit, 200)
            ) do
-      {:ok, page.items}
+      {:ok, page}
     end
   end
 
@@ -87,11 +101,9 @@ defmodule FavnOrchestrator.Logs do
         filter: normalized_filter
       })
       when is_binary(workspace_id) and workspace_id != "" and is_map(normalized_filter) do
-    topics = subscription_topics(workspace_id, normalized_filter)
-
     with {:ok, subscription} <-
-           start_subscription_forwarder(self(), topics, normalized_filter) do
-      {:ok, Map.merge(subscription, %{topics: topics, filter: normalized_filter})}
+           start_subscription_forwarder(self()) do
+      {:ok, Map.merge(subscription, %{filter: normalized_filter})}
     end
   end
 
@@ -106,54 +118,7 @@ defmodule FavnOrchestrator.Logs do
 
   def unsubscribe_logs(_subscription), do: {:error, :invalid_log_subscription}
 
-  @spec broadcast_log_entry(term()) :: :ok
-  def broadcast_log_entry(entry) do
-    message = {:favn_log_entry, entry}
-
-    case field(entry, :workspace_id) do
-      workspace_id when is_binary(workspace_id) and workspace_id != "" ->
-        broadcast_workspace_entry(workspace_id, entry, message)
-
-      _missing_workspace ->
-        Logger.warning("refused to broadcast log entry without workspace authority")
-    end
-
-    :ok
-  rescue
-    error ->
-      Logger.warning("failed to broadcast log entry: #{inspect(error)}")
-      :ok
-  end
-
-  @spec workspace_topic(String.t()) :: String.t()
-  def workspace_topic(workspace_id) when is_binary(workspace_id),
-    do: @workspace_topic_prefix <> workspace_id
-
-  @spec workspace_run_topic(String.t(), String.t()) :: String.t()
-  def workspace_run_topic(workspace_id, run_id)
-      when is_binary(workspace_id) and is_binary(run_id),
-      do: workspace_topic(workspace_id) <> ":run:" <> run_id
-
-  @spec workspace_asset_topic(String.t(), String.t(), String.t()) :: String.t()
-  def workspace_asset_topic(workspace_id, run_id, asset_step_id)
-      when is_binary(workspace_id) and is_binary(run_id) and is_binary(asset_step_id),
-      do: workspace_run_topic(workspace_id, run_id) <> ":asset:" <> asset_step_id
-
-  @spec pubsub_name() :: module()
-  def pubsub_name do
-    Application.get_env(:favn_orchestrator, :pubsub_name, FavnOrchestrator.PubSub)
-  end
-
-  defp subscribe_topics(topics) do
-    Enum.reduce_while(topics, :ok, fn topic, :ok ->
-      case Phoenix.PubSub.subscribe(pubsub_name(), topic) do
-        :ok -> {:cont, :ok}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp start_subscription_forwarder(owner, topics, filter) do
+  defp start_subscription_forwarder(owner) do
     parent = self()
     stop_ref = make_ref()
 
@@ -161,10 +126,10 @@ defmodule FavnOrchestrator.Logs do
       spawn(fn ->
         owner_ref = Process.monitor(owner)
 
-        case subscribe_topics(topics) do
+        case Events.subscribe_persistence_publications() do
           :ok ->
             send(parent, {__MODULE__, self(), :ready})
-            subscription_loop(owner, owner_ref, stop_ref, filter)
+            subscription_loop(owner, owner_ref, stop_ref)
 
           {:error, reason} ->
             send(parent, {__MODULE__, self(), {:error, reason}})
@@ -181,11 +146,11 @@ defmodule FavnOrchestrator.Logs do
     end
   end
 
-  defp subscription_loop(owner, owner_ref, stop_ref, filter) do
+  defp subscription_loop(owner, owner_ref, stop_ref) do
     receive do
-      {:favn_log_entry, entry} = message ->
-        if matches_filter?(entry, filter), do: send(owner, message)
-        subscription_loop(owner, owner_ref, stop_ref, filter)
+      :favn_persistence_published ->
+        send(owner, :favn_logs_available)
+        subscription_loop(owner, owner_ref, stop_ref)
 
       {:DOWN, ^owner_ref, :process, _pid, _reason} ->
         :ok
@@ -193,67 +158,6 @@ defmodule FavnOrchestrator.Logs do
       {:stop, ^stop_ref} ->
         :ok
     end
-  end
-
-  defp broadcast_workspace_entry(workspace_id, entry, message) do
-    _ = Phoenix.PubSub.broadcast(pubsub_name(), workspace_topic(workspace_id), message)
-
-    case entry_run_id(entry) do
-      run_id when is_binary(run_id) and run_id != "" ->
-        _ =
-          Phoenix.PubSub.broadcast(
-            pubsub_name(),
-            workspace_run_topic(workspace_id, run_id),
-            message
-          )
-
-        case field(entry, :asset_step_id) do
-          asset_step_id when is_binary(asset_step_id) and asset_step_id != "" ->
-            _ =
-              Phoenix.PubSub.broadcast(
-                pubsub_name(),
-                workspace_asset_topic(workspace_id, run_id, asset_step_id),
-                message
-              )
-
-            :ok
-
-          _other ->
-            :ok
-        end
-
-      _other ->
-        :ok
-    end
-  end
-
-  defp subscription_topics(workspace_id, filter) do
-    run_id = Map.get(filter, :run_id)
-    asset_step_id = Map.get(filter, :asset_step_id)
-
-    cond do
-      is_binary(run_id) and run_id != "" and is_binary(asset_step_id) and asset_step_id != "" ->
-        [workspace_asset_topic(workspace_id, run_id, asset_step_id)]
-
-      is_binary(run_id) and run_id != "" ->
-        [workspace_run_topic(workspace_id, run_id)]
-
-      true ->
-        [workspace_topic(workspace_id)]
-    end
-  end
-
-  defp matches_filter?(entry, filter) do
-    Enum.all?(filter, fn
-      {:levels, []} -> true
-      {:levels, levels} when is_list(levels) -> field(entry, :level) in levels
-      {:sources, []} -> true
-      {:sources, sources} when is_list(sources) -> field(entry, :source) in sources
-      {:since, %DateTime{} = since} -> DateTime.compare(field(entry, :occurred_at), since) != :lt
-      {:until, %DateTime{} = until} -> DateTime.compare(field(entry, :occurred_at), until) != :gt
-      {_key, nil} -> true
-      {key, expected} -> field(entry, key) == expected
-    end)
   end
 
   defp normalize_filter(filter) do
@@ -272,24 +176,6 @@ defmodule FavnOrchestrator.Logs do
   rescue
     error -> {:error, {:invalid_log_filter, error}}
   end
-
-  defp entry_run_id(entry), do: field(entry, :run_id)
-
-  defp field(%{__struct__: _struct} = value, key), do: map_field(value, key)
-
-  defp field(value, key) when is_map(value), do: map_field(value, key)
-
-  defp field(_value, _key), do: nil
-
-  defp map_field(value, key) do
-    Map.get(value, key) || Map.get(value, Atom.to_string(key)) ||
-      metadata_field(Map.get(value, :metadata) || Map.get(value, "metadata"), key)
-  end
-
-  defp metadata_field(metadata, key) when is_map(metadata),
-    do: Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
-
-  defp metadata_field(_metadata, _key), do: nil
 
   defp validate_optional_binary(filter, field) do
     case Map.get(filter, field) do
@@ -328,6 +214,10 @@ defmodule FavnOrchestrator.Logs do
     end
   end
 
+  defp publication_cursor(%{publication_id: id, batch_offset: offset} = cursor)
+       when is_integer(id) and id >= 0 and is_integer(offset) and offset in 0..999,
+       do: {:ok, cursor}
+
   defp publication_cursor(%Cursor{global_sequence: sequence}), do: publication_cursor(sequence)
 
   defp publication_cursor(0), do: {:ok, %{publication_id: 0, batch_offset: 0}}
@@ -343,6 +233,11 @@ defmodule FavnOrchestrator.Logs do
   end
 
   defp publication_cursor(_cursor), do: {:error, :invalid_cursor}
+
+  defp render_entry(%LifecycleLog{} = row),
+    do: Lifecycle.render(row.workspace_id, row.event_id, row.publication_id, row.event)
+
+  defp render_entry(%PersistedLogEntry{} = row), do: {:ok, public_entry(row)}
 
   defp public_entry(%PersistedLogEntry{} = entry) do
     metadata = entry.metadata || %{}

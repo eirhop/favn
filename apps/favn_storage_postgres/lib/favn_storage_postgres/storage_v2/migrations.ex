@@ -189,6 +189,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     maintenance_jobs
   )
   @critical_indexes ~w(
+    run_events_lifecycle_history_idx run_events_lifecycle_node_idx
+    run_events_lifecycle_asset_idx run_events_lifecycle_task_idx
     materialization_claims_unresolved_target_idx
     materialization_claims_workspace_id_effect_task_id_index
     target_operation_locks_workspace_id_effect_task_id_index

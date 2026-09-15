@@ -64,25 +64,6 @@ defmodule FavnView.LogsViewModel do
     |> Enum.join("\n\n")
   end
 
-  def latest_cursor(entries, scope, filter) do
-    entries
-    |> Enum.map(&Map.get(&1, :global_sequence))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.max(fn -> nil end)
-    |> case do
-      nil ->
-        nil
-
-      sequence ->
-        %Favn.Log.Cursor{
-          scope: scope,
-          run_id: filter.run_id,
-          asset_step_id: filter.asset_step_id,
-          global_sequence: sequence
-        }
-    end
-  end
-
   def merge_entries(existing, incoming) do
     (existing ++ List.wrap(incoming))
     |> Enum.uniq_by(&dedupe_key/1)
@@ -173,7 +154,7 @@ defmodule FavnView.LogsViewModel do
       Map.get(entry, :id) || "log-#{Map.get(entry, :global_sequence) || System.unique_integer()}"
 
   defp dedupe_key(entry) do
-    Map.get(entry, :global_sequence) || Map.get(entry, :id) ||
+    Map.get(entry, :id) || Map.get(entry, :global_sequence) ||
       {Map.get(entry, :producer_id), Map.get(entry, :producer_sequence)}
   end
 

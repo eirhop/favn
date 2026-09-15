@@ -11,7 +11,9 @@ defmodule FavnStoragePostgres.Logs.Store do
   alias FavnOrchestrator.Persistence.Commands.PurgeLogs
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Queries.PageLogs
-  alias FavnOrchestrator.Persistence.Results.CursorPage
+  alias FavnOrchestrator.Persistence.Results.LogPage
+  alias FavnOrchestrator.Persistence.Results.LifecycleLog
+  alias FavnStoragePostgres.Logs.Query
   alias FavnOrchestrator.Persistence.Results.LogEntry, as: LogEntryResult
   alias FavnOrchestrator.Persistence.Results.PurgeResult
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -25,7 +27,6 @@ defmodule FavnStoragePostgres.Logs.Store do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.Schemas.LogBatch
   alias FavnStoragePostgres.Schemas.LogEntry
-  alias FavnStoragePostgres.Schemas.OutboxEvent
 
   @max_entries 1_000
   @max_metadata_bytes 32 * 1_024
@@ -52,57 +53,86 @@ defmodule FavnStoragePostgres.Logs.Store do
   end
 
   @impl true
-  def page(%PageLogs{direction: :newer} = page) do
-    with :ok <- validate_page(page),
-         {:ok, filter} <- prepare_filter(page.filter) do
-      query =
-        from(entry in LogEntry,
-          join: batch in LogBatch,
-          on: batch.workspace_id == entry.workspace_id and batch.batch_id == entry.batch_id,
-          join: event in OutboxEvent,
-          on:
-            event.workspace_id == batch.workspace_id and
-              event.outbox_event_id == batch.outbox_event_id,
-          where:
-            entry.workspace_id == ^page.workspace_context.workspace_id and
-              not is_nil(event.publication_id),
-          order_by: [asc: event.publication_id, asc: entry.position],
-          select: {entry, event.publication_id},
-          limit: ^(page.limit + 1)
-        )
-        |> filter(filter)
-        |> after_publication(page.after)
-
-      result_page(Repo.all(query), page.limit, :newer)
-    end
-  rescue
-    error -> {:error, ErrorMapper.map(error)}
-  end
-
   def page(%PageLogs{} = page) do
     with :ok <- validate_page(page),
          {:ok, filter} <- prepare_filter(page.filter) do
-      query =
-        from(entry in LogEntry,
-          left_join: batch in LogBatch,
-          on: batch.workspace_id == entry.workspace_id and batch.batch_id == entry.batch_id,
-          left_join: event in OutboxEvent,
-          on:
-            event.workspace_id == batch.workspace_id and
-              event.outbox_event_id == batch.outbox_event_id,
-          where: entry.workspace_id == ^page.workspace_context.workspace_id,
-          select: {entry, event.publication_id}
-        )
-        |> filter(filter)
-        |> after_historical_cursor(page.after)
-        |> order_by([entry], desc: entry.occurred_at, desc: entry.log_id)
-        |> limit(^(page.limit + 1))
+      {sql, params} = Query.statement(page, filter)
+      %{rows: rows} = SQL.query!(Repo, sql, params)
+      [[watermark, current | _] | _] = rows
 
-      result_page(Repo.all(query), page.limit, :older)
+      if watermark > current or
+           ((page.direction == :newer and page.after) && page.after.publication_id > current) do
+        {:error, ErrorMapper.map(:invalid)}
+      else
+        result_page(rows, page, watermark)
+      end
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
   end
+
+  defp result_page(rows, page, watermark) do
+    entries = rows |> Enum.map(&Enum.drop(&1, 2)) |> Enum.reject(&(hd(&1) == nil))
+    page_rows = Enum.take(entries, page.limit)
+    has_more? = length(entries) > page.limit
+    last = List.last(page_rows)
+
+    replay_cursor =
+      if page.direction == :newer and has_more? do
+        %{publication_id: Enum.at(last, 3), batch_offset: Enum.at(last, 4)}
+      else
+        %{publication_id: watermark, batch_offset: 999}
+      end
+
+    {:ok,
+     %LogPage{
+       items: Enum.map(page_rows, &read_entry(&1, page.workspace_context.workspace_id)),
+       limit: page.limit,
+       has_more?: has_more?,
+       next_cursor: if(has_more?, do: next_cursor(last, page.direction, watermark)),
+       replay_cursor: replay_cursor
+     }}
+  end
+
+  defp read_entry(
+         [1, id, _at, publication, _position, _run, _batch, _source, _level, _message, event],
+         workspace
+       ) do
+    %LifecycleLog{
+      workspace_id: workspace,
+      event_id: id,
+      publication_id: publication,
+      event: event
+    }
+  end
+
+  defp read_entry(
+         [0, id, at, publication, position, run, batch, source, level, message, metadata],
+         workspace
+       ) do
+    %LogEntryResult{
+      workspace_id: workspace,
+      log_id: id,
+      occurred_at: utc(at),
+      publication_id: publication,
+      position: position,
+      run_id: run,
+      batch_id: batch,
+      source: source,
+      level: String.to_existing_atom(level),
+      message: message,
+      metadata: metadata
+    }
+  end
+
+  defp next_cursor([kind, id, at | _], :older, watermark),
+    do: %{occurred_at: utc(at), kind: kind, row_id: id, watermark: watermark}
+
+  defp next_cursor([_, _, _, publication, offset | _], :newer, _),
+    do: %{publication_id: publication, batch_offset: offset}
+
+  defp utc(%NaiveDateTime{} = at), do: DateTime.from_naive!(at, "Etc/UTC")
+  defp utc(%DateTime{} = at), do: at
 
   @impl true
   def purge(%PurgeLogs{} = command) do
@@ -281,7 +311,7 @@ defmodule FavnStoragePostgres.Logs.Store do
          runner_task_id: optional_string(Map.get(metadata, "runner_task_id")),
          node_key_hash: node_key_hash,
          asset_ref_hash: asset_ref_hash,
-         stream: optional_string(Map.get(metadata, "stream")),
+         stream: optional_string(Map.get(metadata, "stream")) || "system",
          source: String.slice(entry.source, 0, 100),
          level: Atom.to_string(entry.level),
          message: message |> to_string() |> String.slice(0, 8_192),
@@ -320,80 +350,6 @@ defmodule FavnStoragePostgres.Logs.Store do
     batch.batch_id == command.batch_id and batch.command_id == command.command_id and
       batch.batch_hash == hash and batch.entry_count == count
   end
-
-  defp filter(query, filter) do
-    query
-    |> maybe_equal(:run_id, filter.run_id)
-    |> maybe_equal(:asset_step_id, filter.asset_step_id)
-    |> maybe_equal(:runner_task_id, filter.runner_task_id)
-    |> maybe_equal(:node_key_hash, filter.node_key_hash)
-    |> maybe_equal(:asset_ref_hash, filter.asset_ref_hash)
-    |> maybe_equal(:stream, atom_string(filter.stream))
-    |> maybe_in(:level, Enum.map(filter.levels, &Atom.to_string/1))
-    |> maybe_in(:source, Enum.map(filter.sources, &Atom.to_string/1))
-    |> maybe_since(filter.since)
-    |> maybe_until(filter.until)
-  end
-
-  defp maybe_equal(query, _field, nil), do: query
-  defp maybe_equal(query, field, value), do: where(query, [entry], field(entry, ^field) == ^value)
-
-  defp maybe_in(query, _field, []), do: query
-  defp maybe_in(query, field, values), do: where(query, [entry], field(entry, ^field) in ^values)
-
-  defp maybe_since(query, nil), do: query
-  defp maybe_since(query, since), do: where(query, [entry], entry.occurred_at >= ^since)
-
-  defp maybe_until(query, nil), do: query
-  defp maybe_until(query, until), do: where(query, [entry], entry.occurred_at <= ^until)
-
-  defp after_historical_cursor(query, nil), do: query
-
-  defp after_historical_cursor(query, %{occurred_at: occurred_at, log_id: log_id}) do
-    where(
-      query,
-      [entry],
-      entry.occurred_at < ^occurred_at or
-        (entry.occurred_at == ^occurred_at and entry.log_id < ^log_id)
-    )
-  end
-
-  defp after_publication(query, nil), do: query
-
-  defp after_publication(query, %{publication_id: publication_id, batch_offset: batch_offset}) do
-    where(
-      query,
-      [entry, _batch, event],
-      event.publication_id > ^publication_id or
-        (event.publication_id == ^publication_id and entry.position > ^batch_offset)
-    )
-  end
-
-  defp result_page(rows, limit, direction) do
-    page_rows = Enum.take(rows, limit)
-
-    items =
-      Enum.map(page_rows, fn {entry, publication_id} -> entry_result(entry, publication_id) end)
-
-    has_more? = length(rows) > limit
-
-    {:ok,
-     %CursorPage{
-       items: items,
-       limit: limit,
-       has_more?: has_more?,
-       next_cursor: next_cursor(List.last(page_rows), has_more?, direction)
-     }}
-  end
-
-  defp next_cursor(nil, _has_more?, _direction), do: nil
-  defp next_cursor(_last, false, _direction), do: nil
-
-  defp next_cursor({entry, publication_id}, true, :newer),
-    do: %{publication_id: publication_id, batch_offset: entry.position}
-
-  defp next_cursor({entry, _publication_id}, true, :older),
-    do: %{occurred_at: entry.occurred_at, log_id: entry.log_id}
 
   defp validate_append(command) do
     entries = command.entries
@@ -462,13 +418,15 @@ defmodule FavnStoragePostgres.Logs.Store do
   defp optional_id?(value), do: valid_id?(value)
   defp optional_string(value) when is_binary(value), do: value
   defp optional_string(_value), do: nil
-  defp atom_string(nil), do: nil
-  defp atom_string(value) when is_atom(value), do: Atom.to_string(value)
 
   defp valid_log_cursor?(nil, _direction), do: true
 
-  defp valid_log_cursor?(%{occurred_at: %DateTime{}, log_id: id}, :older),
-    do: is_integer(id)
+  defp valid_log_cursor?(
+         %{occurred_at: %DateTime{}, kind: kind, row_id: id, watermark: watermark},
+         :older
+       ),
+       do:
+         kind in [0, 1] and is_integer(id) and id > 0 and is_integer(watermark) and watermark >= 0
 
   defp valid_log_cursor?(
          %{publication_id: publication_id, batch_offset: batch_offset},

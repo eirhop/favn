@@ -7904,6 +7904,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     refute hd(entries).message =~ "super-secret-value"
     assert hd(entries).metadata["password"] == "[REDACTED]"
     assert {:ok, ^entries} = LogStore.append_batch(command)
+    assert {:ok, _} = Sequencer.sequence_batch(5_000)
 
     assert {:ok, page} =
              LogStore.page(%PageLogs{
