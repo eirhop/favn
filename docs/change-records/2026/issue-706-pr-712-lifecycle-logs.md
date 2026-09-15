@@ -465,7 +465,9 @@ previous plan and its budgets remain in commit
 - After merging upstream PR #711, compilation and 78 focused PostgreSQL
   concurrency/runner-task checks passed (4 excluded).
 - Both record diagrams were rendered with Mermaid and visually inspected locally.
-  GitHub rendering is checked after PR creation under the user-directed workflow.
+  After PR creation, GitHub-rendered Markdown was fetched and checked: all
+  14 tables and both Mermaid rendering containers are present. Diagram visuals
+  were inspected locally; no authenticated GitHub browser check is claimed.
 
 The broad suites were not clean on their first invocation. Compilation during an
 initial parallel run also caused transient missing-module failures; verification
