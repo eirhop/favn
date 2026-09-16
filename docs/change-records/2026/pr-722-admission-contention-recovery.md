@@ -356,7 +356,7 @@ new code remain compatible because the task wire contract is unchanged.
 | Lease expiry remains fail-closed | Controlled-clock/unit test keeps renewal failing past the safety deadline and asserts ownership-loss stop/recovery | `favn_orchestrator` |
 | Cancellation state cannot poison later tasks | Actual `build_work` projection includes every removed family in atom and string form, then encodes/stores/reads/decodes the task | `favn_orchestrator` and PostgreSQL task store |
 | Backfill execution metadata remains available | Composed work fixture preserves all six backfill/operator fields through enqueue and read-back | PostgreSQL runner-task store |
-| Complete backfill-like stage recovers | Storage-backed integration gates after the contended entry owns capacity/claim/permits but before `step_started`, coordinates on the advisory lock, delivers a sibling result while paused, observes transition and renewal contention, releases the lock, then observes initial/refill progress and a later downstream task enqueue/readback | `favn_storage_postgres` integration |
+| Complete backfill-like stage recovers | Sandboxed storage integration gates initial admission before any task is durable and refill after one sibling is durable, observes transition and renewal contention on the real advisory lock, releases it, and proves both paths finish; a cancellation case keeps the durable sibling tracked until its persisted cancellation arrives | `favn_storage_postgres` integration |
 | Unknown values remain rejected | Existing and focused codec tests for an unknown atom and unsupported struct | `favn_core` |
 | Diagnostics remain specific | Operational-event and run-header tests assert `execution_history_owner_busy`/`conflict`, with kind fallback when type is absent | Orchestrator/PostgreSQL operator read |
 | No wider regression | Format, warnings-as-errors, affected app suites, tag guard, and pull-request CI | Umbrella |
@@ -419,13 +419,13 @@ the codec boundary.
 | Area | Added | Deleted | Net |
 | --- | ---: | ---: | ---: |
 | Production Elixir | 625 | 40 | 585 |
-| Tests | 1,002 | 16 | 986 |
+| Tests | 1,003 | 16 | 987 |
 | Canonical documentation | 10 | 0 | 10 |
 | This implementation record | 509 | 0 | 509 |
-| **Total PR** | **2,146** | **56** | **2,090** |
+| **Total PR** | **2,147** | **56** | **2,091** |
 
 The executable production change is 665 changed lines. Most of the PR is proof:
-1,002 test additions and this required 509-line implementation record. The
+1,003 test additions and this required 509-line implementation record. The
 implementation changes five orchestrator production modules, four existing test
 modules, and the canonical orchestrator structure document. It adds no migration,
 dependency, wire-format registration, public DSL, or runner release requirement.
@@ -438,7 +438,7 @@ dependency, wire-format registration, public DSL, or runner release requirement.
   cleanup against the newest durable run snapshot, and normal-stop recovery
   cleanup. These are all in the reported admission/ownership/cancellation chain.
   The final independent review must explicitly accept this variance.
-- Supporting test growth is 1,002 lines, 102 above the planned upper range. The
+- Supporting test growth is 1,003 lines, 102 above the planned upper range. The
   increase replaces the earlier layered proof with one sandboxed PostgreSQL
   integration that observes the real advisory-lock error in both attempt-start
   and ownership renewal, proves initial and refill recovery, proves a committed

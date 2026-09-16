@@ -7230,14 +7230,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
     run_id = run.id
-    gate_step_started!(run.id, 2)
+    gate_step_started!(run.id, 1)
 
     assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
     monitor = Process.monitor(pid)
     assert_receive {:step_started_gated, gate_ref, gated_command}, 5_000
     assert gated_command.run.id == run.id
     saved_task_id = gated_command.event.data.runner_task_id
-    assert [_first_task_id] = await_runner_task_ids!(fixture.workspace_id, run.id, 1)
+    assert runner_task_ids(fixture.workspace_id, run.id) == []
 
     probe_root = install_pipeline_history_probe_root!(fixture.workspace_id, run.id)
     holder = hold_pipeline_history_lock!(fixture.workspace_id, probe_root)
@@ -7252,6 +7252,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                    5_000
 
     paused = :sys.get_state(pid)
+    assert paused.execution_state.stage_state == nil
     assert paused.execution_persist_pending.retry.data.runner_task_id == saved_task_id
     assert paused.execution_state.paused_admission.task_id == saved_task_id
 
