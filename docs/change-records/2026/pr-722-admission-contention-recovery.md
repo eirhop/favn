@@ -420,12 +420,12 @@ the codec boundary.
 | --- | ---: | ---: | ---: |
 | Production Elixir | 625 | 40 | 585 |
 | Tests | 1,003 | 16 | 987 |
-| Canonical documentation | 10 | 0 | 10 |
-| This implementation record | 509 | 0 | 509 |
-| **Total PR** | **2,147** | **56** | **2,091** |
+| Canonical documentation | 11 | 0 | 11 |
+| This implementation record | 510 | 0 | 510 |
+| **Total PR** | **2,149** | **56** | **2,093** |
 
 The executable production change is 665 changed lines. Most of the PR is proof:
-1,003 test additions and this required 509-line implementation record. The
+1,003 test additions and this required 510-line implementation record. The
 implementation changes five orchestrator production modules, four existing test
 modules, and the canonical orchestrator structure document. It adds no migration,
 dependency, wire-format registration, public DSL, or runner release requirement.
@@ -449,7 +449,8 @@ dependency, wire-format registration, public DSL, or runner release requirement.
   attempt-start failure now stops for recovery. The first implementation
   manufactured a `step_failed` event from the uncertain transition state; final
   review rejected that as an impossible event sequence. Recovery is the smaller
-  fail-closed outcome and preserves the frozen command for diagnosis.
+  fail-closed outcome and writes no false terminal event; it does not newly
+  persist the attempted command for diagnosis.
 - The existing run header already falls back from error `type` to `kind`, so no
   diagnostic source change was needed. The specific persistence reason remains
   available in retry telemetry and is not replaced by a manufactured terminal

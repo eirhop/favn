@@ -59,9 +59,10 @@ instead of being retried, because a newer owner already exists.
 Stage admission persists `step_started` before runner enqueue. A structured
 retryable store conflict replays that exact fenced transition without consuming
 an asset attempt or cancelling independent siblings. While it is paused, the
-run server retains and renews the admission lease, materialization claim,
-resource permits, and run ownership. Successful replay still requires a fresh
-ownership renewal and a live original work deadline before enqueue. Runner work
+run server retains the admission lease, materialization claim, and resource
+permits under their existing finite lifetimes, while renewing run ownership and
+the paused claim's target-operation lock. Successful replay still requires a
+fresh ownership renewal and a live original work deadline before enqueue. Runner work
 contains execution and correlation metadata only; cancellation, retry, drain,
 active-task, recovery-position, and terminal bookkeeping stay in the control
 plane snapshot.
