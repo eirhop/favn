@@ -418,34 +418,38 @@ the codec boundary.
 
 | Area | Added | Deleted | Net |
 | --- | ---: | ---: | ---: |
-| Production Elixir | 543 | 37 | 506 |
-| Tests | 362 | 13 | 349 |
+| Production Elixir | 625 | 40 | 585 |
+| Tests | 1,002 | 16 | 986 |
 | Canonical documentation | 10 | 0 | 10 |
+| This implementation record | 509 | 0 | 509 |
+| **Total PR** | **2,146** | **56** | **2,090** |
 
-The implementation changes five orchestrator production modules, three focused
-orchestrator test modules, one existing PostgreSQL integration test, and the
-canonical orchestrator structure document. It adds no migration, dependency,
-wire-format registration, public DSL, or runner release requirement.
+The executable production change is 665 changed lines. Most of the PR is proof:
+1,002 test additions and this required 509-line implementation record. The
+implementation changes five orchestrator production modules, four existing test
+modules, and the canonical orchestrator structure document. It adds no migration,
+dependency, wire-format registration, public DSL, or runner release requirement.
 
 ## Deviations from the approved plan
 
-- Production additions are 543 lines, three above the plan's 550-line gross
-  re-review threshold when the ten documentation lines are included. Net
-  production growth is 506 lines. The extra state is the explicit ownership
-  gate and fail-closed cleanup requested during plan review; it has not been
-  collapsed because doing so would hide lifecycle states. Final independent
-  review must explicitly accept this variance.
-- Supporting test growth is 349 net lines, below the planned 400-line minimum.
-  Existing task-store contention, ambiguous-enqueue, unknown-value, and full
-  backfill result tests were reused instead of duplicated.
-- The planned single composed PostgreSQL test that physically holds the history
-  advisory lock through the complete RunServer flow was split at the application
-  boundary. A real PostgreSQL store test proves the lock error, retryable reason,
-  and exact-command replay; deterministic RunServer/admission tests prove pause,
-  ownership gating, cancellation, deadline expiry, sibling preservation, and
-  one enqueue; the existing PostgreSQL backfill integration proves the resulting
-  work crosses enqueue/read/result persistence. This avoids a timing-sensitive
-  cross-process test, but it does not constitute one real-lock end-to-end test.
+- Production additions are 625 lines, 75 above the plan's 550-line re-review
+  threshold. The increase implements issues found by the first final review:
+  heartbeat coalescing, cancellation ownership for saved same-batch siblings,
+  cleanup against the newest durable run snapshot, and normal-stop recovery
+  cleanup. These are all in the reported admission/ownership/cancellation chain.
+  The final independent review must explicitly accept this variance.
+- Supporting test growth is 1,002 lines, 102 above the planned upper range. The
+  increase replaces the earlier layered proof with one sandboxed PostgreSQL
+  integration that observes the real advisory-lock error in both attempt-start
+  and ownership renewal, proves initial and refill recovery, proves a committed
+  transition with a lost reply replays as one durable event, and proves a saved
+  sibling remains tracked through durable cancellation. Per-run and per-task
+  gates avoid global attempt ordering, and the SQL sandbox rolls every row back.
+- A deterministic non-replayable rejection after a previously retryable
+  attempt-start failure now stops for recovery. The first implementation
+  manufactured a `step_failed` event from the uncertain transition state; final
+  review rejected that as an impossible event sequence. Recovery is the smaller
+  fail-closed outcome and preserves the frozen command for diagnosis.
 - The existing run header already falls back from error `type` to `kind`, so no
   diagnostic source change was needed. The specific persistence reason remains
   available in retry telemetry and is not replaced by a manufactured terminal
@@ -471,12 +475,13 @@ wire-format registration, public DSL, or runner release requirement.
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | Format and compile | Passed: `mix format`; test compile with warnings as errors | Static/build qualification |
-| Focused orchestrator tests | Passed: 44 tests | Deterministic state-machine, retry, cancellation, ownership, deadline, and metadata qualification |
-| Full fast orchestrator suite | Passed: 883 tests, including 6 doctests; 2 excluded | Orchestrator regression qualification |
-| Umbrella fast suite | Passed all app slices | Repository-wide regression qualification; excluded tagged tiers remain separate |
-| PostgreSQL backfill task regressions | Passed: 2 focused integration tests | Actual enqueue/read/result persistence with backfill and cancellation metadata |
-| PostgreSQL history-lock test | Passed: focused real-lock test | Real store contention and exact-command replay only |
-| Closed codec safeguards | Passed: 26 runner-task persistence tests | Unknown atoms and unsupported structs remain rejected |
+| Focused orchestrator tests | Passed: 50 tests | Deterministic state-machine, retry, cancellation, ownership, deadline, and metadata qualification |
+| Full fast orchestrator suite | Passed: 889 tests, including 6 doctests; 2 excluded | Orchestrator regression qualification |
+| PostgreSQL real lifecycle regression | Passed: 1 composed test; 154 excluded | Observed `execution_history_owner_busy` for attempt-start and ownership renewal, initial/refill recovery, durable reply-loss replay, and cancellation drain |
+| PostgreSQL backfill task regressions | Passed: 2 focused integration tests; 153 excluded | Actual backfill enqueue/read/Landing-style result persistence for asset and pipeline submissions |
+| SQL sandbox cleanup | Passed: zero persisted runs and runner tasks after the composed test | The real-lock proof does not leak global runner demand or tasks into neighboring tests |
+| Closed codec safeguards | Passed: 26 focused tests | Unknown atoms and unsupported structs remain rejected |
+| Umbrella fast suite | Attempted; owning suites passed, repository run had unrelated environment/timing failures described below | Repository-wide run did not provide a clean final signal |
 | Test tier guard | Passed | Tagged tests remain assigned to CI-covered tiers |
 | Diff checks | Passed: `git diff --check` | Whitespace only |
 
@@ -484,9 +489,13 @@ wire-format registration, public DSL, or runner release requirement.
 
 - The supplied failed run was inspected read-only and was not mutated or replayed.
 - No fresh external Landing backfill was executed against a deployed service.
-- The plan's timing-sensitive single-process real-lock-to-RunServer integration
-  was replaced by the layered evidence recorded above.
-- Pull-request CI and the final reviewed commit remain pending.
+- One pre-existing delayed-insert PostgreSQL test remains timing-sensitive when
+  selected alone under the shared SQL sandbox; it failed by exhausting its owned
+  sandbox connection while its trigger held that same connection. The new
+  composed test passes independently and leaves zero durable rows. This existing
+  test behavior is not used as evidence for this fix.
+- The repository-wide fast command was also run without the PostgreSQL environment and therefore failed the PostgreSQL app at setup. With the disposable database configured, the full PostgreSQL app reached 451 passing tests but its bootstrap privilege tests required a bootstrap role rather than the migrator role used for focused storage tests; one unrelated 100 ms timing test and one globally owned runtime test also failed under full-app concurrency. The affected PostgreSQL regressions pass in isolation.
+- Pull-request CI and final review of the corrected head remain pending.
 
 ## Final review
 

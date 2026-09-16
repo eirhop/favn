@@ -537,19 +537,17 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   @doc false
-  @spec abort_attempt_start(map(), term()) :: result()
-  def abort_attempt_start(%{ctx: ctx} = pause, reason) do
-    run = cleanup_paused(pause, reason)
-    terminalize_unsubmitted_entry(%{ctx | current_run: run}, ctx.work.asset_ref, reason)
-  end
+  @spec cleanup_paused(map(), term()) :: RunState.t()
+  def cleanup_paused(%{ctx: ctx} = pause, reason),
+    do: cleanup_paused(pause, reason, ctx.current_run)
 
   @doc false
-  @spec cleanup_paused(map(), term()) :: RunState.t()
-  def cleanup_paused(%{ctx: ctx, task_id: task_id}, reason) do
+  @spec cleanup_paused(map(), term(), RunState.t()) :: RunState.t()
+  def cleanup_paused(%{ctx: ctx, task_id: task_id}, reason, %RunState{} = current_run) do
     :ok = release_entry_lease(%{lease: ctx.lease})
     _ = ResourceCircuits.release(ctx.current_run, Map.get(ctx, :resource_circuit_permits, []))
     :ok = fail_claim(ctx, reason)
-    without_inflight_task(ctx.current_run, task_id)
+    without_inflight_task(current_run, task_id)
   end
 
   @doc false

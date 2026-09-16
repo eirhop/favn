@@ -446,6 +446,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     send(pid, :renew_storage_ownership)
 
     assert_receive {:ownership_renewal_attempt, renewal_id, :busy}, 1_000
+    send(pid, :renew_storage_ownership)
+    refute_receive {:ownership_renewal_attempt, _, _}, 100
     assert_receive {:ownership_renewal_attempt, ^renewal_id, :ok}, 2_000
     assert_receive {:ownership_renewed, @fencing_token}, 1_000
     assert Process.alive?(pid)
@@ -592,6 +594,56 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
   end
 
   describe "run server routing" do
+    test "a heartbeat cannot replace a pending admission-resume ownership proof" do
+      pending = %{
+        storage_renewal_pending: %{
+          token: make_ref(),
+          timer: make_ref(),
+          purpose: {:resume, :frozen_admission},
+          renewal_id: "resume-renewal",
+          reason: :busy
+        }
+      }
+
+      assert {:noreply, ^pending} = RunServer.handle_info(:renew_storage_ownership, pending)
+    end
+
+    test "a completed pending heartbeat schedules the next renewal", %{fixture: fixture} do
+      token = make_ref()
+
+      ownership = %Ownership{
+        workspace_id: fixture.run.workspace_id,
+        run_id: fixture.run.id,
+        owner_id: "run-owner",
+        fencing_token: @fencing_token,
+        expires_at: DateTime.add(DateTime.utc_now(), 30, :second)
+      }
+
+      state = %{
+        storage_context:
+          FavnOrchestrator.Persistence.SystemContext.workspace(
+            fixture.run.workspace_id,
+            :run_worker
+          ),
+        storage_ownership: ownership,
+        execution_state: %RunExecutionState{run: fixture.run},
+        storage_renewal_pending: %{
+          token: token,
+          timer: make_ref(),
+          purpose: :heartbeat,
+          renewal_id: "same-renewal",
+          reason: :busy
+        }
+      }
+
+      assert {:noreply, renewed} =
+               RunServer.handle_info({:retry_storage_ownership, token}, state)
+
+      assert is_reference(renewed.storage_renewal_timer)
+      refute Map.has_key?(renewed, :storage_renewal_pending)
+      Process.cancel_timer(renewed.storage_renewal_timer)
+    end
+
     test "a worker reply is deferred while a persist retry is pending", %{fixture: fixture} do
       ref = make_ref()
 

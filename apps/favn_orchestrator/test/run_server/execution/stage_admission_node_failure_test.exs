@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.RefreshPolicy
+  alias FavnOrchestrator.RunServer
   alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
@@ -633,14 +634,63 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
              Execution.handle_event(fixture.state, :continue)
 
     local_task_id = retry.data.runner_task_id
-    assert {:cont, cancelled} = Execution.cancel(paused, :operator)
+
+    latest = %{
+      paused.run
+      | event_seq: paused.run.event_seq + 1,
+        metadata: Map.put(paused.run.metadata, :cancel_requested, true)
+    }
+
+    assert {:cont, cancelled} = Execution.cancel(%{paused | run: latest}, :operator)
 
     assert cancelled.paused_admission == nil
+    assert cancelled.run.event_seq == latest.event_seq
+    assert cancelled.run.metadata.cancel_requested
     refute local_task_id in ActiveTaskSet.active_runner_task_ids(cancelled.run)
     assert_receive {:release_execution_lease, _command}
     assert_receive {:materialization_finish, %{status: :failed}}
     assert @held_task_id in ActiveTaskSet.task_ids(cancelled.work_set)
     refute local_task_id in ActiveTaskSet.task_ids(cancelled.work_set)
+  end
+
+  @tag runner_task_store: AcceptingTaskStore
+  test "cancellation preserves an in-flight ownership renewal as a heartbeat", %{
+    fixture: fixture
+  } do
+    Process.put({FakeStore, :claimable_target_ids}, [
+      TargetIdentity.for_asset(elem(fixture.b_key, 0))
+    ])
+
+    conflict =
+      Error.new(:conflict, "execution history owner is busy",
+        retryable?: true,
+        details: %{reason_code: "execution_history_owner_busy"}
+      )
+
+    Process.put({FakeStore, :commit_results}, [{:error, conflict}])
+
+    assert {:persist_retry, paused, %PersistenceRetry{} = retry, ^conflict} =
+             Execution.handle_event(fixture.state, :continue)
+
+    token = make_ref()
+
+    state = %{
+      execution_state: paused,
+      storage_renewal_pending: %{
+        token: token,
+        timer: make_ref(),
+        purpose: {:resume, retry},
+        renewal_id: "same-renewal",
+        reason: conflict
+      }
+    }
+
+    assert {:noreply, next} =
+             RunServer.handle_info({:favn_run_cancel_requested, :operator}, state)
+
+    assert next.storage_renewal_pending.token == token
+    assert next.storage_renewal_pending.renewal_id == "same-renewal"
+    assert next.storage_renewal_pending.purpose == :heartbeat
   end
 
   @tag runner_task_store: AcceptingTaskStore
@@ -698,13 +748,74 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     assert {:persist_retry, paused, %PersistenceRetry{} = retry, ^conflict} =
              Execution.handle_event(fixture.state, :continue)
 
-    result = Execution.retry_persistence(paused, retry)
-    assert {:cont, draining} = result
-    assert draining.paused_admission == nil
-    assert draining.terminal_failure.error == invalid
+    assert {:recovery_required, recovering, {:attempt_start_replay_rejected, ^invalid}} =
+             Execution.retry_persistence(paused, retry)
+
+    stopped = Execution.stop_for_recovery(recovering)
+    assert stopped.paused_admission == nil
+    refute_receive {:commit_transition, %{event: %{event_type: :step_failed}}}
     assert_receive {:release_execution_lease, _command}
     assert_receive {:materialization_finish, %{status: :failed}}
-    assert_receive {:runner_task_cancellation_requested, %{task_id: @held_task_id}}
+    refute_receive {:runner_task_cancellation_requested, _command}
+  end
+
+  @tag runner_task_store: AcceptingTaskStore
+  test "normal RunServer termination cleans paused local work", %{fixture: fixture} do
+    Process.put({FakeStore, :claimable_target_ids}, [
+      TargetIdentity.for_asset(elem(fixture.b_key, 0))
+    ])
+
+    conflict =
+      Error.new(:conflict, "execution history owner is busy",
+        retryable?: true,
+        details: %{reason_code: "execution_history_owner_busy"}
+      )
+
+    Process.put({FakeStore, :commit_results}, [{:error, conflict}])
+
+    assert {:persist_retry, paused, %PersistenceRetry{}, ^conflict} =
+             Execution.handle_event(fixture.state, :continue)
+
+    assert :ok = RunServer.terminate(:shutdown, %{execution_state: paused})
+    assert_receive {:release_execution_lease, _command}
+    assert_receive {:materialization_finish, %{status: :failed}}
+  end
+
+  for position <- [:initial, :refill] do
+    @tag runner_task_store: AcceptingTaskStore
+    test "#{position} cancellation tracks a same-batch task saved before the pause", %{
+      fixture: fixture
+    } do
+      Process.put({FakeStore, :claimable_target_ids}, [
+        TargetIdentity.for_asset(elem(fixture.b_key, 0))
+      ])
+
+      conflict =
+        Error.new(:conflict, "execution history owner is busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      Process.put({FakeStore, :commit_results}, [{:error, conflict}])
+
+      assert {:persist_retry, paused, %PersistenceRetry{}, ^conflict} =
+               Execution.handle_event(fixture.state, :continue)
+
+      stage_state = if unquote(position) == :initial, do: nil, else: paused.stage_state
+
+      paused = %{
+        paused
+        | stage_state: stage_state,
+          awaits: %{},
+          await_monitors: %{},
+          await_timers: %{},
+          paused_admission: %{paused.paused_admission | entries: [fixture.entry]}
+      }
+
+      assert {:cont, draining} = Execution.cancel(paused, :operator)
+      assert Map.has_key?(draining.awaits, @held_task_id)
+      assert draining.status == :awaiting
+    end
   end
 
   # `resume_retry/2` leaves `stage_state` set when it starts a later stage
@@ -921,7 +1032,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
       e_key: e_key,
       f_key: f_key,
       f_target_id: TargetIdentity.for_asset(f_ref),
-      d_target_id: TargetIdentity.for_asset(d_ref)
+      d_target_id: TargetIdentity.for_asset(d_ref),
+      entry: entry
     }
   end
 

@@ -133,6 +133,9 @@ defmodule FavnOrchestrator.RunServer do
 
   def handle_info(:continue_execution, state), do: continue_execution(state)
 
+  def handle_info(:renew_storage_ownership, %{storage_renewal_pending: _} = state),
+    do: {:noreply, state}
+
   def handle_info(
         :renew_storage_ownership,
         %{storage_context: context, storage_ownership: ownership} = state
@@ -476,6 +479,22 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp handle_execution_result(
+         %{storage_renewal_pending: pending} = state,
+         {:ownership_gate, %RunExecutionState{} = execution_state, %PersistenceRetry{} = retry}
+       ) do
+    state =
+      state
+      |> Map.put(:run_state, execution_state.run)
+      |> Map.put(:execution_state, execution_state)
+      |> Map.put(:storage_renewal_pending, %{
+        pending
+        | purpose: {:resume, retry}
+      })
+
+    {:noreply, state}
+  end
+
+  defp handle_execution_result(
          %{storage_context: context, storage_ownership: ownership} = state,
          {:ownership_gate, %RunExecutionState{} = execution_state, %PersistenceRetry{} = retry}
        ) do
@@ -512,6 +531,23 @@ defmodule FavnOrchestrator.RunServer do
     |> Map.put(:run_state, execution_state.run)
     |> Map.put(:execution_state, execution_state)
     |> stop_on_fenced_write(execution_state.run, retry.event_type)
+  end
+
+  defp handle_execution_result(
+         state,
+         {:recovery_required, %RunExecutionState{} = execution_state, reason}
+       ) do
+    OperationalEvents.emit(
+      :run_execution_recovery_required,
+      %{},
+      %{run_id: execution_state.run.id, reason: reason},
+      level: :error
+    )
+
+    {:stop, {:shutdown, :run_execution_recovery_required},
+     state
+     |> Map.put(:run_state, execution_state.run)
+     |> Map.put(:execution_state, Execution.stop_for_recovery(execution_state))}
   end
 
   defp handle_execution_result(
@@ -781,6 +817,8 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp renew_storage_ownership(state, context, ownership, purpose, renewal_id) do
+    state = cancel_storage_renewal_timer(state)
+
     result =
       with :ok <- renew_materialization_locks(state) do
         RunOwnership.renew(context, ownership, renewal_id: renewal_id)
@@ -814,7 +852,9 @@ defmodule FavnOrchestrator.RunServer do
          %{execution_state: %RunExecutionState{} = execution_state} = state,
          {:resume, %PersistenceRetry{} = retry}
        ) do
-    handle_execution_result(state, Execution.resume_persisted_retry(execution_state, retry))
+    state
+    |> schedule_ownership_renewal()
+    |> handle_execution_result(Execution.resume_persisted_retry(execution_state, retry))
   end
 
   defp schedule_storage_ownership_retry(state, purpose, renewal_id, reason) do
@@ -882,9 +922,8 @@ defmodule FavnOrchestrator.RunServer do
       end
 
     case Map.get(state, :storage_renewal_pending) do
-      %{purpose: {:resume, _}, timer: timer} ->
-        Process.cancel_timer(timer)
-        Map.delete(state, :storage_renewal_pending)
+      %{purpose: {:resume, _}} = pending ->
+        Map.put(state, :storage_renewal_pending, %{pending | purpose: :heartbeat})
 
       _other ->
         state
@@ -952,11 +991,17 @@ defmodule FavnOrchestrator.RunServer do
   defp schedule_ownership_renewal(%{storage_ownership: _ownership} = state) do
     interval = max(div(RunOwnership.default_lease_duration_ms(), 3), 1_000)
 
-    Map.put(
-      state,
+    state
+    |> cancel_storage_renewal_timer()
+    |> Map.put(
       :storage_renewal_timer,
       Process.send_after(self(), :renew_storage_ownership, interval)
     )
+  end
+
+  defp cancel_storage_renewal_timer(state) do
+    if timer = Map.get(state, :storage_renewal_timer), do: Process.cancel_timer(timer)
+    Map.delete(state, :storage_renewal_timer)
   end
 
   defp renew_materialization_locks(%{
@@ -1014,6 +1059,15 @@ defmodule FavnOrchestrator.RunServer do
 
   @impl true
   def terminate(_reason, state) do
+    state =
+      case Map.get(state, :execution_state) do
+        %RunExecutionState{} = execution_state ->
+          Map.put(state, :execution_state, Execution.stop_for_recovery(execution_state))
+
+        nil ->
+          state
+      end
+
     _ = stop_post_step_workers(state)
     release_manifest_lease(state)
     release_storage_ownership(state)
