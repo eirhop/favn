@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented; final review pending |
+| Status | Implemented; final review approved; CI pending |
 | Type | Bug fix |
 | Primary issue | None. The maintainer supplied the production-like failure report directly and previously authorized this regression repair without a GitHub issue. |
 | Pull request | [#722](https://github.com/eirhop/favn/pull/722) |
@@ -503,8 +503,8 @@ dependency, wire-format registration, public DSL, or runner release requirement.
 | Field | Result |
 | --- | --- |
 | Reviewer | Independent Astra agent, xhigh reasoning |
-| Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Compared | Approved baseline `0ecaa5da`, implementation head `aa37c1ce`, tests, diagnostics, canonical docs, and recorded deviations |
+| Deviations complete | Yes. The reviewer explicitly accepted the production and test complexity overruns as necessary lifecycle correction and proof, with no unrelated scope expansion. |
+| Findings | The first final review rejected five lifecycle gaps: heartbeat overwrite, premature same-batch terminalization, an impossible deterministic-rejection event sequence, cleanup against a stale snapshot, and missing normal-stop cleanup. It also rejected the original PostgreSQL proof because it did not observe the actual lock error, durable reply-loss replay, cancellation drain, or sandbox isolation. The final pass requested only precise attribution of initial versus refill coverage and accurate lease documentation. |
+| Findings addressed and rechecked | All production findings were corrected. Astra independently passed 50 focused tests and the corrected PostgreSQL lifecycle test with 1 pass and 154 exclusions; it confirmed actual contention, initial/refill recovery, committed reply-loss replay, durable cancellation draining, and sandbox isolation. |
+| Verdict | **Approved with no remaining findings** at `aa37c1cedc6170a521834eb10dd529ab31426c85`. Optional future consolidation of duplicated progress guards and admission-result routing is not required for correctness. |
