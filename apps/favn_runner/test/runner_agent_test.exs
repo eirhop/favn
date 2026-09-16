@@ -155,6 +155,17 @@ defmodule FavnRunner.RunnerAgentTest do
         assert_eventually(fn -> :sys.get_state(agent).claim_retry_count == 1 end)
         state = :sys.get_state(agent)
         assert Process.read_timer(state.claim_retry_timer) in 1..240
+
+        assert %{
+                 retry_count: 1,
+                 last_failure_class: :data,
+                 last_reason_code: "invalid",
+                 retryable?: false,
+                 next_retry_ms: next_retry_ms,
+                 next_retry_at: %DateTime{}
+               } = RunnerAgent.diagnostics(agent).claim
+
+        assert next_retry_ms in 1..240
         send(agent, :connect)
         assert_receive {:claim_test_registered, ^agent}
         assert :sys.get_state(agent).claim_retry_count == 1
@@ -361,29 +372,40 @@ defmodule FavnRunner.RunnerAgentTest do
 
     @impl true
     def init(state),
-      do: {:ok, Map.merge(state, %{agent: nil, assignment: nil, runtime_inputs_seen: 0})}
+      do:
+        {:ok,
+         Map.merge(state, %{
+           agent: nil,
+           assignment: nil,
+           consumed?: false,
+           runtime_inputs_seen: 0
+         })}
 
     @impl true
     def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
 
     def handle_call({:register, registration, agent}, _from, state) do
       assignment =
-        state.assignment ||
-          %RunnerTask.Assignment{
-            command_id: "runtime-input-claim",
-            workspace_id: "workspace-runtime-input",
-            task_id: "rt_runtime_input_replay",
-            task_kind: :asset_attempt,
-            runner_instance_id: registration.runner_instance_id,
-            runner_session_generation: 1,
-            assignment_generation: 1,
-            runner_pool: "duckdb",
-            required_runner_release_id: FavnTestSupport.runner_release_id(),
-            assigned_at: DateTime.utc_now(),
-            lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
-            retry_class: :unknown_do_not_retry,
-            payload: state.work
-          }
+        if state.consumed? do
+          nil
+        else
+          state.assignment ||
+            %RunnerTask.Assignment{
+              command_id: "runtime-input-claim",
+              workspace_id: "workspace-runtime-input",
+              task_id: "rt_runtime_input_replay",
+              task_kind: :asset_attempt,
+              runner_instance_id: registration.runner_instance_id,
+              runner_session_generation: 1,
+              assignment_generation: 1,
+              runner_pool: "duckdb",
+              required_runner_release_id: FavnTestSupport.runner_release_id(),
+              assigned_at: DateTime.utc_now(),
+              lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
+              retry_class: :unknown_do_not_retry,
+              payload: state.work
+            }
+        end
 
       send(state.owner, {:runtime_input_registration, registration, agent})
 
@@ -424,7 +446,24 @@ defmodule FavnRunner.RunnerAgentTest do
           %{runtime_inputs_seen: 0} = state
         ) do
       send(state.owner, {:runtime_inputs_committed_before_ack, message})
-      {:reply, {:error, :control_plane_unavailable}, %{state | runtime_inputs_seen: 1}}
+
+      {:reply, {:error, Map.get(state, :runtime_input_first_error, :control_plane_unavailable)},
+       %{state | runtime_inputs_seen: 1}}
+    end
+
+    def handle_call(
+          {:request, %RunnerTask.RuntimeInputsResolved{} = message},
+          _from,
+          %{runtime_input_second_error: reason} = state
+        )
+        when not is_nil(reason) do
+      send(state.owner, {:runtime_inputs_replayed, message})
+
+      {:reply, {:error, reason},
+       state
+       |> Map.put(:runtime_inputs_seen, state.runtime_inputs_seen + 1)
+       |> Map.put(:runtime_input_second_error, nil)
+       |> Map.put(:fenced?, true)}
     end
 
     def handle_call(
@@ -453,6 +492,26 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, %{status: :running}}, state}
     end
 
+    def handle_call(
+          {:request, %RunnerTask.Result{} = result},
+          _from,
+          %{fenced?: true} = state
+        ) do
+      send(state.owner, {:runtime_input_fenced_result, result})
+
+      ack = %RunnerTask.ResultAck{
+        workspace_id: result.workspace_id,
+        task_id: result.task_id,
+        runner_instance_id: result.runner_instance_id,
+        runner_session_generation: result.runner_session_generation,
+        assignment_generation: result.assignment_generation,
+        result_version: result.result_version,
+        status: :stale
+      }
+
+      {:reply, {:ok, ack}, %{state | assignment: nil, consumed?: true}}
+    end
+
     def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
       ack = %RunnerTask.ResultAck{
         workspace_id: result.workspace_id,
@@ -478,7 +537,14 @@ defmodule FavnRunner.RunnerAgentTest do
     def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts))
 
     @impl true
-    def init(state), do: {:ok, Map.merge(state, %{assignment: nil, result_replies: []})}
+    def init(state) do
+      {:ok,
+       Map.merge(state, %{
+         assignment: nil,
+         consumed?: false,
+         result_replies: Map.get(state, :reject_results, [])
+       })}
+    end
 
     @impl true
     def handle_call(:gateway, _from, state), do: {:reply, {:ok, self()}, state}
@@ -508,9 +574,8 @@ defmodule FavnRunner.RunnerAgentTest do
         status: :accepted
       }
 
-      {:reply, {:ok, ack},
-       %{state | assignment: state.assignment || assignment}
-       |> Map.put(:result_replies, Map.get(state, :reject_results, []))}
+      assignment = if state.consumed?, do: nil, else: state.assignment || assignment
+      {:reply, {:ok, ack}, %{state | assignment: assignment}}
     end
 
     def handle_call(
@@ -564,8 +629,27 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, {:ok, ack}, state}
     end
 
+    def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
+      send(state.owner, {:preparation_task_started, started})
+      {:reply, {:ok, %{status: :running}}, state}
+    end
+
     def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state),
       do: {:reply, {:ok, %{lease_expires_at: renewal.lease_expires_at}}, state}
+
+    def handle_call({:request, %RunnerTask.LogBatch{} = batch}, _from, state) do
+      ack = %RunnerTask.LogAck{
+        workspace_id: batch.workspace_id,
+        task_id: batch.task_id,
+        runner_instance_id: batch.runner_instance_id,
+        runner_session_generation: batch.runner_session_generation,
+        assignment_generation: batch.assignment_generation,
+        batch_id: batch.batch_id,
+        sequence: batch.sequence
+      }
+
+      {:reply, {:ok, ack}, state}
+    end
 
     def handle_call(
           {:request, %RunnerTask.Result{} = result},
@@ -573,7 +657,13 @@ defmodule FavnRunner.RunnerAgentTest do
           %{result_replies: [reply | rest]} = state
         ) do
       send(state.owner, {:result_rejected, result, reply})
-      {:reply, {:error, reply}, %{state | result_replies: rest}}
+
+      state =
+        if match?(%{kind: :fenced}, reply),
+          do: %{state | result_replies: rest, assignment: nil, consumed?: true},
+          else: %{state | result_replies: rest}
+
+      {:reply, {:error, reply}, state}
     end
 
     def handle_call({:request, %RunnerTask.Result{} = result}, _from, state) do
@@ -1113,7 +1203,8 @@ defmodule FavnRunner.RunnerAgentTest do
        state
        |> Map.put(:assignment, nil)
        |> Map.put(:preparation_released?, false)
-       |> Map.put(:started_count, 0)}
+       |> Map.put(:started_count, 0)
+       |> Map.put_new(:started_replies, [])}
     end
 
     @impl true
@@ -1181,6 +1272,15 @@ defmodule FavnRunner.RunnerAgentTest do
     def handle_call({:request, %RunnerTask.LeaseRenewal{} = renewal}, _from, state) do
       send(state.owner, {:renewed_during_preparation, renewal})
       {:reply, {:ok, %{lease_expires_at: renewal.lease_expires_at}}, state}
+    end
+
+    def handle_call(
+          {:request, %RunnerTask.Started{} = started},
+          _from,
+          %{started_replies: [reply | rest]} = state
+        ) do
+      send(state.owner, {:started_after_preparation, started})
+      {:reply, reply, %{state | started_count: state.started_count + 1, started_replies: rest}}
     end
 
     def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
@@ -1421,6 +1521,90 @@ defmodule FavnRunner.RunnerAgentTest do
     assert DateTime.compare(replay.occurred_at, first.occurred_at) in [:eq, :gt]
     send(control_plane, :release_second_started)
     assert Process.alive?(agent)
+  end
+
+  test "Started retries a transient history-owner conflict without executing twice" do
+    Application.put_env(:favn_runner, :announcing_asset_owner, self())
+    on_exit(fn -> Application.delete_env(:favn_runner, :announcing_asset_owner) end)
+    {version, work} = executable_work("started_history_conflict", __MODULE__.AnnouncingAsset)
+
+    history_busy =
+      {:error,
+       %{
+         kind: :conflict,
+         retryable?: true,
+         retry_after_ms: 10,
+         details: %{reason_code: "execution_history_owner_busy"}
+       }}
+
+    {:ok, control_plane} =
+      start_supervised(
+        {BlockingPreparationControlPlane,
+         owner: self(), version: version, work: work, started_replies: [history_busy]}
+      )
+
+    agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive :preparation_blocked, 1_000
+    send(control_plane, :release_preparation)
+    assert_receive {:started_after_preparation, %RunnerTask.Started{} = first}, 1_000
+    assert_receive {:started_after_preparation, %RunnerTask.Started{} = replay}, 1_000
+    assert replay == first
+    assert_receive {:asset_running, worker}, 1_000
+    assert Process.alive?(worker)
+    refute_receive {:asset_running, _another_worker}, 100
+    assert Process.alive?(agent)
+  end
+
+  test "a stale fence stops a Started retry before asset execution" do
+    Application.put_env(:favn_runner, :announcing_asset_owner, self())
+    on_exit(fn -> Application.delete_env(:favn_runner, :announcing_asset_owner) end)
+    {version, work} = executable_work("started_history_fenced", __MODULE__.AnnouncingAsset)
+
+    history_busy =
+      {:error,
+       %{
+         kind: :conflict,
+         retryable?: true,
+         retry_after_ms: 10,
+         details: %{reason_code: "execution_history_owner_busy"}
+       }}
+
+    fenced = {:error, %{kind: :fenced, retryable?: false}}
+
+    {:ok, control_plane} =
+      start_supervised(
+        {BlockingPreparationControlPlane,
+         owner: self(), version: version, work: work, started_replies: [history_busy, fenced]}
+      )
+
+    _agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive :preparation_blocked, 1_000
+    send(control_plane, :release_preparation)
+    assert_receive {:started_after_preparation, %RunnerTask.Started{} = first}, 1_000
+    assert_receive {:started_after_preparation, %RunnerTask.Started{} = replay}, 1_000
+    assert replay == first
+    assert_receive {:preparation_task_result, %RunnerTask.Result{} = result}, 1_000
+    assert result.outcome == :failed
+    assert result.retry_class == :safe_to_retry
+    refute_receive {:asset_running, _worker}, 100
   end
 
   test "an unavailable control plane keeps the managed lifecycle non-accepting" do
@@ -2287,6 +2471,121 @@ defmodule FavnRunner.RunnerAgentTest do
     assert Process.alive?(worker)
   end
 
+  test "runtime input resolution retries a transient history conflict with one resolver call" do
+    :ok = FavnRunner.TaskResultBuffer.reset()
+    Application.put_env(:favn_runner, :announcing_asset_owner, self())
+    on_exit(fn -> Application.delete_env(:favn_runner, :announcing_asset_owner) end)
+
+    {version, work} = runtime_input_version_and_work()
+    {:ok, resolver_calls} = Agent.start_link(fn -> 0 end)
+
+    resolver = fn _work ->
+      Agent.update(resolver_calls, &(&1 + 1))
+
+      Favn.RuntimeInput.Resolution.new(%{
+        resolver: __MODULE__,
+        params: %{region: "eu"},
+        input_identity: "snapshot-history-conflict",
+        metadata: %{adapter_snapshot: :ready},
+        sensitive_params: []
+      })
+    end
+
+    history_busy = %{
+      kind: :conflict,
+      retryable?: true,
+      retry_after_ms: 10,
+      details: %{reason_code: "execution_history_owner_busy"}
+    }
+
+    {:ok, control_plane} =
+      start_supervised(
+        {RuntimeInputReplayControlPlane,
+         owner: self(), version: version, work: work, runtime_input_first_error: history_busy}
+      )
+
+    _agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        runtime_input_resolver: resolver,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:runtime_inputs_committed_before_ack,
+                    %RunnerTask.RuntimeInputsResolved{} = first},
+                   2_000
+
+    assert_receive {:runtime_inputs_replayed, %RunnerTask.RuntimeInputsResolved{} = replay}, 2_000
+    assert replay == first
+    assert replay.runtime_inputs.payload_fingerprint == first.runtime_inputs.payload_fingerprint
+    assert Agent.get(resolver_calls, & &1) == 1
+    assert_receive {:asset_running, _worker}, 2_000
+  end
+
+  test "a stale fence stops a pending runtime-input retry without rerunning the resolver" do
+    :ok = FavnRunner.TaskResultBuffer.reset()
+    Application.put_env(:favn_runner, :announcing_asset_owner, self())
+    on_exit(fn -> Application.delete_env(:favn_runner, :announcing_asset_owner) end)
+
+    {version, work} = runtime_input_version_and_work()
+    {:ok, resolver_calls} = Agent.start_link(fn -> 0 end)
+
+    resolver = fn _work ->
+      Agent.update(resolver_calls, &(&1 + 1))
+
+      Favn.RuntimeInput.Resolution.new(%{
+        resolver: __MODULE__,
+        params: %{region: "eu"},
+        input_identity: "snapshot-history-fenced",
+        metadata: %{adapter_snapshot: :ready},
+        sensitive_params: []
+      })
+    end
+
+    history_busy = %{
+      kind: :conflict,
+      retryable?: true,
+      details: %{reason_code: "execution_history_owner_busy"}
+    }
+
+    fenced = %{kind: :fenced, retryable?: false}
+
+    {:ok, control_plane} =
+      start_supervised(
+        {RuntimeInputReplayControlPlane,
+         owner: self(),
+         version: version,
+         work: work,
+         runtime_input_first_error: history_busy,
+         runtime_input_second_error: fenced}
+      )
+
+    _agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        runtime_input_resolver: resolver,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:runtime_inputs_committed_before_ack,
+                    %RunnerTask.RuntimeInputsResolved{} = first},
+                   2_000
+
+    assert_receive {:runtime_inputs_replayed, %RunnerTask.RuntimeInputsResolved{} = replay}, 2_000
+    assert replay == first
+    assert Agent.get(resolver_calls, & &1) == 1
+    assert_receive {:runtime_input_fenced_result, %RunnerTask.Result{}}, 2_000
+    refute_receive {:asset_running, _worker}, 100
+  end
+
   test "real task executor cancellation reaches a valid persisted acknowledgement" do
     :ok = FavnRunner.TaskResultBuffer.reset()
 
@@ -2596,6 +2895,151 @@ defmodule FavnRunner.RunnerAgentTest do
     assert Process.alive?(agent)
   end
 
+  test "a transient completion conflict resends the same result without replaying the asset" do
+    {:ok, asset_calls} = Agent.start_link(fn -> 0 end)
+    Application.put_env(:favn_runner, :counting_asset_counter, asset_calls)
+    on_exit(fn -> Application.delete_env(:favn_runner, :counting_asset_counter) end)
+    {version, work} = executable_work("completion_history_conflict", __MODULE__.CountingAsset)
+
+    history_busy = %{
+      kind: :conflict,
+      retryable?: true,
+      retry_after_ms: 10,
+      details: %{reason_code: "execution_history_owner_busy"}
+    }
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(), version: version, work: work, reject_results: [history_busy]}
+      )
+
+    _agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:preparation_task_started, %RunnerTask.Started{}}, 2_000
+    assert_receive {:result_rejected, %RunnerTask.Result{} = first, ^history_busy}, 2_000
+    assert_receive {:result_delivered, %RunnerTask.Result{} = replay, :ok}, 2_000
+    assert replay == first
+    assert Agent.get(asset_calls, & &1) == 1
+  end
+
+  test "a stale fence abandons a pending completion retry without replaying the asset" do
+    {:ok, asset_calls} = Agent.start_link(fn -> 0 end)
+    Application.put_env(:favn_runner, :counting_asset_counter, asset_calls)
+    on_exit(fn -> Application.delete_env(:favn_runner, :counting_asset_counter) end)
+    {version, work} = executable_work("completion_history_fenced", __MODULE__.CountingAsset)
+
+    history_busy = %{
+      kind: :conflict,
+      retryable?: true,
+      details: %{reason_code: "execution_history_owner_busy"}
+    }
+
+    fenced = %{kind: :fenced, retryable?: false}
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(), version: version, work: work, reject_results: [history_busy, fenced]}
+      )
+
+    _agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:result_rejected, %RunnerTask.Result{} = first, ^history_busy}, 2_000
+    assert_receive {:result_rejected, %RunnerTask.Result{} = replay, ^fenced}, 2_000
+    assert replay == first
+    assert Agent.get(asset_calls, & &1) == 1
+    assert_receive {:claimed_next, %RunnerTask.ClaimRequest{}}, 2_000
+
+    refute_receive {:result_delivered,
+                    %RunnerTask.Result{error: %RunnerError{type: :runner_task_result_rejected}},
+                    _},
+                   100
+  end
+
+  test "a deterministic local codec error produces one bounded unknown fallback" do
+    {version, work} = executable_work("deterministic_codec_rejection")
+
+    {:ok, control_plane} =
+      start_supervised(
+        {PreparationFailureControlPlane,
+         owner: self(), version: version, work: work, reject_results: [:invalid_runner_task_data]}
+      )
+
+    _agent =
+      start_supervised!({
+        RunnerAgent,
+        name: nil,
+        connection: control_plane,
+        runner_pool: :duckdb,
+        lifecycle_mode: :resident,
+        runtime_input_resolver: fn _work ->
+          {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+        end,
+        exit_fun: fn _status -> :ok end
+      })
+
+    assert_receive {:result_rejected, %RunnerTask.Result{}, :invalid_runner_task_data}, 2_000
+    assert_receive {:result_delivered, %RunnerTask.Result{} = fallback, :ok}, 2_000
+    assert fallback.error.type == :runner_task_result_rejected
+    assert fallback.outcome == :unknown
+    refute_receive {:result_rejected, _result, :invalid_runner_task_data}, 100
+  end
+
+  test "a tagged deterministic persistence error produces one bounded unknown fallback" do
+    {version, work} = executable_work("deterministic_persistence_rejection")
+    secret = "rejected-payload-must-not-be-logged"
+
+    rejection =
+      {:runner_task_result_persistence_rejected,
+       {:invalid_runner_task_result, :asset_attempt, :succeeded, %{secret: secret}}}
+
+    log =
+      capture_log(fn ->
+        {:ok, control_plane} =
+          start_supervised(
+            {PreparationFailureControlPlane,
+             owner: self(), version: version, work: work, reject_results: [rejection]}
+          )
+
+        _agent =
+          start_supervised!({
+            RunnerAgent,
+            name: nil,
+            connection: control_plane,
+            runner_pool: :duckdb,
+            lifecycle_mode: :resident,
+            runtime_input_resolver: fn _work ->
+              {:error, RunnerError.new(retryable?: false, outcome: :safe_failure)}
+            end,
+            exit_fun: fn _status -> :ok end
+          })
+
+        assert_receive {:result_rejected, %RunnerTask.Result{}, ^rejection}, 2_000
+        assert_receive {:result_delivered, %RunnerTask.Result{} = fallback, :ok}, 2_000
+        assert fallback.error.details.reason_code == "invalid_runner_task_result"
+        assert fallback.error.outcome == :unknown
+      end)
+
+    refute log =~ secret
+  end
+
   test "a rejected runtime-input resolution fails the preparation instead of resending forever" do
     {version, work} = executable_work("runtime_inputs_rejected")
     owner = self()
@@ -2898,6 +3342,16 @@ defmodule FavnRunner.RunnerAgentTest do
 
   defmodule CompletingAsset do
     def asset(_context), do: {:ok, %{value: 1}}
+  end
+
+  defmodule CountingAsset do
+    def asset(_context) do
+      :favn_runner
+      |> Application.fetch_env!(:counting_asset_counter)
+      |> Agent.update(&(&1 + 1))
+
+      {:ok, %{value: 1}}
+    end
   end
 
   defmodule SlowAsset do

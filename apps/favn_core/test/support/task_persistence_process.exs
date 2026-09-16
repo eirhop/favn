@@ -12,14 +12,47 @@ case mode do
     name = "fresh_asset_#{System.unique_integer([:positive])}"
     resolver = module <> "Resolver"
     {version, package} = Fixture.package_version(module, name, resolver)
+    application_key = "fresh_application_key_#{System.unique_integer([:positive])}"
+    application_value = "fresh_application_value_#{System.unique_integer([:positive])}"
+    adapter_key = "fresh_adapter_key_#{System.unique_integer([:positive])}"
+    application_key_atom = String.to_atom(application_key)
+    application_value_atom = String.to_atom(application_value)
+    adapter_key_atom = String.to_atom(adapter_key)
 
     tasks =
       Enum.map(Fixture.tasks(version), fn {kind, payload, result} ->
         payload =
           if kind == :asset_attempt, do: %{payload | execution_package: package}, else: payload
 
+        result =
+          case {kind, result} do
+            {:asset_attempt, %{asset_results: [asset_result]}} ->
+              %{
+                result
+                | asset_results: [
+                    %{
+                      asset_result
+                      | meta: %{application_key_atom => application_value_atom}
+                    }
+                  ]
+              }
+
+            {:relation_inspection, inspection} ->
+              %{
+                inspection
+                | table_metadata: %{adapter_key_atom => application_value_atom}
+              }
+
+            _other ->
+              result
+          end
+
         {:ok, encoded, hash} = Codec.encode_payload(kind, payload)
         {:ok, encoded_result} = Codec.encode_result(kind, :succeeded, result)
+        packages = if kind == :asset_attempt, do: [package], else: []
+
+        {:ok, persisted_result} =
+          Codec.decode_result(kind, :succeeded, encoded_result, version, packages)
 
         %{
           kind: Atom.to_string(kind),
@@ -27,12 +60,15 @@ case mode do
           result: encoded_result,
           hash: Base.encode16(hash),
           payload_digest: Fixture.digest(payload),
-          result_digest: Fixture.digest(result)
+          result_digest: Fixture.digest(persisted_result)
         }
       end)
 
     failed_result = Fixture.failed_result(version)
     {:ok, failed_encoded} = Codec.encode_result(:asset_attempt, :failed, failed_result)
+
+    {:ok, persisted_failure} =
+      Codec.decode_result(:asset_attempt, :failed, failed_encoded, version, [package])
 
     File.write!(
       file,
@@ -40,8 +76,9 @@ case mode do
         module: module,
         name: name,
         resolver: resolver,
+        fresh_names: [application_key, application_value, adapter_key],
         failure: failed_encoded,
-        failure_digest: Fixture.digest(failed_result),
+        failure_digest: Fixture.digest(persisted_failure),
         validations:
           Enum.map(Fixture.validations(), fn value ->
             {:ok, encoded} = Favn.Contracts.RunnerTask.PersistenceData.encode(value, 262_144)
@@ -59,7 +96,7 @@ case mode do
   "read" ->
     data = file |> File.read!() |> Jason.decode!()
 
-    for name <- [data["module"], data["name"], data["resolver"]] do
+    for name <- [data["module"], data["name"], data["resolver"]] ++ data["fresh_names"] do
       try do
         String.to_existing_atom(name)
         raise "consumer atom unexpectedly present"

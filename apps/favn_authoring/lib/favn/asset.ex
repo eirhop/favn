@@ -476,6 +476,11 @@ defmodule Favn.Asset do
 
   @typedoc """
   Canonical return shape expected from asset function execution.
+
+  Successful metadata is persisted as bounded open data. Atom and string keys
+  become strings, as do atom values. Nested maps/lists, scalar values, dates,
+  times, datetimes and decimals are supported; duplicate normalized keys and
+  unsupported runtime terms are rejected.
   """
   @type return_value :: :ok | {:ok, map()} | {:error, term()}
 

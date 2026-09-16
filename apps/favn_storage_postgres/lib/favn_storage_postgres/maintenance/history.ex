@@ -81,10 +81,40 @@ defmodule FavnStoragePostgres.Maintenance.History do
 
       unless locked,
         do:
-          Repo.rollback(Error.new(:conflict, "execution history owner is busy", retryable?: true))
+          Repo.rollback(
+            Error.new(:conflict, "execution history owner is busy",
+              retryable?: true,
+              details: %{reason_code: "execution_history_owner_busy"}
+            )
+          )
     end)
 
     check!(workspace, run_id)
+  end
+
+  @spec try_guard!(String.t(), String.t()) :: boolean()
+  def try_guard!(workspace, run_id) do
+    %{rows: roots} =
+      SQL.query!(
+        Repo,
+        "SELECT root_execution_group_id FROM favn_control.runs WHERE workspace_id=$1 AND run_id=$2",
+        [workspace, run_id]
+      )
+
+    locked? =
+      Enum.all?(roots, fn [root] ->
+        %{rows: [[locked]]} =
+          SQL.query!(
+            Repo,
+            "SELECT pg_try_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text)::text,0))",
+            [workspace, root]
+          )
+
+        locked
+      end)
+
+    if locked?, do: check!(workspace, run_id)
+    locked?
   end
 
   def check!(workspace, run_id) do

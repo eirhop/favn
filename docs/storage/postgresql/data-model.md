@@ -335,12 +335,21 @@ normal run retention removes it through the run foreign key.
 Runner-task orchestration context remains independently bounded after decoding;
 the PostgreSQL JSONB bound includes typed-envelope overhead.
 
-Task serialization uses a closed registry of structs and atoms, augmented only
-by validated retained manifest/package data. Backfill dispatcher metadata is
-part of this contract, including window/group/root identities and nested
-operator metadata. Built-in rerun, rebuild, operator timeline/context, resource
-recovery and stage-draining metadata also round-trip. Unknown atoms remain
-rejected. Enqueue validation reports the specific codec reason in
+Task serialization keeps framework structs, control fields, enums and
+identities in a closed registry augmented only by validated retained
+manifest/package data. Backfill dispatcher metadata is part of that closed
+contract, including window/group/root identities and nested operator metadata.
+Built-in rerun, rebuild, operator timeline/context, resource recovery and
+stage-draining metadata also round-trip. Unknown atoms remain rejected in
+closed paths.
+
+Explicit result leaves owned by applications or adapters use bounded open data:
+Elixir asset metadata, runtime-input metadata, runner-error details, and
+relation-inspection samples and metadata. Their atom/string keys normalize to
+strings without creating atoms; atom values normalize to strings. Typed SQL,
+source, lifecycle, relation, check, generation and capability controls remain
+closed. Unsupported terms and normalized duplicate keys are rejected. Enqueue
+and completion validation report the specific codec reason in
 `details.reason_code`.
 
 Pipeline and sequential execution remove an intended task reference after a

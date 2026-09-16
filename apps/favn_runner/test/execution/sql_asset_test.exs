@@ -8,6 +8,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   alias Favn.Asset.RelationInput
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RunnerError
+  alias Favn.Contracts.RunnerTask.PersistenceCodec
   alias Favn.Contracts.RunnerWork
   alias Favn.Contracts.ResourceOutcome
   alias Favn.Manifest
@@ -1153,6 +1154,19 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
              }
            ] = meta.check_results
 
+    assert {:ok, encoded} =
+             PersistenceCodec.encode_result(:asset_attempt, :failed, result)
+
+    assert {:ok, persisted} =
+             PersistenceCodec.decode_result(:asset_attempt, :failed, encoded, version)
+
+    assert [%{meta: persisted_meta}] = persisted.asset_results
+    assert persisted_meta.connection == :runner_sql_runtime
+    assert persisted_meta.quality_status == :failed
+    assert persisted_meta.transaction_outcome == :not_started
+    assert persisted_meta.write_outcome == :not_started
+    assert persisted_meta.check_results == meta.check_results
+
     refute_received {:checked_query, _statement}
     refute_received {:checked_materialize, _write_plan}
   end
@@ -1581,6 +1595,52 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, result} = FavnRunner.Inspection.inspect_relation(request, version)
     assert [%{code: :row_count_failed, message: "safe row count failure"}] = result.warnings
+  end
+
+  test "inspection producer data persists without registering adapter keys" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
+    relation = RelationRef.new!(%{connection: :inspection_fake, name: "orders"})
+
+    :ok =
+      Registry.reload(
+        %{
+          inspection_fake: %Resolved{
+            name: :inspection_fake,
+            adapter: FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter,
+            module: __MODULE__,
+            config: %{}
+          }
+        },
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+
+    version = register_sql_manifest!(ref, relation)
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: version.manifest_version_id,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      asset_ref: ref,
+      include: [:relation, :columns, :sample, :table_metadata],
+      sample_limit: 1
+    }
+
+    assert {:ok, result} = FavnRunner.Inspection.inspect_relation(request, version)
+
+    assert {:ok, encoded} =
+             PersistenceCodec.encode_result(:relation_inspection, :succeeded, result)
+
+    assert {:ok, persisted} =
+             PersistenceCodec.decode_result(:relation_inspection, :succeeded, encoded, version)
+
+    assert persisted.relation.metadata == %{"adapter_extension" => "ready"}
+
+    assert hd(persisted.columns).metadata == %{
+             :contract_nullability => :reliable,
+             "adapter_extension" => "ready"
+           }
+
+    assert persisted.sample.rows == [%{"adapter_value" => "ready"}]
+    assert persisted.table_metadata == %{"adapter_extension" => "ready"}
   end
 
   defp register_sql_manifest!(
@@ -2236,6 +2296,35 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter do
   end
 
   def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def relation(:conn, ref, _opts) do
+    {:ok,
+     %Favn.SQL.Relation{
+       name: ref.name,
+       type: :table,
+       metadata: %{adapter_extension: :ready}
+     }}
+  end
+
+  def columns(:conn, _ref, _opts) do
+    {:ok,
+     [
+       %Favn.SQL.Column{
+         name: "id",
+         position: 1,
+         data_type: "INTEGER",
+         nullable?: false,
+         metadata: %{contract_nullability: :reliable, adapter_extension: :ready}
+       }
+     ]}
+  end
+
+  def sample(:conn, _ref, _opts) do
+    {:ok, %Favn.SQL.Result{columns: ["id"], rows: [%{adapter_value: :ready}]}}
+  end
+
+  def table_metadata(:conn, _ref, _opts),
+    do: {:ok, %{adapter_extension: :ready}}
 
   def row_count(:conn, _ref, _opts) do
     {:error,

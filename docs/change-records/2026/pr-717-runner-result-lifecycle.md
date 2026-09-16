@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and lifecycle hardening |
 | Primary issue | None; the user explicitly requested a direct repair without an issue |
 | Pull request | [#717](https://github.com/eirhop/favn/pull/717) |
@@ -365,43 +365,113 @@ listed honestly in the outcome.
 
 ## Implementation outcome
 
-Pending implementation.
+The durable codec now keeps framework values closed while converting only the
+documented application and adapter leaves to bounded string-keyed data. Real
+Elixir, source, SQL, and inspection producers pass through that boundary in
+tests. Completion failures retain a stable reason code, retryable runner
+commands retain the exact command and payload, and a claim skips a run whose
+history owner is busy so an unrelated queued task can proceed. The existing
+failure-drain scheduler needed no production change: once claims make progress,
+the existing policy runs eligible independent work, blocks dependent work, and
+terminalizes the failed run.
+
+```mermaid
+flowchart TD
+    A[Runner produces a typed result] --> B{Result path}
+    B -->|Framework control| C[Keep closed and typed]
+    B -->|Application or adapter leaf| D[Normalize bounded open data]
+    C --> E[Encode and validate]
+    D --> E
+    E --> F[Persist exact completion]
+    G[History owner busy] --> H[Skip this run during claim]
+    H --> I[Try another queued candidate]
+    I --> J[Eligible siblings drain]
+    F --> J
+    J --> K[Run reaches terminal state]
+```
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: Pending.
-- Ownership boundaries affected: Pending.
-- Implementation complexity: Pending.
-- Operational complexity: Pending.
-- Canonical documentation updated: Pending.
-- Actual additions, deletions, and supporting lines per approved complexity-budget slice: Pending.
+- Files and ownership areas changed: Core persistence normalization and tests;
+  runner command retry, diagnostics, and producer tests; PostgreSQL history,
+  claim, completion, backfill, and drain tests; the public asset type contract;
+  and canonical runner/storage guides.
+- Ownership boundaries affected: The public callback shape is unchanged. The
+  durable runner-task contract now explicitly distinguishes closed framework
+  values from bounded open leaves. No database schema or external protocol
+  version changed.
+- Implementation complexity: Two focused Core modules implement the open-data
+  bound and the path matrix. Runner changes reuse the existing result buffer and
+  command identities. PostgreSQL changes add a nonblocking history guard for
+  candidate selection and preserve the existing blocking guard elsewhere.
+- Operational complexity: No migration or repair runs. Runner diagnostics add a
+  nested claim state with stable reason, retryability, count, and next retry.
+  Existing unknown outcomes still require explicit reconciliation.
+- Canonical documentation updated: Asset authoring documents the durable
+  metadata types; elastic-runner operations document claim diagnostics; the
+  PostgreSQL data model documents the mixed closed/open persistence boundary.
+- Repository diff at final review: 2,110 additions and 60 deletions
+  across 21 implementation, test, and documentation files. The two Core
+  normalization modules account for 478 added production lines; 1,398 added
+  lines are focused tests and test support.
+
+| Slice | Actual production change | Actual supporting change | Budget outcome |
+| --- | --- | --- | --- |
+| 1 | 491 additions, 3 deletions | 447 additions, 5 deletions | Both ranges were exceeded because the safe implementation classifies every mixed result path, retains current-format compatibility, tests actual success/failure producers, verifies bounds, and proves arbitrary keys in fresh OS processes; the matrix is centralized rather than repeated in producers |
+| 2 | 20 additions, 4 deletions | 41 dedicated additions plus completion cases in the PostgreSQL test file | Within production budget; the orchestrator now tags every pure persistence rejection while preserving its exact nested reason |
+| 3 | 144 additions, 9 deletions | 478 additions, 24 deletions | Supporting code exceeded the estimate to prove exact Started, runtime-input, and completion retries; all three fence paths; deterministic fallback; and payload-free diagnostics after final-review findings |
+| 4 | 32 additions, 3 deletions | 432 additions, 5 deletions | Supporting code exceeded the estimate because it composes real history contention with failure drain in addition to the store transaction cases; no drain production code was needed |
+| 5 | No production code | 25 documentation additions, 7 deletions; producer coverage is counted in slices 1 and 4 | Within budget |
 
 ## Deviations from the approved plan
 
-Pending implementation.
+| Planned | Implemented | Reason | Reviewer verdict |
+| --- | --- | --- | --- |
+| Normalize at result construction in Worker, SQL runtime, and inspection code | Normalize centrally at `PersistenceCodec.encode_result/3`, selected by the explicit result-path matrix | One boundary covers every durable writer and leaves in-memory producer contracts unchanged; actual producer tests prove composition | Approved |
+| Add an explicit provenance distinction if needed for mixed asset metadata | Preserve the current result struct and identify the complete current SQL/source producer shapes plus strong typed SQL evidence | Adding a struct field would make already persisted current-format results fail struct reconstruction. Compatibility tests cover both real producers and application maps that overlap framework key names | Approved |
+| Retry a claim that meets history-owner contention | Candidate selection treats a busy history owner as unavailable and continues to another queued candidate | Retrying the whole claim would keep an unrelated queued sibling behind the busy run; candidate skipping preserves queue progress without changing history lock order | Approved |
+| Change drain production behavior if the integration proof exposes a scheduler defect | No drain production code changed | The mixed-stage integration test proves the existing scheduler refills eligible independent work and terminalizes once claim progress is restored | Approved |
+| Expose claim retry fields on the existing diagnostics surface | Add them under a `claim` map | This preserves the existing top-level registration diagnostics contract and separates two independent retry loops | Approved |
 
 ## Decision log
 
 | Date | Decision | Reason | Review needed |
 | --- | --- | --- | --- |
 | 2026-09-16 | Use a change record without a primary issue | The user explicitly requested a full implementation record and said an issue is unnecessary | No |
+| 2026-09-16 | Reject duplicate atom/string keys after normalization | Silent overwrite would make the durable result depend on map iteration order | Included in final review |
+| 2026-09-16 | Keep unsupported post-execution metadata on the unknown path | The external write may already have completed, so reporting a safe failure could permit a blind replay | Included in final review |
+| 2026-09-16 | Keep the current persisted result struct | A new discriminator field would break current-format persisted structs before a format migration exists | Included in final review |
+| 2026-09-16 | Tag pure result-persistence failures at the orchestrator boundary | Every normalization/schema failure is deterministic, while untagged gateway errors can be uncertain; one tagged class prevents incomplete runner-side error lists | Included in final re-review |
+| 2026-09-16 | Preserve SQL failure controls and register their enum atoms | Real failed SQL attempts emit a smaller envelope than successful attempts, including `transaction_outcome`, `not_started`, and `transaction_not_started` | Included in final re-review |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | Current-code Landing metadata reproduction | `PersistenceData.decode/2` returned `{:error, :invalid_runner_task_data}` | Local source reproduction, not a deployed run |
+| Format, compilation, and test-tier guard | Passed `mix format`, warnings-as-errors compilation, `git diff --check`, and `scripts/check_test_tag_tiers.exs` | Current worktree |
+| Core fast suite | 488 passed | Includes fresh-process arbitrary application/adapter keys, open-data bounds, typed SQL failures, duplicate controls, tuple rejection, and closed-control rejection |
+| Runner fast suite | 271 passed | Includes real Elixir/source/SQL success and failure/inspection producers, exact-command retries, all pending-retry fences, and payload-free diagnostics |
+| Orchestrator fast suite | 875 passed, 2 excluded, in a sequential owning-app run | Includes deterministic result-persistence error tagging; two unrelated 100 ms process-start tests failed only in the earlier aggregate umbrella run and both passed with the same seed in isolation |
+| PostgreSQL runner-task suite | 64 passed | Exact completion reason, real SQL result, busy-history sibling claim, retryable transitions, and task readback |
+| PostgreSQL fast suite | 467/468 passed, 24 excluded; the sole unrelated 100 ms connection-order failure passed with the same seed in isolation | Clean disposable PostgreSQL database; changed runner-task tests passed |
+| Backfill integration | 2 passed | Actual dispatcher metadata, first enqueue/readback, Landing-style completion/readback, and combined policy/schedule context |
+| Mixed failure drain with history contention | Passed | An independent PostgreSQL connection holds the exact history advisory key exposed through a transaction-local probe root; after a terminal sibling failure, the correlated claim returns no work rather than a broad storage error, then the root is restored, independent work drains, dependent work stays blocked, and the run becomes terminal |
+| Umbrella fast suite | Every changed-path test passed; three unrelated load-sensitive tests failed and all passed at the same locations/seeds in isolation | Not recorded as a clean umbrella pass; CI remains authoritative for aggregate qualification |
+| Acceptance suite | 4 passed across `favn`, `favn_local`, and browser acceptance slices | Restricted PostgreSQL runtime role on a disposable database |
+| Slow suite | 25/28 passed in aggregate; the PostgreSQL restore drill passed with a matching PostgreSQL 18 client, and both planner/timing-sensitive performance cases passed alone, including on a fresh database | Not recorded as a clean aggregate pass because the host PostgreSQL 16 client mismatched the PostgreSQL 18 server and the two performance thresholds fluctuated under combined load |
+| Whole-umbrella Dialyzer | Passed with three existing filtered warnings and no unnecessary filters | Final corrected worktree |
 
 ### Not verified
 
 - A live deployment containing this change.
 - Repair of the already affected runs and external Landing writes.
-- The exact source of the reported broad `storage` claim category; the current
-  source exposes insufficient claim detail, so deterministic contention tests
-  and improved diagnostics are part of the plan.
-- A separate drain-scheduler defect. Current source preserves eligible
-  independent refill and terminalizes after pending tasks settle; the mixed
-  integration test will decide whether production drain code needs any change.
+- Direct correlation between the reported production claim failures and the
+  history-owner lock. Current source reproduces the lock behavior and the broad
+  diagnostic, and the deterministic transaction test proves the repair.
+- A clean aggregate local umbrella run. All aggregate-only failures passed at
+  their original locations and seeds in isolation; CI qualification is pending.
+- Image and production-shaped HTTP CI; those remain CI-owned checks.
 
 ## Final review
 
@@ -409,7 +479,7 @@ Pending implementation.
 | --- | --- |
 | Reviewer | Astra xhigh independent agent |
 | Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
-| Findings | Pending |
-| Findings addressed and rechecked | Pending |
-| Verdict | Pending |
+| Deviations complete | Yes |
+| Findings | Requested changes for incomplete deterministic-error classification, nil-valued duplicate nullability controls, tuple conversion, untyped SQL failure metadata, payload-bearing rejection diagnostics, and missing fresh-process/bound/fence/contention-drain coverage. No history lock-order violation was found. |
+| Findings addressed and rechecked | Code and tests now tag every persistence rejection, reject duplicate controls by key presence, reject callback tuples, preserve real SQL failure controls and enum atoms, emit only bounded reason codes, and cover fresh readers, bounds, pending-retry fences, and the composed contention/drain path. Astra independently rechecked the implementation and the final PostgreSQL probe-root helper. |
+| Verdict | Approved with no remaining findings |
