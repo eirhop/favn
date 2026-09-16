@@ -14789,10 +14789,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
-  defp stop_suspended_run_server!(pid, execution_state) do
-    FavnOrchestrator.RunServer.Execution.stop_for_recovery(execution_state)
-    :ok = :sys.terminate(pid, :normal)
-  end
+  defp stop_suspended_run_server!(pid, _execution_state), do: :sys.terminate(pid, :normal)
 
   defp get_run(fixture, run_id) do
     RunStore.get_run(%GetRun{

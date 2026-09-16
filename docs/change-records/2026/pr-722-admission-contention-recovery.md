@@ -419,13 +419,13 @@ the codec boundary.
 | Area | Added | Deleted | Net |
 | --- | ---: | ---: | ---: |
 | Production Elixir | 619 | 39 | 580 |
-| Tests | 1,003 | 17 | 986 |
+| Tests | 1,004 | 21 | 983 |
 | Canonical documentation | 11 | 0 | 11 |
 | This implementation record | 510 | 0 | 510 |
-| **Total PR** | **2,143** | **56** | **2,087** |
+| **Total PR** | **2,144** | **60** | **2,084** |
 
 The executable production change is 658 changed lines. Most of the PR is proof:
-1,003 test additions and this required 510-line implementation record. The
+1,004 test additions and this required 510-line implementation record. The
 implementation changes five orchestrator production modules, four existing test
 modules, and the canonical orchestrator structure document. It adds no migration,
 dependency, wire-format registration, public DSL, or runner release requirement.
@@ -438,7 +438,7 @@ dependency, wire-format registration, public DSL, or runner release requirement.
   cleanup against the newest durable run snapshot, and normal-stop recovery
   cleanup. These are all in the reported admission/ownership/cancellation chain.
   The final independent review must explicitly accept this variance.
-- Supporting test growth is 1,003 lines, 102 above the planned upper range. The
+- Supporting test growth is 1,004 lines, 102 above the planned upper range. The
   increase replaces the earlier layered proof with one sandboxed PostgreSQL
   integration that observes the real advisory-lock error in both attempt-start
   and ownership renewal, proves initial and refill recovery, proves a committed
