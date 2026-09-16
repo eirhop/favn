@@ -5,10 +5,10 @@
 | Status | Implementing |
 | Type | Bug fix |
 | Primary issue | None. The maintainer supplied the production-like failure report directly and previously authorized this regression repair without a GitHub issue. |
-| Pull request | Pending |
+| Pull request | [#722](https://github.com/eirhop/favn/pull/722) |
 | Related work | [#693](https://github.com/eirhop/favn/pull/693), [#716](https://github.com/eirhop/favn/pull/716), and [#717](https://github.com/eirhop/favn/pull/717) |
 | Affected areas | Orchestrator stage admission, run-to-runner metadata boundary, PostgreSQL-backed lifecycle integration, and run diagnostics |
-| Approved plan commit | This commit. The reviewed plan cannot name its own ID; it is recorded in the immediate PR-number update. |
+| Approved plan commit | `0ecaa5da` |
 | Last updated | 2026-09-16 |
 
 ## One-minute summary
