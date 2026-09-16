@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix and lifecycle hardening |
 | Primary issue | None; the user explicitly requested a direct repair without an issue |
-| Pull request | Pending |
+| Pull request | [#717](https://github.com/eirhop/favn/pull/717) |
 | Related work | [#703](https://github.com/eirhop/favn/pull/703), [#711](https://github.com/eirhop/favn/pull/711), [#714](https://github.com/eirhop/favn/pull/714), [#716](https://github.com/eirhop/favn/pull/716) |
 | Affected areas | Core runner-task result contract; runner retries and diagnostics; orchestrator completion; PostgreSQL task/history coordination; pipeline failure draining; asset-authoring metadata |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `89cf4f22f380234926130d53e7d06757486c671d` |
 | Last updated | 2026-09-16 |
 
 ## One-minute summary
