@@ -1193,7 +1193,7 @@ defmodule FavnRunner.RunnerAgent do
 
         Logger.error(
           "runner task fallback result was rejected as well; abandoning the assignment",
-          reason_code: reason_code
+          reason: reason_code
         )
 
         abandon_stale_assignment(state)
@@ -1203,7 +1203,7 @@ defmodule FavnRunner.RunnerAgent do
 
         Logger.error(
           "runner task result rejected as invalid; delivering unknown-outcome fallback",
-          reason_code: reason_code
+          reason: reason_code
         )
 
         error =
