@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented; final review pending |
 | Type | Bug fix |
 | Primary issue | None. The maintainer supplied the production-like failure report directly and previously authorized this regression repair without a GitHub issue. |
 | Pull request | [#722](https://github.com/eirhop/favn/pull/722) |
@@ -394,29 +394,99 @@ The sections below are completed during implementation and before final review.
 
 ## Implementation outcome
 
-Pending.
+Stage admission now pauses on a replay-safe persistence failure before runner
+enqueue, retains the exact command and local ownership, and resumes only after
+the command succeeds and run ownership is freshly renewed. The original work
+deadline remains authoritative. Cancellation, ownership loss, or deadline
+expiry cleans the known-unsubmitted entry without sending a runner cancellation
+for a task that was never saved. Already durable siblings remain owned and are
+not cancelled by temporary history contention.
+
+Ownership renewal now replays one exact renewal ID for structured retryable
+store errors while the last confirmed lease remains live with a one-second
+safety margin. It remains fail-closed for fencing, permanent errors, and leases
+that are too close to expiry. Execution progress is deferred while either the
+attempt-start command or its post-write ownership proof is pending.
+
+Runner work metadata now removes the complete known control-plane lifecycle
+families in both atom and string form. Backfill identity and operator metadata
+remain present. The PostgreSQL regression creates actual backfill work, persists
+and reads its first runner task, and proves cancellation outcomes do not cross
+the codec boundary.
 
 ### Actual scope and complexity
 
-Pending.
+| Area | Added | Deleted | Net |
+| --- | ---: | ---: | ---: |
+| Production Elixir | 543 | 37 | 506 |
+| Tests | 362 | 13 | 349 |
+| Canonical documentation | 10 | 0 | 10 |
+
+The implementation changes five orchestrator production modules, three focused
+orchestrator test modules, one existing PostgreSQL integration test, and the
+canonical orchestrator structure document. It adds no migration, dependency,
+wire-format registration, public DSL, or runner release requirement.
 
 ## Deviations from the approved plan
 
-Pending.
+- Production additions are 543 lines, three above the plan's 550-line gross
+  re-review threshold when the ten documentation lines are included. Net
+  production growth is 506 lines. The extra state is the explicit ownership
+  gate and fail-closed cleanup requested during plan review; it has not been
+  collapsed because doing so would hide lifecycle states. Final independent
+  review must explicitly accept this variance.
+- Supporting test growth is 349 net lines, below the planned 400-line minimum.
+  Existing task-store contention, ambiguous-enqueue, unknown-value, and full
+  backfill result tests were reused instead of duplicated.
+- The planned single composed PostgreSQL test that physically holds the history
+  advisory lock through the complete RunServer flow was split at the application
+  boundary. A real PostgreSQL store test proves the lock error, retryable reason,
+  and exact-command replay; deterministic RunServer/admission tests prove pause,
+  ownership gating, cancellation, deadline expiry, sibling preservation, and
+  one enqueue; the existing PostgreSQL backfill integration proves the resulting
+  work crosses enqueue/read/result persistence. This avoids a timing-sensitive
+  cross-process test, but it does not constitute one real-lock end-to-end test.
+- The existing run header already falls back from error `type` to `kind`, so no
+  diagnostic source change was needed. The specific persistence reason remains
+  available in retry telemetry and is not replaced by a manufactured terminal
+  enqueue failure.
 
 ## Decision log
 
-Pending.
+- Reuse `PersistenceRetry` for exact `step_started` replay rather than adding a
+  second retry scheduler.
+- Represent pre-dispatch admission as explicit paused state beside the durable
+  active-task set. A local entry is never treated as a saved runner task.
+- Require a fresh ownership renewal after exact command success because command
+  receipt replay alone does not prove the current fence.
+- Bound renewal retries by the last confirmed lease and preserve one renewal ID
+  across retries.
+- Project runner metadata from mutable run metadata at work construction rather
+  than registering control-plane keys in the closed codec.
+- Preserve existing authoritative resolution for ambiguous enqueue outcomes and
+  existing unknown-outcome protections for completed external writes.
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Focused tests | Pending | Automated qualification, not live proof |
+| Format and compile | Passed: `mix format`; test compile with warnings as errors | Static/build qualification |
+| Focused orchestrator tests | Passed: 44 tests | Deterministic state-machine, retry, cancellation, ownership, deadline, and metadata qualification |
+| Full fast orchestrator suite | Passed: 883 tests, including 6 doctests; 2 excluded | Orchestrator regression qualification |
+| Umbrella fast suite | Passed all app slices | Repository-wide regression qualification; excluded tagged tiers remain separate |
+| PostgreSQL backfill task regressions | Passed: 2 focused integration tests | Actual enqueue/read/result persistence with backfill and cancellation metadata |
+| PostgreSQL history-lock test | Passed: focused real-lock test | Real store contention and exact-command replay only |
+| Closed codec safeguards | Passed: 26 runner-task persistence tests | Unknown atoms and unsupported structs remain rejected |
+| Test tier guard | Passed | Tagged tests remain assigned to CI-covered tiers |
+| Diff checks | Passed: `git diff --check` | Whitespace only |
 
 ### Not verified
 
-Pending.
+- The supplied failed run was inspected read-only and was not mutated or replayed.
+- No fresh external Landing backfill was executed against a deployed service.
+- The plan's timing-sensitive single-process real-lock-to-RunServer integration
+  was replaced by the layered evidence recorded above.
+- Pull-request CI and the final reviewed commit remain pending.
 
 ## Final review
 

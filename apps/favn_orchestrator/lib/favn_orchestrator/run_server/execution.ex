@@ -323,15 +323,62 @@ defmodule FavnOrchestrator.RunServer.Execution do
   @spec retry_persistence(RunExecutionState.t(), PersistenceRetry.t()) ::
           {:cont, RunExecutionState.t()}
           | {:terminal, RunState.t()}
+          | {:ownership_gate, RunExecutionState.t(), PersistenceRetry.t()}
           | {:persist_retry, RunExecutionState.t(), PersistenceRetry.t(), term()}
   def retry_persistence(%RunExecutionState{} = state, %PersistenceRetry{} = retry) do
     case PersistenceRetry.persist(retry) do
-      :ok -> resume_persisted(state, retry.resume)
-      {:error, :external_cancel} -> {:terminal, Snapshots.cancelled_snapshot(state.run)}
-      {:error, reason} -> {:persist_retry, state, retry, reason}
+      :ok when elem(retry.resume, 0) == :stage_attempt_start ->
+        {:ownership_gate, state, retry}
+
+      :ok ->
+        resume_persisted(state, retry.resume)
+
+      {:error, :external_cancel} ->
+        state = cleanup_paused_admission(state, :external_cancel)
+        {:terminal, Snapshots.cancelled_snapshot(state.run)}
+
+      {:error, reason} ->
+        handle_persistence_retry_failure(state, retry, reason)
     end
     |> stop_workers_on_terminal(state)
   end
+
+  @doc false
+  @spec resume_persisted_retry(RunExecutionState.t(), PersistenceRetry.t()) ::
+          {:cont, RunExecutionState.t()}
+          | {:terminal, RunState.t()}
+          | {:persist_retry, RunExecutionState.t(), PersistenceRetry.t(), term()}
+  def resume_persisted_retry(%RunExecutionState{} = state, %PersistenceRetry{} = retry) do
+    resume_persisted(state, retry.resume)
+  end
+
+  defp handle_persistence_retry_failure(
+         %RunExecutionState{} = state,
+         %PersistenceRetry{resume: {:stage_attempt_start, pause}} = retry,
+         reason
+       ) do
+    cond do
+      reason in [:fenced, :cancellation_race] ->
+        {:persist_retry, state, retry, reason}
+
+      StageAdmission.replayable_attempt_start_failure?(reason) ->
+        {:persist_retry, state, retry, reason}
+
+      true ->
+        state = %{state | paused_admission: nil}
+        result = StageAdmission.abort_attempt_start(pause, reason)
+
+        handle_resumed_stage_admission(
+          state,
+          pause.ctx.attempt,
+          result,
+          pause.ctx.completed_node_statuses
+        )
+    end
+  end
+
+  defp handle_persistence_retry_failure(state, retry, reason),
+    do: {:persist_retry, state, retry, reason}
 
   defp stop_workers_on_terminal({:terminal, _run} = result, %RunExecutionState{} = state) do
     _ = stop_post_step_workers(state)
@@ -345,6 +392,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           {:cont, RunExecutionState.t()} | {:terminal, RunState.t()}
   def cancel(%RunExecutionState{} = state, reason) do
     reason = %{kind: :external_cancel, reason: reason}
+
+    state = cleanup_paused_admission(state, reason)
 
     state =
       if map_size(state.post_step_continuations) > 0 do
@@ -380,6 +429,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   def stop_for_recovery(state),
     do:
       state
+      |> cleanup_paused_admission(:run_server_stopped)
       |> stop_post_step_workers()
       |> stop_await_processes()
       |> clear_admission_waiters()
@@ -577,6 +627,21 @@ defmodule FavnOrchestrator.RunServer.Execution do
       resume.stage,
       resume.attempt,
       resume.next_retry_at
+    )
+  end
+
+  defp resume_persisted(
+         %RunExecutionState{} = state,
+         {:stage_attempt_start, pause}
+       ) do
+    state = %{state | paused_admission: nil}
+    result = StageAdmission.resume_attempt_start(pause)
+
+    handle_resumed_stage_admission(
+      state,
+      pause.ctx.attempt,
+      result,
+      pause.ctx.completed_node_statuses
     )
   end
 
@@ -1277,6 +1342,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:persist_retry, %PersistenceRetry{} = retry, reason} ->
         {:persist_retry, state, retry, reason}
+
+      {:persist_retry, %PersistenceRetry{} = retry, reason, pause} ->
+        state = pause_stage_admission(state, pause)
+        {:persist_retry, state, retry, reason}
     end
   end
 
@@ -1704,8 +1773,109 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:persist_retry, %PersistenceRetry{} = retry, reason} ->
         {:persist_retry, state, retry, reason}
+
+      {:persist_retry, %PersistenceRetry{} = retry, reason, pause} ->
+        state = pause_stage_admission(state, pause)
+        {:persist_retry, state, retry, reason}
     end
   end
+
+  defp handle_resumed_stage_admission(state, attempt, result, completed_node_statuses) do
+    case {state.stage_state, result} do
+      {nil,
+       {:ok, run_after_submit, entries, deferred_node_keys, queued_steps, waiters,
+        admission_failure, deferred_refill_cause}} ->
+        stage_state =
+          StageAttemptState.new(
+            run_after_submit,
+            state.accumulated_results,
+            entries,
+            deferred_node_keys,
+            queued_steps,
+            admission_failure,
+            deferred_refill_cause
+          )
+          |> Map.update!(:node_statuses, &Map.merge(completed_node_statuses, &1))
+
+        resumed =
+          %{
+            state
+            | run: run_after_submit,
+              stage_state: stage_state,
+              stage_attempt: attempt,
+              stage_admission_deadline_ms: stage_admission_deadline(run_after_submit.timeout_ms)
+          }
+          |> RunExecutionState.put_admission_waiters(waiters)
+
+        resumed
+        |> start_pipeline_awaits(entries)
+        |> after_starting_pipeline_awaits(entries)
+
+      {%StageAttemptState{},
+       {:ok, next_run, entries, next_deferred_node_keys, next_queued_steps, waiters,
+        admission_failure, deferred_refill_cause}} ->
+        stage_state =
+          state.stage_state
+          |> StageAttemptState.add_entries(
+            entries,
+            next_run,
+            next_deferred_node_keys,
+            next_queued_steps,
+            deferred_refill_cause
+          )
+          |> StageAttemptState.add_admission_failure(admission_failure)
+
+        %{state | run: next_run, stage_state: stage_state}
+        |> RunExecutionState.put_admission_waiters(waiters)
+        |> start_pipeline_awaits(entries)
+        |> after_starting_pipeline_awaits(entries)
+
+      {nil, {:partial_retry, _, _, _, _, _, _, _, _, _} = partial} ->
+        handle_initial_stage_partial_retry(state, attempt, partial)
+
+      {%StageAttemptState{}, {:partial_retry, _, _, _, _, _, _, _, _, _} = partial} ->
+        handle_refill_stage_partial_retry(state, partial)
+
+      {nil, {:node_failed, _, _, _, _, _, _, _, _} = failed} ->
+        handle_initial_stage_node_failure(state, attempt, failed)
+
+      {%StageAttemptState{}, {:node_failed, _, _, _, _, _, _, _, _} = failed} ->
+        handle_refill_stage_node_failure(state, failed)
+
+      {_stage_state, {:error, failed_run, step_results, _keys, cleanup_entries}} ->
+        terminalize_stage_admission_failure(state, failed_run, step_results, cleanup_entries)
+
+      {_stage_state, {:error, failed_run, step_results, _keys}} ->
+        terminalize_stage_admission_failure(state, failed_run, step_results)
+
+      {_stage_state, {:persist_retry, %PersistenceRetry{} = retry, reason, pause}} ->
+        paused = pause_stage_admission(state, pause)
+        {:persist_retry, paused, retry, reason}
+
+      {_stage_state, {:persist_retry, %PersistenceRetry{} = retry, reason}} ->
+        {:persist_retry, state, retry, reason}
+    end
+  end
+
+  defp pause_stage_admission(%RunExecutionState{} = state, pause) do
+    work_set =
+      Enum.reduce(pause.entries, state.work_set, fn entry, acc ->
+        ActiveTaskSet.add_entry(acc, entry)
+      end)
+
+    %{state | run: pause.ctx.current_run, work_set: work_set, paused_admission: pause}
+  end
+
+  defp cleanup_paused_admission(
+         %RunExecutionState{paused_admission: pause} = state,
+         reason
+       )
+       when is_map(pause) do
+    run = StageAdmission.cleanup_paused(pause, reason)
+    %{state | run: run, paused_admission: nil}
+  end
+
+  defp cleanup_paused_admission(%RunExecutionState{} = state, _reason), do: state
 
   defp handle_refill_stage_partial_retry(
          state,

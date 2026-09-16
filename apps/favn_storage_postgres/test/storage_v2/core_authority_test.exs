@@ -7016,7 +7016,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                refresh: :force
              )
 
-    run = built.run_state
+    run =
+      built.run_state
+      |> Map.update!(:metadata, fn metadata ->
+        metadata
+        |> Map.put(:cancel_outcomes, [])
+        |> Map.put("cancel_outcomes", [])
+      end)
+      |> RunState.with_snapshot_hash()
 
     assert {:ok, _created} =
              RunStore.create_run(%{
@@ -13973,6 +13980,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert [task_id] = await_runner_task_ids!(fixture.workspace_id, run_id, 1)
     assert {:ok, task} = FavnOrchestrator.RunnerTasks.fetch(fixture.workspace_id, task_id)
     assert Map.take(task.payload.metadata, Map.keys(metadata)) == metadata
+    refute Map.has_key?(task.payload.metadata, :cancel_outcomes)
+    refute Map.has_key?(task.payload.metadata, "cancel_outcomes")
     assert task.payload.metadata.window_selection.intent == :backfill
     if kind == :pipeline, do: assert(task.payload.pipeline.window_selection.intent == :backfill)
     assert {:ok, claimed} = claim_asset_task(fixture, "backfill-first-task")

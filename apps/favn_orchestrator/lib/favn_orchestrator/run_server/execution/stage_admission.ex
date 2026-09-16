@@ -96,6 +96,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
           | {:error, RunState.t(), [term()], [node_key()]}
           | {:error, RunState.t(), [term()], [node_key()], [entry()]}
           | {:persist_retry, PersistenceRetry.t(), term()}
+          | {:persist_retry, PersistenceRetry.t(), term(), map()}
 
   @spec submit(map()) :: result()
   def submit(request) when is_map(request) do
@@ -484,6 +485,18 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       :ok ->
         enqueue_admitted_entry(%{ctx | current_run: intended_run}, task_id)
 
+      {:error, reason} when is_struct(reason, PersistenceError) ->
+        if replayable_attempt_start_failure?(reason) do
+          pause_attempt_start(ctx, intended_run, task_id, intent, reason)
+        else
+          fail_unsubmitted_entry(
+            %{ctx | current_run: without_inflight_task(ctx.current_run, task_id)},
+            :attempt_start,
+            ctx.work.asset_ref,
+            reason
+          )
+        end
+
       {:error, reason} ->
         fail_unsubmitted_entry(
           %{ctx | current_run: without_inflight_task(ctx.current_run, task_id)},
@@ -493,6 +506,72 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         )
     end
   end
+
+  defp pause_attempt_start(ctx, intended_run, task_id, intent, reason) do
+    pause = %{
+      ctx: %{ctx | current_run: intended_run},
+      task_id: task_id,
+      intent: intent,
+      entries: entries(ctx)
+    }
+
+    retry =
+      PersistenceRetry.new(
+        intended_run,
+        attempt_start_event(ctx.attempt),
+        intent,
+        {:stage_attempt_start, pause}
+      )
+
+    {:persist_retry, retry, reason, pause}
+  end
+
+  @doc false
+  @spec resume_attempt_start(map()) :: result()
+  def resume_attempt_start(%{ctx: ctx, task_id: task_id} = pause) do
+    if deadline_live?(ctx.work.deadline_at) do
+      enqueue_admitted_entry(ctx, task_id)
+    else
+      expire_paused_entry(pause)
+    end
+  end
+
+  @doc false
+  @spec abort_attempt_start(map(), term()) :: result()
+  def abort_attempt_start(%{ctx: ctx} = pause, reason) do
+    run = cleanup_paused(pause, reason)
+    terminalize_unsubmitted_entry(%{ctx | current_run: run}, ctx.work.asset_ref, reason)
+  end
+
+  @doc false
+  @spec cleanup_paused(map(), term()) :: RunState.t()
+  def cleanup_paused(%{ctx: ctx, task_id: task_id}, reason) do
+    :ok = release_entry_lease(%{lease: ctx.lease})
+    _ = ResourceCircuits.release(ctx.current_run, Map.get(ctx, :resource_circuit_permits, []))
+    :ok = fail_claim(ctx, reason)
+    without_inflight_task(ctx.current_run, task_id)
+  end
+
+  @doc false
+  @spec renew_paused_claim(map()) :: :ok | {:error, term()}
+  def renew_paused_claim(%{ctx: %{materialization_claim: claim}}),
+    do: MaterializationClaims.renew_operation_lock(claim)
+
+  def renew_paused_claim(_pause), do: :ok
+
+  defp expire_paused_entry(%{ctx: ctx} = pause) do
+    run = cleanup_paused(pause, :runner_task_deadline_exceeded)
+
+    fail_node_and_continue(
+      %{ctx | current_run: run},
+      :runner_task_deadline_exceeded
+    )
+  end
+
+  defp deadline_live?(nil), do: true
+
+  defp deadline_live?(%DateTime{} = deadline),
+    do: DateTime.compare(deadline, DateTime.utc_now()) == :gt
 
   defp enqueue_admitted_entry(ctx, task_id) do
     case AssetRunnerTasks.enqueue(
@@ -954,6 +1033,17 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
   defp safe_retryable?(_reason), do: false
+
+  @doc false
+  @spec replayable_attempt_start_failure?(term()) :: boolean()
+  def replayable_attempt_start_failure?(%PersistenceError{
+        retryable?: true,
+        kind: kind
+      })
+      when kind in [:conflict, :timeout, :unavailable, :internal],
+      do: true
+
+  def replayable_attempt_start_failure?(_reason), do: false
 
   defp with_inflight_task(%RunState{} = run_state, task_id, metadata) do
     ids =

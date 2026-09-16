@@ -162,10 +162,27 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     def claim_run(command), do: {:ok, ownership(command)}
 
     def renew_run(command) do
-      case Agent.get(agent(), & &1.renew_result) do
+      result =
+        Agent.get_and_update(agent(), fn state ->
+          case state.renew_result do
+            [result | rest] -> {result, %{state | renew_result: rest}}
+            result -> {result, state}
+          end
+        end)
+
+      notify({:ownership_renewal_attempt, command.renewal_id, result})
+
+      case result do
         :ok ->
           notify({:ownership_renewed, command.fencing_token})
           {:ok, ownership(command)}
+
+        :busy ->
+          {:error,
+           Error.new(:conflict, "execution history owner is busy",
+             retryable?: true,
+             details: %{reason_code: "execution_history_owner_busy"}
+           )}
 
         :fenced ->
           notify({:ownership_renewal_rejected, command.fencing_token})
@@ -418,6 +435,26 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert [_node_result] = HarnessStore.latest_run().result.node_results
   end
 
+  @tag store_opts: [renew_result: [:busy, :ok]]
+  test "retryable ownership contention replays one renewal id inside the live lease", %{
+    fixture: fixture
+  } do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:runner_task_held, :relation_inspection, worker}, 5_000
+
+    send(pid, :renew_storage_ownership)
+
+    assert_receive {:ownership_renewal_attempt, renewal_id, :busy}, 1_000
+    assert_receive {:ownership_renewal_attempt, ^renewal_id, :ok}, 2_000
+    assert_receive {:ownership_renewed, @fencing_token}, 1_000
+    assert Process.alive?(pid)
+
+    send(worker, :release_runner_task)
+    assert_receive {:run_transition_committed, :run_finished}, 5_000
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+  end
+
   for failure <- [:cancel_once, :unavailable_then_cancel] do
     @tag store_opts: [held_task_kinds: [], commit_failures: %{run_finished: failure}]
     test "terminal persistence retains its completed result after #{failure}", %{fixture: fixture} do
@@ -496,6 +533,35 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     refute_receive {:reconcile_initial, _generation_id}, 20
   end
 
+  @tag store_opts: [renew_result: :busy]
+  test "retryable ownership contention stops when the known lease is no longer safely live", %{
+    fixture: fixture
+  } do
+    ownership = %Ownership{
+      workspace_id: fixture.run.workspace_id,
+      run_id: fixture.run.id,
+      owner_id: "run-owner",
+      fencing_token: @fencing_token,
+      expires_at: DateTime.add(DateTime.utc_now(), 500, :millisecond)
+    }
+
+    state = %{
+      storage_context:
+        FavnOrchestrator.Persistence.SystemContext.workspace(
+          fixture.run.workspace_id,
+          :run_worker
+        ),
+      storage_ownership: ownership,
+      execution_state: %RunExecutionState{run: fixture.run},
+      run_state: fixture.run
+    }
+
+    assert {:stop, {:shutdown, :run_ownership_lost}, stopped} =
+             RunServer.handle_info(:renew_storage_ownership, state)
+
+    assert stopped.storage_ownership == ownership
+  end
+
   @tag store_opts: [commit_failures: %{step_finished: :fenced}]
   test "a fenced step write stops the run process without scheduling a retry", %{
     fixture: fixture
@@ -544,6 +610,18 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
       unknown = make_ref()
       assert {:noreply, ^pending} = RunServer.handle_info({unknown, :ok}, pending)
+    end
+
+    test "continue messages are deferred while execution persistence is pending", %{
+      fixture: fixture
+    } do
+      pending = %{
+        execution_state: %RunExecutionState{run: fixture.run},
+        execution_persist_pending: %{token: make_ref(), retry: nil, reason: :forced}
+      }
+
+      assert {:noreply, deferred} = RunServer.handle_info(:continue_execution, pending)
+      assert deferred.deferred_execution_events == [:continue_execution]
     end
 
     test "a worker reply for a known reference reaches execution", %{fixture: fixture} do
