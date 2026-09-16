@@ -259,8 +259,7 @@ defmodule FavnOrchestrator.RunnerTasks do
 
   def complete(%Result{} = message) do
     with :ok <- Result.validate(message),
-         {:ok, encoded_result} <-
-           PersistenceCodec.encode_result(message.task_kind, message.outcome, message.result),
+         {:ok, encoded_result} <- encode_completion_result(message),
          {:ok, task} <-
            store().complete(%C.CompleteRunnerTask{
              workspace_context: workspace_context(message.workspace_id, :runner_task_result),
@@ -292,6 +291,13 @@ defmodule FavnOrchestrator.RunnerTasks do
          result_version: message.result_version,
          status: :persisted
        }}
+    end
+  end
+
+  defp encode_completion_result(%Result{} = message) do
+    case PersistenceCodec.encode_result(message.task_kind, message.outcome, message.result) do
+      {:ok, _encoded} = encoded -> encoded
+      {:error, reason} -> {:error, {:runner_task_result_persistence_rejected, reason}}
     end
   end
 

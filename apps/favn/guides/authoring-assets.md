@@ -127,6 +127,13 @@ Rules:
 - Return `:ok`, `{:ok, metadata}`, or `{:error, reason}`.
 - Do not return secrets in metadata.
 
+Successful metadata is durable application data. Map keys may be atoms or
+strings and are stored as strings; atom values are also stored as strings.
+Values may be nested maps and lists containing strings, numbers, booleans,
+`nil`, dates, times, datetimes, and decimals. Duplicate atom/string keys such
+as `:count` and `"count"`, tuples, processes, functions, and arbitrary structs
+are rejected instead of being changed or dropped.
+
 Common declarations:
 
 | Declaration | Use it for |

@@ -82,7 +82,16 @@ defmodule FavnRunner.RunnerAgent do
         last_failure_class: :unknown,
         last_failure_at: nil,
         next_retry_ms: :unknown,
-        next_retry_at: nil
+        next_retry_at: nil,
+        claim: %{
+          retry_count: :unknown,
+          last_failure_class: :unknown,
+          last_reason_code: :unknown,
+          retryable?: :unknown,
+          last_failure_at: nil,
+          next_retry_ms: :unknown,
+          next_retry_at: nil
+        }
       }
   end
 
@@ -129,6 +138,11 @@ defmodule FavnRunner.RunnerAgent do
       pending_claim: nil,
       claim_failure_logged_at: nil,
       claim_failure_category: nil,
+      claim_failure_reason_code: nil,
+      claim_failure_retryable?: nil,
+      claim_failure_at: nil,
+      claim_next_retry_ms: nil,
+      claim_next_retry_at: nil,
       registration_retry_count: 0,
       registration_retry_timer: nil,
       registration_retry_token: nil,
@@ -208,7 +222,16 @@ defmodule FavnRunner.RunnerAgent do
        last_failure_class: state.last_registration_failure_class,
        last_failure_at: state.last_registration_failure_at,
        next_retry_ms: state.registration_next_retry_ms,
-       next_retry_at: state.registration_next_retry_at
+       next_retry_at: state.registration_next_retry_at,
+       claim: %{
+         retry_count: state.claim_retry_count,
+         last_failure_class: state.claim_failure_category,
+         last_reason_code: state.claim_failure_reason_code,
+         retryable?: state.claim_failure_retryable?,
+         last_failure_at: state.claim_failure_at,
+         next_retry_ms: state.claim_next_retry_ms,
+         next_retry_at: state.claim_next_retry_at
+       }
      }, state}
   end
 
@@ -289,7 +312,15 @@ defmodule FavnRunner.RunnerAgent do
 
   def handle_info({:retry_claim, token}, %{claim_retry_token: token} = state) do
     send(self(), :claim)
-    {:noreply, %{state | claim_retry_timer: nil, claim_retry_token: nil}}
+
+    {:noreply,
+     %{
+       state
+       | claim_retry_timer: nil,
+         claim_retry_token: nil,
+         claim_next_retry_ms: nil,
+         claim_next_retry_at: nil
+     }}
   end
 
   def handle_info({:retry_claim, _stale}, state), do: {:noreply, state}
@@ -676,6 +707,12 @@ defmodule FavnRunner.RunnerAgent do
           250 -> await_write_admission(state, message)
         end
 
+      {:error, %{retryable?: true} = error} ->
+        receive do
+        after
+          control_retry_delay(error) -> await_write_admission(state, message)
+        end
+
       result ->
         result
     end
@@ -952,12 +989,16 @@ defmodule FavnRunner.RunnerAgent do
   defp handle_control_operation_result(:claim, error, state) do
     state = if superseded_claim?(error), do: %{state | pending_claim: nil}, else: state
     category = claim_failure_category(error)
+    reason_code = claim_failure_reason_code(error)
+    retryable? = claim_failure_retryable?(error)
     count = state.claim_retry_count + 1
     delay = min(200 * Integer.pow(2, min(count - 1, 8)), 30_000)
     delay = min(delay + :rand.uniform(max(div(delay, 5), 1)) - 1, 30_000)
     token = make_ref()
     timer = Process.send_after(self(), {:retry_claim, token}, delay)
     now = System.monotonic_time(:millisecond)
+    failed_at = DateTime.utc_now()
+    next_retry_at = DateTime.add(failed_at, delay, :millisecond)
 
     log? =
       is_nil(state.claim_failure_logged_at) or state.claim_failure_category != category or
@@ -968,7 +1009,7 @@ defmodule FavnRunner.RunnerAgent do
         OperationalEvents.emit(
           :runner_task_claim_failed,
           %{retry_count: count, delay_ms: delay},
-          %{failure_class: category},
+          %{failure_class: category, reason_code: reason_code, retryable?: retryable?},
           level: :warning
         )
 
@@ -978,7 +1019,12 @@ defmodule FavnRunner.RunnerAgent do
         claim_retry_timer: timer,
         claim_retry_token: token,
         claim_failure_category: category,
-        claim_failure_logged_at: if(log?, do: now, else: state.claim_failure_logged_at)
+        claim_failure_reason_code: reason_code,
+        claim_failure_retryable?: retryable?,
+        claim_failure_at: failed_at,
+        claim_failure_logged_at: if(log?, do: now, else: state.claim_failure_logged_at),
+        claim_next_retry_ms: delay,
+        claim_next_retry_at: next_retry_at
     }
 
     if category == :transport, do: reconnect(state), else: {:noreply, %{state | phase: :waiting}}
@@ -1143,17 +1189,21 @@ defmodule FavnRunner.RunnerAgent do
   defp handle_rejected_result(state, reason) do
     case TaskResultBuffer.pending_result() do
       %RunnerTask.Result{error: %RunnerError{type: :runner_task_result_rejected}} ->
+        reason_code = result_rejection_reason_code(reason)
+
         Logger.error(
           "runner task fallback result was rejected as well; abandoning the assignment",
-          reason: reason
+          reason: reason_code
         )
 
         abandon_stale_assignment(state)
 
       %RunnerTask.Result{} = rejected ->
+        reason_code = result_rejection_reason_code(reason)
+
         Logger.error(
           "runner task result rejected as invalid; delivering unknown-outcome fallback",
-          reason: reason
+          reason: reason_code
         )
 
         error =
@@ -1161,7 +1211,7 @@ defmodule FavnRunner.RunnerAgent do
             type: :runner_task_result_rejected,
             phase: :runner_task_reporting,
             message: "Control plane rejected the runner task result as invalid",
-            details: %{rejection: inspect(reason, limit: 20, printable_limit: 1_024)},
+            details: %{reason_code: reason_code},
             retryable?: false,
             outcome: :unknown
           )
@@ -1196,7 +1246,33 @@ defmodule FavnRunner.RunnerAgent do
     end
   end
 
+  defp permanent_control_rejection?(%{retryable?: true}), do: false
+
   defp permanent_control_rejection?(%{kind: kind}) when kind in [:invalid, :conflict], do: true
+
+  defp permanent_control_rejection?({:runner_task_result_persistence_rejected, _reason}),
+    do: true
+
+  defp permanent_control_rejection?({:invalid_runner_task_open_data, _path, _reason}),
+    do: true
+
+  defp permanent_control_rejection?(reason)
+       when reason in [
+              :invalid_contract_nullability,
+              :invalid_inspection_sample,
+              :invalid_runner_asset_attempt,
+              :invalid_runner_asset_attempts,
+              :invalid_runner_asset_metadata,
+              :invalid_runner_asset_result,
+              :invalid_runner_asset_results,
+              :invalid_runner_result_fields,
+              :invalid_runner_task_data,
+              :invalid_runner_task_persistence_envelope
+            ],
+       do: true
+
+  defp permanent_control_rejection?({:runner_task_payload_too_large, _size, _limit}),
+    do: true
 
   defp permanent_control_rejection?(
          {:invalid_runner_task_retry_classification, _kind, _outcome, _retry_class, _error}
@@ -1218,6 +1294,29 @@ defmodule FavnRunner.RunnerAgent do
   defp permanent_control_rejection?(:invalid_runtime_input_payload_fingerprint), do: true
 
   defp permanent_control_rejection?(_reason), do: false
+
+  defp result_rejection_reason_code(%{details: %{reason_code: reason_code}})
+       when is_binary(reason_code) and byte_size(reason_code) in 1..128 do
+    if Regex.match?(~r/\A[a-z0-9_]+\z/, reason_code),
+      do: reason_code,
+      else: "runner_task_result_rejected"
+  end
+
+  defp result_rejection_reason_code(%{kind: kind}) when is_atom(kind),
+    do: "control_plane_#{kind}"
+
+  defp result_rejection_reason_code({:runner_task_result_persistence_rejected, reason}),
+    do: result_rejection_reason_code(reason)
+
+  defp result_rejection_reason_code({tag, _reason}) when is_atom(tag), do: Atom.to_string(tag)
+  defp result_rejection_reason_code({tag, _a, _b}) when is_atom(tag), do: Atom.to_string(tag)
+  defp result_rejection_reason_code({tag, _a, _b, _c}) when is_atom(tag), do: Atom.to_string(tag)
+
+  defp result_rejection_reason_code({tag, _a, _b, _c, _d}) when is_atom(tag),
+    do: Atom.to_string(tag)
+
+  defp result_rejection_reason_code(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp result_rejection_reason_code(_reason), do: "runner_task_result_rejected"
 
   # Last gate before a result is buffered for delivery. An incoherent
   # outcome/retry-class pair would be rejected by the control plane on every
@@ -1331,7 +1430,12 @@ defmodule FavnRunner.RunnerAgent do
         claim_retry_token: nil,
         pending_claim: nil,
         claim_failure_logged_at: nil,
-        claim_failure_category: nil
+        claim_failure_category: nil,
+        claim_failure_reason_code: nil,
+        claim_failure_retryable?: nil,
+        claim_failure_at: nil,
+        claim_next_retry_ms: nil,
+        claim_next_retry_at: nil
     }
   end
 
@@ -1347,6 +1451,16 @@ defmodule FavnRunner.RunnerAgent do
        ),
        do: :data
 
+  defp claim_failure_category(
+         {:error,
+          %{
+            kind: :conflict,
+            retryable?: true,
+            details: %{reason_code: "execution_history_owner_busy"}
+          }}
+       ),
+       do: :contention
+
   defp claim_failure_category({:error, %{kind: kind}}) when kind in [:invalid, :conflict],
     do: :data
 
@@ -1357,6 +1471,27 @@ defmodule FavnRunner.RunnerAgent do
        when reason in [:not_connected, :noproc, :nodedown], do: :transport
 
   defp claim_failure_category(_error), do: :storage
+
+  defp claim_failure_reason_code({:error, %{details: %{reason_code: value}}})
+       when is_binary(value) and byte_size(value) in 1..128,
+       do: value
+
+  defp claim_failure_reason_code({:error, %{kind: kind}}) when is_atom(kind),
+    do: Atom.to_string(kind)
+
+  defp claim_failure_reason_code({:error, {:control_plane_call_failed, _reason}}),
+    do: "control_plane_call_failed"
+
+  defp claim_failure_reason_code(_error), do: "runner_task_claim_failed"
+
+  defp claim_failure_retryable?({:error, %{retryable?: value}}) when is_boolean(value), do: value
+  defp claim_failure_retryable?(_error), do: false
+
+  defp control_retry_delay(%{retry_after_ms: delay})
+       when is_integer(delay) and delay >= 0,
+       do: min(max(delay, 50), 1_000)
+
+  defp control_retry_delay(_error), do: 250
 
   defp request(state, message),
     do:

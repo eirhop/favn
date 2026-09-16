@@ -2,8 +2,10 @@ Code.require_file("../../../favn_test_support/fixtures/runner_task_persistence.e
 
 defmodule Favn.Contracts.RunnerTaskPersistenceTest do
   use ExUnit.Case, async: true
+  alias Favn.Contracts.RunnerTask.OpenData
   alias Favn.Contracts.RunnerTask.PersistenceCodec, as: Codec
   alias Favn.Contracts.RunnerTask.PersistenceData, as: Data
+  alias Favn.Contracts.RunnerError
   alias FavnTestSupport.RunnerTaskPersistence, as: Fixture
   alias Favn.Manifest.Schedule
   alias Favn.Window.{Anchor, Policy, Selection}
@@ -40,6 +42,254 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
   test "an existing unknown metadata atom is still rejected" do
     assert {:ok, encoded} = Data.encode(%{unregistered_runner_metadata: "example"}, 1_048_576)
     assert {:error, :invalid_runner_task_data} = Data.decode(encoded, 1_048_576)
+  end
+
+  test "application result metadata normalizes without framework atom registration" do
+    version = Fixture.version()
+    {:asset_attempt, _work, result} = hd(Fixture.tasks(version))
+    [asset_result] = result.asset_results
+
+    metadata = %{
+      manifest_uri: "az://landing/manifest.json",
+      landing_run_id: "landing-1",
+      favn_run_id: "run-1",
+      pages_written: 3,
+      load_mode: :append,
+      nested: %{application_key: ~U[2026-09-16 09:00:00Z]}
+    }
+
+    attempt = %{
+      attempt: 1,
+      started_at: ~U[2026-09-16 09:00:00Z],
+      finished_at: ~U[2026-09-16 09:00:01Z],
+      duration_ms: 1_000,
+      status: :ok,
+      meta: metadata,
+      error: nil
+    }
+
+    result = %{result | asset_results: [%{asset_result | meta: metadata, attempts: [attempt]}]}
+
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :succeeded, encoded, version)
+    [persisted_asset] = persisted.asset_results
+
+    expected = %{
+      "manifest_uri" => "az://landing/manifest.json",
+      "landing_run_id" => "landing-1",
+      "favn_run_id" => "run-1",
+      "pages_written" => 3,
+      "load_mode" => "append",
+      "nested" => %{"application_key" => ~U[2026-09-16 09:00:00Z]}
+    }
+
+    assert persisted_asset.meta == expected
+    assert hd(persisted_asset.attempts).meta == expected
+  end
+
+  test "typed SQL result fields survive while runtime input metadata normalizes" do
+    version = Fixture.version()
+    {:asset_attempt, _work, result} = hd(Fixture.tasks(version))
+    [asset_result] = result.asset_results
+
+    check =
+      Favn.SQL.CheckResult.new(name: :row_count, phase: :after_materialize, outcome: :passed)
+
+    {_kind, _request, inspection} =
+      Enum.find(Fixture.tasks(version), &(elem(&1, 0) == :relation_inspection))
+
+    metadata = %{
+      materialized: inspection.relation_ref,
+      connection: :default,
+      rows_affected: 1,
+      command: "INSERT",
+      check_results: [check],
+      quality_status: :passed,
+      write_outcome: :written,
+      reason: nil,
+      group_replacement: nil,
+      runtime_inputs: %{
+        resolver: hd(version.manifest.assets).module,
+        input_identity: "snapshot-1",
+        input_metadata: %{source_snapshot: :ready},
+        duration_ms: 4
+      }
+    }
+
+    result = %{result | asset_results: [%{asset_result | meta: metadata}]}
+
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :succeeded, encoded, version)
+    [persisted_asset] = persisted.asset_results
+
+    assert persisted_asset.meta.materialized == metadata.materialized
+    assert persisted_asset.meta.check_results == [check]
+    assert persisted_asset.meta.quality_status == :passed
+    assert persisted_asset.meta.runtime_inputs.input_metadata == %{"source_snapshot" => "ready"}
+
+    duplicate = %{asset_result | meta: Map.put(metadata, "command", "UPDATE")}
+    duplicate_result = %{result | asset_results: [duplicate]}
+
+    assert {:error, {:invalid_runner_task_open_data, :asset_metadata, :duplicate_key}} =
+             Codec.encode_result(:asset_attempt, :succeeded, duplicate_result)
+  end
+
+  test "typed SQL failure controls survive even without check results" do
+    version = Fixture.version()
+    {:asset_attempt, _work, result} = hd(Fixture.tasks(version))
+    [asset_result] = result.asset_results
+
+    metadata = %{
+      connection: :default,
+      check_results: [],
+      quality_status: :failed,
+      transaction_outcome: :not_started,
+      write_outcome: :not_started
+    }
+
+    result = %{
+      result
+      | status: :error,
+        asset_results: [%{asset_result | status: :error, meta: metadata}]
+    }
+
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :failed, result)
+    assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :failed, encoded, version)
+
+    assert hd(persisted.asset_results).meta == metadata
+  end
+
+  test "application metadata remains open when a key overlaps the SQL envelope" do
+    version = Fixture.version()
+    {:asset_attempt, _work, result} = hd(Fixture.tasks(version))
+    [asset_result] = result.asset_results
+
+    metadata = %{check_results: :application_value, reason: :application_reason}
+    result = %{result | asset_results: [%{asset_result | meta: metadata}]}
+
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :succeeded, encoded, version)
+
+    assert hd(persisted.asset_results).meta == %{
+             "check_results" => "application_value",
+             "reason" => "application_reason"
+           }
+  end
+
+  test "runner error and inspection adapter extensions normalize without weakening controls" do
+    version = Fixture.version()
+    failed = Fixture.failed_result(version)
+
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :failed, failed)
+    assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :failed, encoded, version)
+
+    assert hd(persisted.asset_results).error.details["contract_validation"]["status"] ==
+             "failed"
+
+    error =
+      RunnerError.new(
+        type: :landing_failed,
+        details: %{adapter_detail: :temporary, nested: %{attempt_code: 4}},
+        outcome: :safe_failure
+      )
+
+    failed = %{failed | error: error}
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :failed, failed)
+    assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :failed, encoded, version)
+
+    assert persisted.error.details == %{
+             "adapter_detail" => "temporary",
+             "nested" => %{"attempt_code" => 4}
+           }
+
+    {:relation_inspection, _request, inspection} =
+      Enum.find(Fixture.tasks(version), &(elem(&1, 0) == :relation_inspection))
+
+    [column] = inspection.columns
+
+    inspection = %{
+      inspection
+      | relation: %{inspection.relation | metadata: %{adapter_extension: :present}},
+        columns: [
+          %{column | metadata: %{contract_nullability: :reliable, adapter_extension: :present}}
+        ],
+        sample: %{limit: 1, columns: ["id"], rows: [%{adapter_value: :present}]},
+        table_metadata: %{relation_instance_id: "instance-1", adapter_extension: :present},
+        error: %{adapter_code: :none}
+    }
+
+    assert {:ok, encoded} = Codec.encode_result(:relation_inspection, :succeeded, inspection)
+
+    assert {:ok, persisted} =
+             Codec.decode_result(:relation_inspection, :succeeded, encoded, version)
+
+    assert persisted.relation.metadata == %{"adapter_extension" => "present"}
+
+    assert hd(persisted.columns).metadata == %{
+             :contract_nullability => :reliable,
+             "adapter_extension" => "present"
+           }
+
+    assert persisted.sample.rows == [%{"adapter_value" => "present"}]
+
+    assert persisted.table_metadata == %{
+             "relation_instance_id" => "instance-1",
+             "adapter_extension" => "present"
+           }
+
+    assert persisted.error == %{"adapter_code" => "none"}
+
+    duplicate_nullability = %{
+      inspection
+      | columns: [
+          %{
+            column
+            | metadata: %{"contract_nullability" => :reliable, contract_nullability: nil}
+          }
+        ]
+    }
+
+    assert {:error, {:invalid_runner_task_open_data, :inspection_column_metadata, :duplicate_key}} =
+             Codec.encode_result(
+               :relation_inspection,
+               :succeeded,
+               duplicate_nullability
+             )
+  end
+
+  test "application metadata rejects normalized key collisions and unsupported structs" do
+    version = Fixture.version()
+    {:asset_attempt, _work, result} = hd(Fixture.tasks(version))
+    [asset_result] = result.asset_results
+
+    collision = %{asset_result | meta: %{"landing_run_id" => "two", landing_run_id: "one"}}
+    result = %{result | asset_results: [collision]}
+
+    assert {:error, {:invalid_runner_task_open_data, :asset_metadata, :duplicate_key}} =
+             Codec.encode_result(:asset_attempt, :succeeded, result)
+
+    unsupported = %{asset_result | meta: %{landing_target: %URI{scheme: "https"}}}
+    result = %{result | asset_results: [unsupported]}
+
+    assert {:error, {:invalid_runner_task_open_data, :asset_metadata, :unsupported_value}} =
+             Codec.encode_result(:asset_attempt, :succeeded, result)
+
+    tuple = %{asset_result | meta: %{partition: {:year, 2026}}}
+    result = %{result | asset_results: [tuple]}
+
+    assert {:error, {:invalid_runner_task_open_data, :asset_metadata, :unsupported_value}} =
+             Codec.encode_result(:asset_attempt, :succeeded, result)
+  end
+
+  test "open result data enforces depth, node and encoded-byte bounds" do
+    assert {:error, :too_deep} =
+             OpenData.normalize(%{"outer" => %{"inner" => %{"value" => 1}}}, max_depth: 1)
+
+    assert {:error, :too_many_values} =
+             OpenData.normalize(%{"one" => 1, "two" => 2}, max_nodes: 2)
+
+    assert {:error, :too_large} =
+             OpenData.normalize(%{"payload" => String.duplicate("x", 128)}, max_bytes: 64)
   end
 
   test "framework retry, rebuild, recovery and draining metadata survive complete work round trips" do

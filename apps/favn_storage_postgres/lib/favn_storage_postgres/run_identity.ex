@@ -28,7 +28,6 @@ defmodule FavnStoragePostgres.RunIdentity do
         [workspace_id, run_id]
       )
 
-    if locked?, do: FavnStoragePostgres.Maintenance.History.guard!(workspace_id, run_id)
-    locked?
+    locked? and FavnStoragePostgres.Maintenance.History.try_guard!(workspace_id, run_id)
   end
 end

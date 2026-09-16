@@ -62,7 +62,9 @@ fresh registration succeeds.
 
 Inspect a runner locally with `FavnRunner.diagnostics/0`. The bounded report
 includes lifecycle, connection, registration, target node, retry count, the
-last safe failure class, and the next retry delay. Connection attempts use
+last safe failure class, and the next retry delay. Its `claim` section reports
+the current claim retry count, safe failure class and reason code, whether the
+failure is retryable, and the next retry time. Connection attempts use
 capped exponential backoff. The first failure and rate-limited summaries log at
 warning, recovery logs at info, and individual attempts remain debug-only.
 Diagnostics and logs never include the distribution cookie, service tokens,

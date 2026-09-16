@@ -616,6 +616,177 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              })
   end
 
+  test "completion retains the codec validation reason and leaves the assignment running",
+       fixture do
+    assert {:ok, _queued} = Store.enqueue(enqueue_command(fixture, "invalid-completion"))
+
+    assert {:ok, assigned} =
+             Store.claim(claim_command(fixture, "invalid-completion", "invalid-completion"))
+
+    assert {:ok, running} =
+             Store.transition(
+               transition_command(fixture, assigned, "invalid-completion-start", :running)
+             )
+
+    result = %RelationInspectionResult{
+      required_runner_release_id: @release,
+      relation_ref: assigned.payload.relation,
+      asset_ref: assigned.payload.asset_ref,
+      row_count: 1,
+      table_metadata: %{unregistered_completion_key: "example"},
+      inspected_at: fixture.now
+    }
+
+    assert {:ok, encoded_result} =
+             Favn.Contracts.RunnerTask.PersistenceData.encode(
+               result,
+               Favn.Contracts.RunnerTask.Limits.result_bytes()
+             )
+
+    assert {:ok, valid_envelope} =
+             Codec.encode_result(:relation_inspection, :succeeded, %{result | table_metadata: %{}})
+
+    invalid_envelope = Map.put(valid_envelope, "payload", encoded_result)
+    command = complete_command(fixture, running, "invalid-completion", invalid_envelope)
+
+    assert {:error,
+            %{
+              kind: :invalid,
+              details: %{reason_code: "invalid_runner_task_data"}
+            }} = Store.complete(command)
+
+    assert {:ok, %{status: :running}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: running.task_id
+             })
+  end
+
+  test "claim skips a run whose history owner is busy and assigns another queued task",
+       fixture do
+    busy_run_id = "busy-history-#{random_id()}"
+    free_run_id = "free-history-#{random_id()}"
+
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [
+      busy_run_id,
+      free_run_id
+    ])
+
+    busy_work = %RunnerWork{run_id: busy_run_id}
+    free_work = %RunnerWork{run_id: free_run_id}
+
+    assert {:ok, busy_task} =
+             Store.enqueue(
+               enqueue_command(fixture, "busy-history",
+                 task_kind: :asset_attempt,
+                 run_id: busy_run_id,
+                 payload: busy_work,
+                 occurred_at: fixture.now
+               )
+             )
+
+    assert {:ok, free_task} =
+             Store.enqueue(
+               enqueue_command(fixture, "free-history",
+                 task_kind: :asset_attempt,
+                 run_id: free_run_id,
+                 payload: free_work,
+                 occurred_at: DateTime.add(fixture.now, 1, :millisecond)
+               )
+             )
+
+    holder = hold_history_lock!(fixture.workspace_id, busy_run_id)
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "skip-busy-history", "skip-busy-history",
+                 supported_task_kinds: [:asset_attempt],
+                 capabilities: ["asset_execution"]
+               )
+             )
+
+    assert assigned.task_id == free_task.task_id
+    release_history_lock!(holder)
+
+    assert {:ok, next_assigned} =
+             Store.claim(
+               claim_command(fixture, "claim-released-history", "claim-released-history",
+                 supported_task_kinds: [:asset_attempt],
+                 capabilities: ["asset_execution"]
+               )
+             )
+
+    assert next_assigned.task_id == busy_task.task_id
+  end
+
+  test "history owner contention returns a retryable reason and exact commands replay",
+       fixture do
+    run_id = "history-retry-#{random_id()}"
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [run_id])
+
+    assert {:ok, _queued} =
+             Store.enqueue(
+               enqueue_command(fixture, "history-retry",
+                 task_kind: :asset_attempt,
+                 run_id: run_id,
+                 payload: %RunnerWork{run_id: run_id}
+               )
+             )
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "history-retry", "history-retry",
+                 supported_task_kinds: [:asset_attempt],
+                 capabilities: ["asset_execution"]
+               )
+             )
+
+    command = transition_command(fixture, assigned, "history-retry-start", :running)
+    holder = hold_history_lock!(fixture.workspace_id, run_id)
+
+    assert {:error,
+            %{
+              kind: :conflict,
+              retryable?: true,
+              details: %{reason_code: "execution_history_owner_busy"}
+            }} = Store.transition(command)
+
+    release_history_lock!(holder)
+    assert {:ok, running} = Store.transition(command)
+
+    work = assigned.payload
+
+    result = %Favn.Contracts.RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      asset_results: [
+        %Favn.Contracts.RunnerAssetResult{
+          ref: work.asset_ref,
+          status: :ok,
+          asset_step_id: work.asset_step_id,
+          attempt_count: work.attempt,
+          max_attempts: work.max_attempts
+        }
+      ]
+    }
+
+    assert {:ok, encoded_result} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    completion = complete_command(fixture, running, "history-retry-complete", encoded_result)
+    holder = hold_history_lock!(fixture.workspace_id, run_id)
+
+    assert {:error,
+            %{
+              kind: :conflict,
+              retryable?: true,
+              details: %{reason_code: "execution_history_owner_busy"}
+            }} = Store.complete(completion)
+
+    release_history_lock!(holder)
+    assert {:ok, %{status: :succeeded}} = Store.complete(completion)
+  end
+
   test "enqueue rejects payload and scalar run identity mismatch", fixture do
     FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, ["payload-run"])
 
@@ -3995,6 +4166,47 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       Process.sleep(10)
       assert_eventually(fun, attempts - 1)
     end
+  end
+
+  defp hold_history_lock!(workspace_id, root_run_id) do
+    owner = self()
+    ref = make_ref()
+
+    task =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text)::text,0))",
+            [workspace_id, root_run_id]
+          )
+
+          send(owner, {ref, :history_locked})
+
+          receive do
+            {^ref, :release_history_lock} -> :ok
+          end
+        end)
+      end)
+
+    assert_receive {^ref, :history_locked}, 5_000
+
+    holder = %{task: task, ref: ref}
+
+    on_exit(fn ->
+      if Process.alive?(task.pid) do
+        send(task.pid, {ref, :release_history_lock})
+        Task.await(task, 5_000)
+      end
+    end)
+
+    holder
+  end
+
+  defp release_history_lock!(%{task: task, ref: ref}) do
+    send(task.pid, {ref, :release_history_lock})
+    assert {:ok, :ok} = Task.await(task, 5_000)
+    :ok
   end
 
   defp cancellation_run(fixture, task_id) do

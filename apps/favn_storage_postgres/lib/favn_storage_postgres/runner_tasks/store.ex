@@ -2004,8 +2004,18 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
            ) do
       :ok
     else
-      {:error, %Error{} = error} -> Repo.rollback(error)
-      _other -> Repo.rollback(Error.new(:invalid, "invalid runner task completion"))
+      {:error, %Error{} = error} ->
+        Repo.rollback(error)
+
+      {:error, reason} when is_atom(reason) ->
+        Repo.rollback(
+          Error.new(:invalid, "invalid runner task completion",
+            details: %{reason_code: Atom.to_string(reason)}
+          )
+        )
+
+      _other ->
+        Repo.rollback(Error.new(:invalid, "invalid runner task completion"))
     end
   end
 

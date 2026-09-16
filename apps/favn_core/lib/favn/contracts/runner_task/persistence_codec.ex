@@ -3,6 +3,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
 
   alias Favn.Contracts.RunnerTask
   alias Favn.Contracts.RunnerTask.PersistenceSchema
+  alias Favn.Contracts.RunnerTask.PersistenceResult
   alias Favn.Contracts.RunnerTask.PersistenceData
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.ExecutionPackage
@@ -62,9 +63,11 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   end
 
   def encode_result(task_kind, outcome, result) do
-    case encode("runner_task_result", task_kind, outcome, result, &RunnerTask.validate_result/3) do
-      {:ok, envelope, _hash} -> {:ok, envelope}
-      {:error, reason} -> {:error, reason}
+    with {:ok, result} <- PersistenceResult.normalize(task_kind, result) do
+      case encode("runner_task_result", task_kind, outcome, result, &RunnerTask.validate_result/3) do
+        {:ok, envelope, _hash} -> {:ok, envelope}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 

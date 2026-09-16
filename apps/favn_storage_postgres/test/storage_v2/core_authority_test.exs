@@ -7674,8 +7674,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     command = %{command | run: run, event: %{command.event | occurred_at: run.inserted_at}}
     assert {:ok, _created} = RunStore.create_run(command)
 
+    owner = self()
+
     {:ok, runner_state} =
-      Agent.start_link(fn -> %{work: %{}, submitted: [], fail_key: keys.b} end)
+      Agent.start_link(fn ->
+        %{
+          work: %{},
+          submitted: [],
+          fail_key: keys.b,
+          owner: owner,
+          claim_probe_ref: nil,
+          pause_after_terminal_failure?: true
+        }
+      end)
 
     share_repo_sandbox!()
     start_supervised!({FavnOrchestrator.ExecutionAdmission.Coordinator, []})
@@ -7685,6 +7696,22 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     runner = spawn_link(fn -> durable_pipeline_runner(runner_state, fixture, keys.b) end)
     assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
     monitor = Process.monitor(pid)
+
+    assert_receive {:pipeline_terminal_failure_completed, ^runner}, 5_000
+    await_queued_runner_task!(fixture.workspace_id, run.id)
+    history_root = install_pipeline_history_probe_root!(fixture.workspace_id, run.id)
+    holder = hold_pipeline_history_lock!(fixture.workspace_id, history_root)
+    claim_probe_ref = make_ref()
+    Agent.update(runner_state, &Map.put(&1, :claim_probe_ref, claim_probe_ref))
+    send(runner, :continue_after_terminal_failure)
+    assert_receive {:pipeline_claim_waiting, ^runner, ^claim_probe_ref, :no_work}, 2_000
+
+    refute_receive {:pipeline_claim_waiting, ^runner, ^claim_probe_ref, {:error, _reason}},
+                   100
+
+    restore_pipeline_history_root!(fixture.workspace_id, run.id, history_root)
+    release_pipeline_history_lock!(holder)
+
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
     send(runner, :stop)
 
@@ -7771,6 +7798,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       0 ->
         case claim_asset_task(fixture) do
           {:ok, nil} ->
+            notify_pipeline_claim(state, :no_work)
             Process.sleep(5)
 
           {:ok, task} ->
@@ -7780,12 +7808,169 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             :ok = start_runner_task(task)
             :ok = complete_asset_task(task, work, node_key == fail_key)
 
-          {:error, _reason} ->
+            runner_state = Agent.get(state, & &1)
+
+            if runner_state[:pause_after_terminal_failure?] == true and node_key == fail_key and
+                 work.attempt == work.max_attempts do
+              send(runner_state.owner, {:pipeline_terminal_failure_completed, self()})
+
+              receive do
+                :continue_after_terminal_failure -> :ok
+              end
+            end
+
+          {:error, reason} ->
+            notify_pipeline_claim(state, {:error, reason})
             Process.sleep(5)
         end
 
         durable_pipeline_runner(state, fixture, fail_key)
     end
+  end
+
+  defp notify_pipeline_claim(state, outcome) do
+    {owner, ref} =
+      Agent.get_and_update(state, fn runner_state ->
+        {{Map.get(runner_state, :owner), Map.get(runner_state, :claim_probe_ref)},
+         Map.put(runner_state, :claim_probe_ref, nil)}
+      end)
+
+    if is_pid(owner) and is_reference(ref) do
+      send(owner, {:pipeline_claim_waiting, self(), ref, outcome})
+    end
+
+    :ok
+  end
+
+  defp await_queued_runner_task!(workspace_id, run_id, remaining \\ 200)
+
+  defp await_queued_runner_task!(_workspace_id, _run_id, 0),
+    do: flunk("queued task did not appear")
+
+  defp await_queued_runner_task!(workspace_id, run_id, remaining) do
+    %{rows: [[count]]} =
+      SQL.query!(
+        Repo,
+        "SELECT count(*) FROM favn_control.runner_tasks WHERE workspace_id=$1 AND run_id=$2 AND status='queued'",
+        [workspace_id, run_id]
+      )
+
+    if count > 0 do
+      :ok
+    else
+      Process.sleep(10)
+      await_queued_runner_task!(workspace_id, run_id, remaining - 1)
+    end
+  end
+
+  defp hold_pipeline_history_lock!(workspace_id, root_run_id) do
+    owner = self()
+    ref = make_ref()
+
+    connection_options =
+      System.fetch_env!("FAVN_DATABASE_URL")
+      |> Ecto.Repo.Supervisor.parse_url()
+      |> Keyword.put(:ssl, false)
+
+    task =
+      Task.async(fn ->
+        {:ok, connection} = Postgrex.start_link(connection_options)
+
+        try do
+          Postgrex.transaction(connection, fn transaction ->
+            Postgrex.query!(
+              transaction,
+              "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text)::text,0))",
+              [workspace_id, root_run_id]
+            )
+
+            send(owner, {ref, :history_locked})
+
+            receive do
+              {^ref, :release_history_lock} -> :ok
+            end
+          end)
+        after
+          GenServer.stop(connection)
+        end
+      end)
+
+    assert_receive {^ref, :history_locked}, 5_000
+    holder = %{task: task, ref: ref}
+
+    on_exit(fn ->
+      if Process.alive?(task.pid) do
+        send(task.pid, {ref, :release_history_lock})
+        Task.await(task, 5_000)
+      end
+    end)
+
+    holder
+  end
+
+  defp install_pipeline_history_probe_root!(workspace_id, run_id) do
+    probe_root = "history-probe-#{System.unique_integer([:positive])}"
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.runs (
+        workspace_id, run_id, deployment_id, manifest_version_id,
+        root_execution_group_id, retiring, cancellation_owner_run_id,
+        cancellation_requested_at, cancellation_status, parent_run_id,
+        rerun_of_run_id, submit_kind, trigger_type, status, event_sequence,
+        submitted_event_id, latest_event_id, snapshot_version, creation_hash,
+        snapshot_hash, snapshot, inserted_at, updated_at, terminal_at
+      )
+      SELECT
+        workspace_id, $3, deployment_id, manifest_version_id,
+        $3, false, $3, NULL, NULL, NULL, NULL, submit_kind, trigger_type,
+        status, event_sequence, submitted_event_id, latest_event_id,
+        snapshot_version, creation_hash, snapshot_hash, snapshot, inserted_at,
+        updated_at, terminal_at
+      FROM favn_control.runs
+      WHERE workspace_id=$1 AND run_id=$2
+      """,
+      [workspace_id, run_id, probe_root]
+    )
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.runs
+      SET root_execution_group_id=$3
+      WHERE workspace_id=$1 AND run_id=$2
+      """,
+      [workspace_id, run_id, probe_root]
+    )
+
+    probe_root
+  end
+
+  defp restore_pipeline_history_root!(workspace_id, run_id, probe_root) do
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.runs
+      SET root_execution_group_id=$2
+      WHERE workspace_id=$1 AND run_id=$2
+      """,
+      [workspace_id, run_id]
+    )
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.runs WHERE workspace_id=$1 AND run_id=$2",
+      [workspace_id, probe_root]
+    )
+
+    :ok
+  end
+
+  defp release_pipeline_history_lock!(%{task: task, ref: ref}) do
+    send(task.pid, {ref, :release_history_lock})
+    assert {:ok, :ok} = Task.await(task, 5_000)
+    :ok
   end
 
   defp claim_asset_task(fixture, runner_suffix \\ nil) do
@@ -7811,7 +7996,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     })
   end
 
-  defp complete_asset_task(task, work, fail?) do
+  defp complete_asset_task(task, work, fail?, meta \\ %{}) do
     {outcome, retry_class, status, error} =
       if fail? do
         retryable? = work.attempt == 1
@@ -7846,7 +8031,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           logical_target_id: work.logical_target_id,
           target_generation_id: work.target_generation_id,
           write_relation: work.write_relation,
-          write_outcome: if(work.target_operation, do: :succeeded, else: nil)
+          write_outcome: if(work.target_operation, do: :succeeded, else: nil),
+          meta: meta
         }
       ],
       error: error,
@@ -13793,8 +13979,37 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert claimed.task_id == task_id
     assert :ok = start_runner_task(claimed)
     await_runner_task_waiter!(claimed)
-    :ok = complete_asset_task(claimed, claimed.payload, false)
+
+    landing_metadata = %{
+      manifest_uri: "az://landing/manifest.json",
+      landing_run_id: "landing-#{window_id(opts)}",
+      favn_run_id: run_id,
+      pages_written: 3,
+      load_mode: :append
+    }
+
+    :ok = complete_asset_task(claimed, claimed.payload, false, landing_metadata)
+
+    assert {:ok, persisted_task} =
+             FavnOrchestrator.RunnerTasks.fetch(fixture.workspace_id, task_id)
+
+    assert [persisted_result] = persisted_task.result.asset_results
+
+    assert persisted_result.meta == %{
+             "manifest_uri" => "az://landing/manifest.json",
+             "landing_run_id" => "landing-#{window_id(opts)}",
+             "favn_run_id" => run_id,
+             "pages_written" => 3,
+             "load_mode" => "append"
+           }
+
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+  end
+
+  defp window_id(opts) do
+    opts
+    |> Keyword.fetch!(:metadata)
+    |> Map.fetch!(:backfill_window_id)
   end
 
   defp dispatch_backfill_once!(fixture) do

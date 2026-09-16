@@ -243,6 +243,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     :transaction_outcome,
     :committed,
     :rolled_back,
+    :not_started,
+    :transaction_not_started,
     :input_identity,
     :input_metadata,
     :execution_id,

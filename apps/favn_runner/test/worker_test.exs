@@ -3,6 +3,7 @@ defmodule FavnRunner.WorkerTest do
 
   alias Favn.Contracts.RunnerEvent
   alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerTask.PersistenceCodec
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest
   alias Favn.Manifest.Asset
@@ -78,6 +79,48 @@ defmodule FavnRunner.WorkerTest do
 
     assert asset_result.error.reason =~ "invalid_return_shape"
     assert asset_result.error.reason =~ ":bad_shape"
+  end
+
+  test "application metadata emitted by the worker persists without atom registration" do
+    {result, version} = run_single_asset_with_version(FavnRunner.WorkerTest.LandingAsset)
+
+    assert [%{meta: %{manifest_uri: _, landing_run_id: _, load_mode: :append}}] =
+             result.asset_results
+
+    assert {:ok, encoded} = PersistenceCodec.encode_result(:asset_attempt, :succeeded, result)
+
+    assert {:ok, persisted} =
+             PersistenceCodec.decode_result(:asset_attempt, :succeeded, encoded, version)
+
+    assert [asset_result] = persisted.asset_results
+
+    assert asset_result.meta == %{
+             "manifest_uri" => "az://landing/manifest.json",
+             "landing_run_id" => "landing-1",
+             "favn_run_id" => result.run_id,
+             "pages_written" => 3,
+             "load_mode" => "append"
+           }
+
+    assert hd(asset_result.attempts).meta == asset_result.meta
+  end
+
+  test "source metadata emitted by the worker retains its typed relation" do
+    {result, version} =
+      run_single_asset_with_version(FavnRunner.WorkerTest.SourceAsset,
+        type: :source,
+        relation: Favn.RelationRef.new!(connection: :default, schema: "landing", name: "orders")
+      )
+
+    assert {:ok, encoded} = PersistenceCodec.encode_result(:asset_attempt, :succeeded, result)
+
+    assert {:ok, persisted} =
+             PersistenceCodec.decode_result(:asset_attempt, :succeeded, encoded, version)
+
+    assert [%{meta: %{observed: true, relation: %Favn.RelationRef{} = relation}}] =
+             persisted.asset_results
+
+    assert relation.name == "orders"
   end
 
   test "worker rejects unsupported entrypoint arity" do
@@ -343,13 +386,19 @@ defmodule FavnRunner.WorkerTest do
   end
 
   defp run_single_asset(module, opts \\ []) do
+    {result, _version} = run_single_asset_with_version(module, opts)
+    result
+  end
+
+  defp run_single_asset_with_version(module, opts \\ []) do
     asset =
       %Asset{
         ref: {module, :asset},
         module: module,
         name: :asset,
-        type: :elixir,
+        type: Keyword.get(opts, :type, :elixir),
         execution: Keyword.get(opts, :execution, %{entrypoint: :asset, arity: 1}),
+        relation: Keyword.get(opts, :relation),
         settings: Keyword.get(opts, :settings, %{}),
         runtime_config: Keyword.get(opts, :runtime_config, %{})
       }
@@ -396,7 +445,7 @@ defmodule FavnRunner.WorkerTest do
              })
 
     assert_receive {:runner_result, ^execution_id, %RunnerResult{} = result}, 2_000
-    result
+    {result, version}
   end
 
   defp restore_env(key, nil), do: System.delete_env(key)
@@ -429,6 +478,23 @@ end
 defmodule FavnRunner.WorkerTest.BadReturnAsset do
   @spec asset(Favn.Run.Context.t()) :: {:ok, atom()}
   def asset(_ctx), do: {:ok, :bad_shape}
+end
+
+defmodule FavnRunner.WorkerTest.LandingAsset do
+  @spec asset(Favn.Run.Context.t()) :: {:ok, map()}
+  def asset(ctx) do
+    {:ok,
+     %{
+       manifest_uri: "az://landing/manifest.json",
+       landing_run_id: "landing-1",
+       favn_run_id: ctx.run_id,
+       pages_written: 3,
+       load_mode: :append
+     }}
+  end
+end
+
+defmodule FavnRunner.WorkerTest.SourceAsset do
 end
 
 defmodule FavnRunner.WorkerTest.UnsupportedArityAsset do
