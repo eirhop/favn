@@ -1830,12 +1830,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       {%StageAttemptState{}, {:partial_retry, _, _, _, _, _, _, _, _, _} = partial} ->
         handle_refill_stage_partial_retry(state, partial)
 
-      {nil, {:node_failed, _, _, _, _, _, _, _, _} = failed} ->
-        handle_initial_stage_node_failure(state, attempt, failed)
-
-      {%StageAttemptState{}, {:node_failed, _, _, _, _, _, _, _, _} = failed} ->
-        handle_refill_stage_node_failure(state, failed)
-
       {_stage_state, {:error, failed_run, step_results, _keys, cleanup_entries}} ->
         terminalize_stage_admission_failure(state, failed_run, step_results, cleanup_entries)
 

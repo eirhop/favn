@@ -418,13 +418,13 @@ the codec boundary.
 
 | Area | Added | Deleted | Net |
 | --- | ---: | ---: | ---: |
-| Production Elixir | 625 | 40 | 585 |
-| Tests | 1,003 | 16 | 987 |
+| Production Elixir | 619 | 39 | 580 |
+| Tests | 1,003 | 17 | 986 |
 | Canonical documentation | 11 | 0 | 11 |
 | This implementation record | 510 | 0 | 510 |
-| **Total PR** | **2,149** | **56** | **2,093** |
+| **Total PR** | **2,143** | **56** | **2,087** |
 
-The executable production change is 665 changed lines. Most of the PR is proof:
+The executable production change is 658 changed lines. Most of the PR is proof:
 1,003 test additions and this required 510-line implementation record. The
 implementation changes five orchestrator production modules, four existing test
 modules, and the canonical orchestrator structure document. It adds no migration,
@@ -432,7 +432,7 @@ dependency, wire-format registration, public DSL, or runner release requirement.
 
 ## Deviations from the approved plan
 
-- Production additions are 625 lines, 75 above the plan's 550-line re-review
+- Production additions are 619 lines, 69 above the plan's 550-line re-review
   threshold. The increase implements issues found by the first final review:
   heartbeat coalescing, cancellation ownership for saved same-batch siblings,
   cleanup against the newest durable run snapshot, and normal-stop recovery
@@ -475,7 +475,7 @@ dependency, wire-format registration, public DSL, or runner release requirement.
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Format and compile | Passed: `mix format`; test compile with warnings as errors | Static/build qualification |
+| Format, compile, and Dialyzer | Passed: `mix format`; test compile with warnings as errors; whole-umbrella Dialyzer | Static/build/type qualification |
 | Focused orchestrator tests | Passed: 50 tests | Deterministic state-machine, retry, cancellation, ownership, deadline, and metadata qualification |
 | Full fast orchestrator suite | Passed: 889 tests, including 6 doctests; 2 excluded | Orchestrator regression qualification |
 | PostgreSQL real lifecycle regression | Passed: 1 composed test; 154 excluded | Observed `execution_history_owner_busy` for attempt-start and ownership renewal, initial/refill recovery, durable reply-loss replay, and cancellation drain |
