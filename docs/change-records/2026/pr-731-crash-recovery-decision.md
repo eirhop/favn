@@ -2,14 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Recovery design decision and bounded implementation proposal |
 | Primary issue | None; the maintainer requested this follow-up without a new issue. |
-| Pull request | Not created; decision-only artifact |
+| Pull request | [#731](https://github.com/eirhop/favn/pull/731) |
 | Related work | [#700](https://github.com/eirhop/favn/issues/700), [#703](https://github.com/eirhop/favn/pull/703), [#726](https://github.com/eirhop/favn/pull/726) |
 | Inspected baseline | Main at 97ac8657cc668d3d7faad441a813c545650c4464, including merged #726 |
 | Affected areas | Orchestrator run recovery and execution; PostgreSQL run transitions; runner result and ownership contracts; release qualification |
-| Approved plan commit | Design direction reviewed; implementation baseline not yet established |
+| Approved plan commit | 57c64fcb; design direction accepted, field/replay qualification gate retained |
 | Last updated | 2026-09-17 |
 
 ## One-minute explanation
