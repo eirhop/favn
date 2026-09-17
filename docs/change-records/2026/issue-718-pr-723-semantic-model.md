@@ -2,10 +2,10 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Planning — complexity decisions open |
+| Status | Plan reviewed |
 | Type | Feature |
 | Primary issue | [#718](https://github.com/eirhop/favn/issues/718) |
-| Pull request | [#723](https://github.com/eirhop/favn/pull/723) (draft; planning only) |
+| Pull request | [#723](https://github.com/eirhop/favn/pull/723) (draft) |
 | Related work | [#720 catalog publication](https://github.com/eirhop/favn/issues/720), [#721 runtime state](https://github.com/eirhop/favn/issues/721), [#719 AI/MCP](https://github.com/eirhop/favn/issues/719) |
 | Affected areas | Public authoring, Core contracts/compiler, local build tooling, DuckDB integration, generated relationship checks |
 | Source baseline | `8d2b8e1f1e574dabb4670ef0e56f46e073f51f8d` on `origin/main` |
@@ -21,79 +21,23 @@ columns, grain, and enforced relationships. Semantic models own analytical
 meaning and can change without rebuilding or redeploying a runner. This record
 specifies the proposed implementation; none of these new APIs exists yet.
 
-The current delivery is a planning record and draft PR only. Implementation
-starts in a later task. Examples in this record are design examples, not files
+This record defines the implementation scope for the existing draft PR. Examples in this record are design examples, not files
 installed in a consumer project.
 
-## Complexity review: decisions to discuss
+## Accepted simplifications
 
-The full-scope estimate is 2,420–4,010 production lines and 2,550–4,100 lines
-of tests, fixtures, examples, and documentation: 4,970–8,110 total additions.
-These are rough planning estimates, not implemented code or two additive plans.
-The largest avoidable complexity is preserving byte-identical execution rebuilds
-when a semantic block changes. Independent semantic deployment needs less than
-that. The recommendations below are open decisions; the detailed scope further
-below remains the proposal being evaluated until those choices are agreed.
+Semantic publication is independent of execution deployment. It does not require
+byte-identical fresh runner rebuilds. Keep existing BEAM hashing, local reload,
+source locations, runner code paths, and customer release packaging unchanged.
+A full execution rebuild or ordinary development reload may produce a new runner
+identity. Do not reuse an immutable runner ID for changed bytes.
 
-### Recommended: separate deployment without rewriting runtime modules
-
-Keep the same-file DSL and separate semantic manifest. Build and later publish
-that manifest against the served data contract without rebuilding or deploying
-the running release. Existing execution packages, active execution manifest,
-runner process, and served data remain untouched by that semantic-only workflow.
-
-Allow a later full execution build to produce a new identity. Normal project
-compilation changes BEAM bytes and can shift SQL source positions; local dev may
-therefore restart its runner using its existing conservative reload behavior.
-Semantic publication must not implicitly invoke that execution build/reload path.
-When a local runner is active, build semantics in a separate CI checkout or
-isolated build directory that the runner does not load from. Its current launcher
-inherits mutable authoring code paths, so merely skipping reload while replacing
-BEAM files there would not protect lazily loaded modules. Ordinary development
-compilation/reload remains outside this deployment-only guarantee.
-Do not filter hashes, reuse an immutable release ID for changed bytes, or claim
-that a semantic build cannot affect ordinary local authoring output.
-
-This removes runtime BEAM projection, resource/reflection filtering, special
-runtime inventories and load paths, production assembly changes, and source-span
-normalization. Keep semantic capture out of execution declaration records, but
-do not promise that independently rebuilt execution artifacts are byte-identical.
-The implementation would prove that semantic publication needs no new runner
-release and leaves deployed execution untouched, rather than proving identical
-fresh execution builds. #720 still checks the served generation's consumed
-contract before activation; it cannot accept an incompatible concurrent schema
-change just because the command is called a semantic build.
-
-The budget's isolation slice alone accounts for 450–750 production and 450–750
-supporting lines. Removing only that slice gives 1,970–3,260 production plus
-2,100–3,350 supporting lines (4,070–6,610 total). This is subtraction from an
-estimate, not a validated replacement budget: capture/build/tests would need
-re-estimation after the guarantee is agreed.
-
-### Other reductions worth making
-
-| Recommendation | What becomes simpler | Explicit tradeoff |
-| --- | --- | --- |
-| Build the final semantic artifact directly from the project | Omit the optional intermediate authoring bundle and `--input` mode. CI hands the finished artifact to #720. | Validation needs project source; publication still does not. |
-| Keep local inspection/diff as bounded lists and JSON | Remove continuation cursors for a size-limited local artifact; preserve deterministic ordering and meaningful change classification. | No paginated browsing API in #718. |
-| Keep native validation a one-shot build process | Use a supported, bounded subprocess facility, not a reusable worker service/framework. | Parser isolation, failure handling, and confirmed native process cleanup still need proof; killing an Elixir task is not enough. |
-
-Do not save lines by removing ordered input metadata, formula dependency checks,
-closed SQL validation, conservative type claims, or explicit time/grain rules.
-Those protect correctness and make the catalog useful to dashboards and AI.
-
-Relationship enforcement is another separable workstream, but it is requested
-in #718 and belongs to the existing contract/check engine. Deferring it would
-reduce the first delivery by its estimated 300–500 production and 300–500
-supporting lines, plus some integration work. It would also remove the promised
-foreign-key/cardinality validation from that delivery. That is a scope tradeoff,
-not an equivalent implementation. Keep it unless the user wants a smaller
-initial feature; never keep `on_violation: :fail` while providing metadata only.
-
-Recommendation: agree on deployment independence instead of rebuilt-byte
-identity, omit the intermediate bundle, and simplify local inspection. Keep the
-SQL-native DSL and correctness rules. Do not reduce the budget by an arbitrary
-percentage or start implementation before these choices are settled.
+The semantic build produces the finished immutable artifact directly from project
+source. There is no intermediate authoring bundle or `--input` mode. Inspection
+and diff use bounded local lists and JSON, without pagination cursors. Native SQL
+validation remains a bounded one-shot process, not a general worker service.
+Relationships, ordered bindings, dependency validation, and time/grain rules stay
+in scope. These simplifications were accepted by the user on 2026-09-17.
 
 ## Impact and problem analysis
 
@@ -117,8 +61,9 @@ that arbitrary SQL, joins, or AI output are correct.
 - Explicit column arguments are accepted. A macro cannot verify that a numeric
   argument came from the intended source column.
 - One source relation per semantic model; metrics compose within that model.
-- A semantic-only change must leave execution packages, execution manifest
-  identity, runner identity, and freshness/rebuild decisions unchanged.
+- Building/publishing semantics leaves deployed execution packages, the active
+  manifest, runner, and freshness/data state untouched. A separate execution
+  rebuild may change identity after edits to a shared source file.
 - Relationship checks affect publication and therefore belong in the execution
   contract. Editing them is intentionally an execution change.
 - Time selection and minimum grain are machine-readable usage requirements.
@@ -248,7 +193,7 @@ end
 ```
 
 The function-style `metric` signature, options, expression grammar, composition
-rules, and ordered consumer bindings are unchanged. The source column is resolved
+rules, and ordered consumer bindings use the same declaration contract. The source column is resolved
 from the containing contract: `gross_value` means that asset's column, and
 `@gross_value` inside SQL is the corresponding macro argument. A metric file is
 relative to this same asset file:
@@ -729,145 +674,40 @@ storage snapshot actually read. Pinning a formula does not freeze changing data.
 
 ## Compiler and runtime separation
 
-Separating two JSON manifests after compiling one mixed module is insufficient.
-The execution and semantic projections must split before their identities are
-formed, and the runner must load the runtime bytes whose identity was computed.
+Capture `semantic` declarations separately from SQLAsset execution definitions.
+Use normal Elixir compilation; do not project or rewrite runtime BEAMs, normalize
+execution source locations, or change runner launch/release behavior. Only the
+semantic builder consumes semantic capture; execution packages contain no metrics.
 
-| Current evidence | Required change |
-| --- | --- |
-| `SQLAsset.__before_compile__/1` emits execution raw-definition getters; SQL assets also permit ordinary Elixir functions. | Capture semantic data into a separate compiler-owned root. Do not put it into execution raw definitions or treat the entire asset module as disposable metadata. |
-| `SourceRelease.current/1` hashes all compiled BEAM files. | Derive local runner identity from a complete verified runtime inventory whose asset modules have semantic metadata projected out. |
-| [`RunnerProcessLauncher`](../../../apps/favn_local/lib/favn_local/runner_process_launcher.ex) inherits the authoring node's code paths. | Launch from the verified inventory, without a fallback path to the customer authoring BEAMs. Hashing a filtered list while loading the old files would be incorrect. |
-| [`ExecutionPackage`](../../../apps/favn_core/lib/favn/manifest/execution_package.ex) serializes SQL source locations and spans. | Give execution definitions stable diagnostic coordinates so adding lines to a semantic block does not change an unrelated execution package. |
-| [`RunnerRelease`](../../../apps/favn_core/lib/favn/runner_release.ex) and [production release rules](../../production/runner_releases.md) use immutable customer-assigned production IDs. | Preserve that meaning. This plan does not make production IDs semantic hashes or permit reusing an ID for a different image. |
+A semantic build starts in an isolated build directory or separate CI checkout
+before any Mix compile/app.config requirement runs. The public command requires
+an explicit dedicated `MIX_BUILD_PATH` established at process startup and must
+not compile into an active runner's code paths. Reject shared loaded customer or
+dependency output paths before compilation. Ordinary dev compilation and reload
+are separate workflows and keep their existing conservative behavior.
 
-The proposed pipeline is one compilation capture, followed by projections. It
-must not evaluate authored Elixir twice to manufacture a different runner module:
-compile-time side effects or nondeterministic macro expansion could otherwise
-produce different behavior in the two passes.
+The build discovers assets through existing project discovery and resolves their
+contracts without constructing a deployable execution manifest or requiring
+runner release bindings. It emits a contract snapshot and semantic artifact as
+data. Publication in #720 consumes the finished artifact without source modules
+and checks compatibility against the served generation's consumed contract.
+No execution deployment, data publication, runner boot, or reload is a build side
+effect. Source edits affecting contracts cannot bypass later compatibility checks.
 
 ```mermaid
 flowchart TD
-    A[One SQL asset file with contract and semantics] --> B[Authoring compilation and capture]
+    A[One SQL asset file with contract and semantics] --> B[Normal authoring compilation in isolated output]
     B --> C[Execution definitions and contract snapshot]
-    B --> D[Semantic definitions]
-    B --> E[Expanded runtime code]
-    C --> F[Execution manifest and packages]
-    C --> G[Semantic validation and artifact]
-    D --> G
-    E --> H[Verified runtime inventory]
-    H --> I[Local runner or customer release assembly]
-    F --> I
-    G --> J[Independent catalog publication in issue 720]
-    B -->|Invalid| X[Diagnostics and no release output]
-    H -->|Projection cannot be verified| X
+    B --> D[Separate semantic capture]
+    C --> E[Semantic validation]
+    D --> E
+    E -->|Invalid| X[Diagnostics and no artifact]
+    E -->|Valid| F[Immutable semantic artifact]
+    F --> G[Catalog publication in issue 720]
+    H[Existing runner and served data] --> I[Served contract compatibility in issue 720]
+    G --> I
+    I --> J[Dashboard and AI metadata]
 ```
-
-#### Capture and identities
-
-1. The ordinary asset compile captures contract/query/check declarations and
-   semantic declarations separately, under the same source asset reference.
-   Literal metric SQL, options, argument order, and formula-file contents become
-   inert typed semantic records. They never enter `SQLExecution`, execution raw
-   definitions, SQL runtime requirements, or execution hash payloads.
-2. Preserve the compiled execution-only getters and generated `asset/1` route.
-   They currently support direct local SQL execution as well as authoring; this
-   revision does not redesign that route merely to isolate semantic metadata.
-3. Give all SQL assets one compiler-tagged semantic capture root, even when no
-   semantic block exists. The authoring variant exposes the captured record; the
-   runtime variant replaces that root with a fixed `{:error, :authoring_only}`
-   result. Prefer this stable stub over deleting functions: exports and
-   `__info__` stay consistent when metrics or the whole block are added/removed.
-   Metric declarations do not generate one runtime function per metric.
-4. Build the runtime variant from the same already-expanded compiler output.
-   Preserve ordinary functions, guards, literals, module attributes, callbacks,
-   `on_load`, runtime-input resolvers, helper dependencies, and module names.
-   Projection removes only tagged semantic metadata and diagnostic annotations;
-   it must not pattern-match arbitrary user functions by a convenient name.
-   Calls from runtime code to the authoring-only capture API are unsupported and
-   diagnosed where statically visible; the runtime stub also fails explicitly.
-5. Normalize non-executable file/line/debug annotations for all modules emitted
-   from the affected compilation unit, including sibling modules in the same
-   `.ex` file. Otherwise adding metric lines can still change a sibling BEAM.
-   Preserve source-derived **executable literals**, including values expanded
-   from `__ENV__.line`, `__ENV__.file`, `__MODULE__`, module attributes, and macros.
-   If those values change, the edit has changed execution behavior and must
-   change runtime identity. Do not call it a semantic-only change based on the
-   textual location of the edit.
-6. Build and validate a complete module inventory. Do not introduce whole-program
-   dependency pruning: other customer/dependency modules remain included under
-   existing execution requirements. Preserve external-resource and compiler
-   dependency tracking in the authoring build; helper or resource edits invalidate
-   affected capture/projection results. Unsupported compiler output or missing
-   required expansion/debug information fails with a precise diagnostic. There
-   is no fallback to excluding whole modules, source globs, or directories.
-
-Elixir persists `@external_resource` paths in BEAM attributes. The semantic file
-loader must therefore record compiler-owned semantic file dependencies separately
-from ordinary user/query/runtime resources. Keep their paths and content digests
-in authoring dependency tracking and the semantic capture, but remove exclusively
-semantic entries from the runtime BEAM's attributes, debug/reflection data, and
-packaged resource inventory. Replacing the semantic getter alone is insufficient.
-
-Resource classification follows recorded compiler ownership, not filename or
-directory heuristics. A path also declared by user code, used by an execution
-query, or present in the required runtime resource inventory is shared/runtime;
-it stays included and relevant changes invalidate execution identity. Do not
-claim a semantic-only edit when a resource is runtime-observable or ownership is
-unresolved. Semantic SQL files, source maps, and capture receipts must not leak
-into release resource payloads through a broad copy of the authoring directory.
-Preserve all other user attributes and reflection behavior.
-
-The capture, runtime inventory, and contract snapshot are generated build data,
-not additional deployable services or user-maintained files. Projection receipts
-may identify the full authoring build for cache validation, but those receipts
-must stay outside runtime identity and packaged runtime payloads: their source
-digest changes on a formula edit. Runtime identity hashes the actual stable
-runtime payload. New and removed runtime modules, dependencies, or executable
-content must change it. Incremental builds must remove stale generated outputs.
-
-#### Source locations and package compatibility
-
-Execution-only getters and execution packages currently carry authored file/line
-values. Normalize compiler-owned diagnostic fields to stable source roles and
-positions relative to each SQL expression/query. Preserve the SQL text, node
-order, real arguments, types, policies, bindings, and every executable value.
-Keep physical Elixir locations in a separate authoring source map for build
-diagnostics and inspection. Runtime errors report the stable source role and SQL
-position; authoring tools can map that back using the selected authoring build.
-
-Do not merely exclude fields from a hash while continuing to publish different
-payload bytes under the same digest. Normalize the actual serialized execution
-payload first and continue hashing/verifying all of that canonical payload.
-This changes the execution-package/source-location contract and needs appropriate
-schema/version/codec updates and fresh-process tests. The initial platform
-upgrade can change identities; the formula-only stability claim applies after
-both compared builds use this compiler and contract version.
-
-#### The loaded code must match the inventory
-
-`favn_local` owns constructing and launching an immutable source-runtime directory
-from the verified inventory. It must not pass customer authoring `ebin` paths to
-the runner as fallback paths. Include the correct `.app` module lists, dependency
-paths, and required runtime resources. Validate package/inventory integrity before
-start and prove after boot that loaded customer modules come from this inventory
-with the expected bytes. A stale, incomplete, or mismatched inventory fails before
-advertising runner readiness; no silent reuse of the previous identity.
-
-The authoring/operator process can still load the full authoring variant. Project
-compilation, editor tooling, and source diagnostics may therefore run again on a
-metric edit. The requirement is that this does not replace the **runner** or
-alter its execution packages, manifest, generation, or freshness identities.
-
-Production assembly must stage the same runtime projection in the customer-owned
-release/image workflow. Update the generated deployment recipe and canonical
-instructions; ensure a later `mix release`/copy step cannot restore authoring BEAMs
-over the staged runtime variants. Favn does not build or deploy customer images.
-A semantic-only pipeline compiles authoring metadata and publishes its semantic
-artifact using an existing compatible execution/runner release. It need not run
-the image build at all. If the customer chooses to build an image with different
-contents or labels, that image still requires its own immutable production ID.
-Equal execution behavior is not permission to assign one ID to two image digests.
 
 ### Artifact and deployment boundaries
 
@@ -887,7 +727,7 @@ upstream asset/column rows needed for lineage are included as data. It records
 the exact snapshot used and separately the compatibility requirements for its
 consumed fields. Build timestamps, machine paths, and presentation ordering do
 not affect content identity. Description/display edits do change semantic
-identity, but never execution identity.
+identity, but do not deploy execution changes.
 
 The DuckDB plugin owns the build-time compiler capability behind a Core
 behaviour. Core does not own a database session; Authoring does not depend on
@@ -935,40 +775,18 @@ activation store, scheduler, publisher, remote mutation, or retention job.
 
 ### Build workflow
 
-The normal semantic build uses the project's existing asset discovery:
-
 ```sh
-# Reads semantic blocks from the normal SQL asset files.
-mix favn.build.semantics --output dist/semantics
-
+# Set a dedicated build path before Mix starts; never point it at a live runner.
+MIX_BUILD_PATH=_build_semantic mix favn.build.semantics --output dist/semantics
 mix favn.semantic.inspect --artifact dist/semantics/sm_<digest>/semantic.json \
   --metric sales.net_revenue --format json
-
 mix favn.semantic.diff --from previous/semantic.json --to current/semantic.json
 ```
 
-This command performs normal authoring compilation/capture and produces the
-data-contract snapshot and semantic projection needed for validation, without
-requiring `runner_releases`, booting a runner/orchestrator, or activating an
-execution manifest. It must not interpret successful compilation as authorization
-to rebuild or deploy a runner. Normal local reload consumes the same projection
-boundary before making its runner-replacement decision.
-
-For split CI stages, expose the generated, closed authoring bundle as an optional
-build input. It contains the resolved semantic declarations and exact contract
-snapshot, never closures or arbitrary executable AST. A subsequent build can use
-`mix favn.build.semantics --input PATH --output dist/semantics` without source
-modules. The input mode and project capture mode are mutually exclusive. The
-bundle is schema-versioned, bounded by the existing snapshot/semantic limits,
-content-verified, and tied to its captured source build; stale or mismatched
-capture results fail. Users do not hand-edit it or maintain a second semantic
-file list.
-
-Semantic validation, macro rendering, atomic local artifact writing, and the
-separately owned DuckDB validation process have the responsibilities described below.
-Independent deployed publication/activation remains #720. Relationships still
-belong to the execution contract: changing enforcement is not a semantic-only
-change just because it appears beside a semantic block.
+These tasks do not build runner releases, activate execution manifests, or boot
+orchestrator/runner applications. Build validates before atomically writing a
+finished artifact. Inspect/diff read only finished local artifacts. The semantic
+build needs project source; later publication needs only the finished artifact.
 
 ### Inspection, diffs, and limits
 
@@ -994,11 +812,12 @@ independent immutable versions from coexisting.
 | Model metadata | One source, one dimension, one time declaration, 32 hierarchies, 16 levels per hierarchy. |
 | Relationships | 32 per source; at most two grouped checks per relationship. Preserve the existing 50 authored-check budget and 18 non-relationship contract checks; explicitly extend the generated-check cap to 82. |
 | Build validation | One local session in a separately owned OS worker; 10-second startup, 5-second per-expression and 5-minute total build deadlines. Shutdown escalates from terminate after 2 seconds to kill, then waits at most 3 seconds for confirmed exit. No automatic extension download. |
-| Inspection/diff | Deterministic ordering, limit default 100/max 1,000, explicit continuation cursor; CLI may stream pages rather than accumulate unbounded output. |
+| Inspection/diff | Deterministic bounded lists, optional exact metric filter, human or JSON output; no pagination or service API. The artifact size limit bounds memory. |
 | Diagnostics | At most 100 diagnostics per build plus a count of omitted diagnostics; each message at most 1,024 bytes. |
 
 These are initial closed contract limits, not a new configuration framework.
-Keep source spans separate from serialized release identity. Authoring files are
+Keep source spans separate from semantic-artifact identity only; execution
+source spans retain existing behavior. Authoring files are
 trusted project code, like the existing DSL; isolated formula validation is not
 a sandbox for malicious Elixir source.
 
@@ -1028,62 +847,43 @@ their existing execution-manifest-trigger wording is not an immutable constraint
 
 ## Implementation slices and complexity budget
 
-This is the single estimate for the full scope described in this record. It is
-not a commitment to implement all of it: the simplification decisions above
-remain open. Supporting lines include tests, fixtures, examples, and canonical
-documentation; they are not all production code.
+| Slice | Outcome and owner | Production added/deleted | Supporting added/deleted |
+| --- | --- | --- | --- |
+| 1 | Core semantic/snapshot contracts, canonical codec, dependencies and compatibility | +300–500 / -0–30 | +250–400 / -0–20 |
+| 2 | Contract relationships and transactional generated checks | +300–500 / -20–60 | +300–500 / -10–40 |
+| 3 | Nested semantic capture in SQLAsset and formula composition | +300–500 / -10–40 | +300–450 / -10–30 |
+| 4 | Bounded native DuckDB expression validation and macro rendering | +300–500 / -0–20 | +350–550 / -0–20 |
+| 5 | Isolated semantic build, one-shot validator, local inspect/diff tasks | +400–700 / -10–40 | +350–600 / -10–30 |
+| 6 | Complete examples, canonical guides, Favn.AI routing and integration | +20–60 / -0–20 | +350–550 / -20–60 |
 
-| Slice | Outcome and owner | Depends on | Production added/deleted | Supporting added/deleted |
-| --- | --- | --- | --- | --- |
-| A | Verified expanded-code projection, stable execution source roles, runtime inventory, local launcher and production assembly integration | None; feasibility gate first | +450–750 / -40–90 | +450–750 / -20–50 |
-| 1 | Core snapshot/semantic types, closed codec and dependency/compatibility contracts | A | +300–500 / -0–30 | +250–400 / -0–20 |
-| 2 | Contract relationships and transactional checks | 1 | +300–500 / -20–60 | +300–500 / -10–40 |
-| 3 | Nested semantic DSL and separate typed capture in SQLAsset; formula composition | 1, A | +450–700 / -10–40 | +400–600 / -10–30 |
-| 4 | Native DuckDB validation and macro rendering | 3 | +300–500 / -0–20 | +350–550 / -0–20 |
-| 5 | Project/bundle semantic build, owned validation worker, inspection/diff and Mix tasks | 1, 3, 4 | +600–1,000 / -20–60 | +450–750 / -20–40 |
-| 6 | Same-file examples, guides, Favn.AI routing and end-to-end isolation acceptance | 2–5 | +20–60 / -0–20 | +350–550 / -20–60 |
+Total: 1,620–2,760 production additions and 1,900–3,050 supporting additions
+(3,520–5,810 combined). Supporting means tests, fixtures, examples, and canonical
+documentation. These are rough scope estimates, not targets to compress code to.
+Exclude this record, generated files, locks, vendored code, and formatting-only
+changes. Explain overruns beyond 25% or 100 lines above a category's upper bound,
+whichever is smaller, and materially fewer deletions than planned.
 
-Totals: production additions 2,420–4,010; supporting additions
-2,550–4,100. Count runtime projection/launch tests in A and overall workflow
-tests in slice 6, without double counting. Exclude this record, generated files,
-locks, vendored code, and formatting-only changes. Explain overruns above an upper estimate by more than 25% or 100 lines,
-whichever is smaller, and materially fewer deletions than planned. A general
-module-pruning framework, a second source evaluator, or a new deployment service
-is outside this budget and scope.
+Core owns typed data/compilation/identity/compatibility; Authoring captures and
+builds; reuse `FavnAuthoring.list_assets` / `Generator.build_catalog` without
+runner-release bindings. The DuckDB plugin validates native SQL; public Mix tasks expose the
+workflow. Relationships reuse the runner's existing checked transaction engine.
+No runtime module rewriting, alternative release inventories, publisher service,
+or new deployment persistence is in #718.
 
-Core owns the typed capture/projection/inventory contracts and canonical identities.
-Authoring owns compiler integration and semantic capture. Local tooling owns
-runtime staging, source identity, launch paths, and reload decisions. Public build
-tasks and deployment recipes consume the same inventory. Runner execution and
-relationship checks keep their existing owners; View and storage do not acquire
-semantic deployment state in #718.
+### Deployment independence acceptance
 
-### Compiler isolation acceptance gate
-
-Implement and qualify the compiler/runtime split first. It is the feasibility
-gate for the full rebuilt-artifact identity guarantee, not an optimization to
-add after shipping the DSL. If supported compiler output cannot meet these
-invariants within a bounded implementation, return for plan re-review rather
-than silently reverting to separate user files or weakened hashing.
-
-| Scenario | Required evidence |
-| --- | --- |
-| Same-file DSL | Complete Store, Sales, and Inventory examples compile; duplicate blocks, missing contracts, bad nesting, declarations after `query`, explicit `source`, and collisions fail precisely. |
-| Formula-only edits | Change inline SQL, descriptions, argument metadata, metric count, and entire block presence; semantic identity changes while runtime inventory bytes, execution package/manifest, runner release, target compatibility, and freshness/generation identities stay equal. |
-| Source-line shifts | Add/remove lines before query/check declarations and an ordinary sibling module; canonical execution payloads and runtime inventory stay equal when executable values are unchanged. Verify diagnostic source maps still identify the original source. |
-| Real execution changes | Change query SQL, contracts, relationship policies, runtime helper bodies, compile-time constants, runtime-input resolvers, same-file sibling code, or runtime resources; the owning execution/package/runtime identities must change as appropriate. A semantic-only path cannot silently carry these into an old runner. |
-| Observable source constants | A helper returns `__ENV__.line` or another source-derived literal. If its expanded value changes, runtime identity changes; normalization cannot erase that behavior. |
-| One evaluation | Instrument a compile-time macro/side effect and prove projection uses the captured expanded output, not a second source evaluation. |
-| Formula files | Edit/delete an adjacent metric SQL file without touching the Elixir file; recapture semantic output and reject missing files. Add/remove/rename a file-backed metric or block; verify exclusively semantic resource paths/content are absent from runtime Attr/debug/reflection and packaged resources, with unchanged execution identity. A resource also used by a query, user declaration, or runtime inventory remains included and changes execution identity as appropriate. |
-| Incremental correctness | Clean/incremental/parallel builds produce the same projections; deletions/renames remove old capture data and modules. No previous build's semantic root is reused after source changes. |
-| Runtime projection fidelity | Preserve ordinary functions, attributes, callbacks, helper/resource dependencies, execution getters and direct `asset/1` behavior; semantic root returns its fixed unavailable result. Check exports, `__info__`, specs and reflection for consistency. |
-| Actual local load path | Boot with authoring customer paths unavailable; inspect `:code.which`/object code and assert loaded module bytes match the verified inventory. Demonstrate semantic-only reload keeps the existing runner process. |
-| Production packaging | Assemble the release from the inventory and inspect packaged module bytes/paths; show semantic-only publication skips image construction and does not reassign an existing production ID to different image contents. |
-| Failure boundaries | Missing expansion information, unsupported compiler versions, corrupt/incomplete inventory, stale capture, projection mismatch and unavailable runtime modules prevent readiness/publication with bounded diagnostics. |
-
-The formula, time-selection, dependency, relationship, serialization, native
-cleanup, and consumer SQL acceptance scenarios below also apply.
-No supported-runtime guarantee is claimed from merely parsing these examples.
+- Build from an explicitly isolated output directory before any project/dependency
+  compilation. Reject active/shared code paths before writing; prove no runner
+  code-path files change, including lazy dependency modules.
+- Formula edits change semantic identity and ordered bindings as appropriate.
+  Check existing execution artifacts and deployed state stay untouched; do not
+  assert byte equality for a separately rebuilt execution release.
+- Prove semantic capture never enters execution raw records/packages, and builds
+  require no runner releases, control plane, publication, or data connections.
+- File-only metric edits trigger recapture; clean and incremental semantic builds
+  agree and reject missing files/stale capture.
+- Unknown served contracts block future automatic activation; query/contract edits
+  still use ordinary execution deployment and cannot masquerade as semantic-only.
 
 ## Operational design
 
@@ -1154,7 +954,7 @@ compatibility; semantic rollback is separately owned by #720.
 | Relationship publication is correct | Required/optional/composite/snowflake roles, orphan and duplicate target keys, full-table and incremental one-to-one collisions; fail rolls back, warn persists bounded quality result, unsupported capability fails before writing. Use different keys in active and pinned dependency generations and prove the check reads the pinned generation. | Authoring/Runner/plugin |
 | Execution uses no authoring code | Compiled check packages execute after unloading authoring modules; persisted populated relationships decode in a fresh BEAM. | Core/Runner |
 | Artifact is deterministic and closed | Reordered file discovery has same digest; meaningful input order differs; corrupt/oversized/unknown records fail; interrupted write leaves no artifact; repeated build is idempotent. | Core/build tooling |
-| Semantic deployment is independent | Formula-only edit changes only semantic artifact; clean/incremental execution builds retain release/package/manifest/generation/freshness identities; generated-bundle mode works without source asset modules. | Local acceptance |
+| Semantic deployment is independent | Formula edits change semantic artifacts; isolated compilation leaves active runner code paths and existing execution artifacts untouched. No execution deployment/boot occurs. Fresh execution rebuild hashes may differ. | Local acceptance |
 | Compatibility uses consumed shape | Extra unreferenced column accepted; missing/type-changed input, key/time/grain/relation changes rejected; unknown served contract stays unknown. | Core |
 | Consumers do not guess arguments | Example dashboard emitter reads artifact metadata, chooses aliases and emits the documented SQL; generated docs use same input records; negative same-type manual argument swap is demonstrably not blocked by DuckDB. | Example/acceptance |
 | Diff is meaningful | Added/removed/renamed/formula/unit/input order/time/minimum-grain changes classified; description/format changes informational; transitive effects included. | Core |
@@ -1167,7 +967,7 @@ the tag-tier guard, public docs/examples, and independent final review. Any nati
 DuckDB qualification must use the repository-supported runtime pin, not only the
 developer CLI. Keep tests that protect behavior; avoid mirroring every struct.
 
-The current documentation-only delivery needs relative-link checks, Elixir/SQL
+Planning-stage checks require relative-link checks, Elixir/SQL
 example syntax review, Mermaid rendering review, and `git diff --check`. It does
 not warrant running the umbrella implementation suite. No live deployment,
 production load result, metadata publication, or MCP operation is claimed.
@@ -1181,31 +981,25 @@ production load result, metadata publication, or MCP operation is claimed.
 | Native parser representation changes | Keep version-sensitive validation in the DuckDB plugin; pin and qualify supported versions, fail closed on unknown expression shapes. |
 | Expanding the allowed SQL set grows a query compiler | Support one bounded aggregate expression; reject full queries and automatic dashboard planning. Extensions must justify new grammar with real examples. |
 | Relationships create expensive scans or become stale later | Reuse transactional checks, expose policy/quality state, qualify representative incremental plans, and state the snapshot-only guarantee. No permanent FK promise. |
-| Same-file metadata leaks into execution identity | Verified runtime projection and clean/incremental inventory proof under the full isolation scope. The simpler deployment-only alternative is an open decision above. |
+| Same-file edits change fresh execution build identity | Accepted; semantic builds use isolated output and publish only semantics. Existing deployments remain untouched; no hash filtering. |
 | Target cannot store macros or served version is uncertain | #720 publishes definitions for local installation and gates automatic activation on served-contract evidence. |
 
-## Planning status and verification
+## Plan review and implementation status
 
-Implementation has not started. At the user's request, this document contains
-one consolidated plan; superseded proposals and duplicated estimates have been
-removed. Complexity reductions are proposals for discussion, not silently
-accepted changes to the contracts above. Final implementation approval waits for
-those decisions and an independent review of the resulting scope.
+The user approved the simplifications and authorized implementation after an
+independent plan review. Review and implementation evidence are recorded below;
+the approved scope above remains the implementation baseline.
 
-Static source inspection confirms that local runner identity hashes BEAM files,
-local launch inherits code paths, and execution packages include source spans.
-These facts explain the cost of the full identity guarantee. No Tidewave runtime
-inspection, deployed isolation, performance qualification, or Favn integration
-is claimed. Earlier native SQL probes established revenue 210, weighted price
-42, and ragged closing stock 32; they do not prove the unimplemented compiler.
+Static inspection establishes current BEAM hashing, inherited runner load paths,
+and serialized execution source spans. No Tidewave tool is available in this
+session; runtime claims require actual tests. Earlier native SQL probes returned
+revenue 210, weighted price 42, and ragged closing stock 32; those are SQL
+feasibility evidence, not implementation qualification.
 
-| Consolidation check | Result |
-| --- | --- |
-| Independent review | `review_semantic_plan` approved this consolidated discussion document on 2026-09-17 after rechecking the isolated-build clarification. No remaining blocking findings. This is not implementation approval. |
-| Relative links | All repository targets exist. |
-| Elixir examples | All three retained blocks parse with `Code.string_to_quoted/1`; proposed APIs are not implemented or compiled. |
-| Whitespace | `git diff --check` passes. |
-| Diagrams | Both diagrams render on GitHub at `25d7ad80`: current flow has 8 nodes and proposed flow has 11. The complexity discussion is visible in the rendered document. |
+Public DSL acceptance requires the canonical semantic user guide, public
+moduledocs/typespecs, and Favn.AI discovery/routing updates in this same change.
+No backwards-compatibility shims or legacy DSL forms are required.
 
-Implementation checks remain planned. No replacement complexity budget is
-approved until the simplification decisions are settled.
+Independent reviewer `review_semantic_plan` approved the implementation plan
+after recheck on 2026-09-17, with no remaining blocking findings. Approval
+covers scope and design; runtime guarantees require implementation tests.
