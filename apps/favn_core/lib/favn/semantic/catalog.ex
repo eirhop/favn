@@ -99,14 +99,10 @@ defmodule Favn.Semantic.Catalog do
           []
 
         {before, after_value} ->
-          changed =
-            (Map.keys(before) ++ Map.keys(after_value))
-            |> Enum.uniq()
-            |> Enum.filter(&(before[&1] != after_value[&1]))
-            |> Enum.sort()
+          changed = changed_fields(before, after_value, "")
 
           class =
-            if Enum.all?(changed, &(&1 in ["description", "format"])),
+            if semantic_fields(before) == semantic_fields(after_value),
               do: "informational",
               else: "breaking"
 
@@ -227,24 +223,62 @@ defmodule Favn.Semantic.Catalog do
     if expected == nil or actual == nil or actual["contract"] == nil do
       [reason(role["target"], "missing_relationship_target")]
     else
-      expected_columns =
-        expected["contract"]["columns"]
-        |> Enum.filter(&(&1["name"] in keys))
-        |> Enum.map(&Map.take(&1, ["name", "type", "nullable"]))
-
-      actual_columns =
-        actual["contract"]["columns"]
-        |> Enum.filter(&(&1["name"] in keys))
-        |> Enum.map(&Map.take(&1, ["name", "type", "nullable"]))
-
-      unique =
-        keys == actual["contract"]["grain"] or
-          Enum.any?(actual["contract"]["unique_keys"], &(&1["columns"] == keys))
+      expected_columns = key_columns(expected["contract"], keys)
+      actual_columns = key_columns(actual["contract"], keys)
 
       if expected["relation"] == actual["relation"] and expected_columns == actual_columns and
-           unique, do: [], else: [reason(role["target"], "relationship_target_changed")]
+           keys == actual["contract"]["grain"],
+         do: [],
+         else: [reason(role["target"], "relationship_target_changed")]
     end
   end
+
+  defp key_columns(contract, keys) do
+    columns = Map.new(contract["columns"], &{&1["name"], &1})
+    Enum.map(keys, &Map.take(Map.get(columns, &1, %{}), ["name", "type", "nullable"]))
+  end
+
+  defp semantic_fields(%{"contract" => contract} = entity) when is_map(contract) do
+    contract =
+      contract
+      |> Map.delete("grain_description")
+      |> Map.update!("columns", fn columns ->
+        Enum.map(columns, &Map.delete(&1, "description"))
+      end)
+
+    Map.put(entity, "contract", contract)
+  end
+
+  defp semantic_fields(entity), do: Map.drop(entity, ["description", "format"])
+
+  defp changed_fields(same, same, _path), do: []
+
+  defp changed_fields(before, after_value, path) when is_map(before) and is_map(after_value) do
+    (Map.keys(before) ++ Map.keys(after_value))
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.flat_map(fn key ->
+      changed_fields(
+        before[key],
+        after_value[key],
+        if(path == "", do: key, else: path <> "." <> key)
+      )
+    end)
+  end
+
+  defp changed_fields(before, after_value, path) when is_list(before) and is_list(after_value) do
+    if Enum.all?(before ++ after_value, &(is_map(&1) and is_binary(&1["name"]))) do
+      changed_fields(
+        Map.new(before, &{&1["name"], &1}),
+        Map.new(after_value, &{&1["name"], &1}),
+        path
+      )
+    else
+      [path]
+    end
+  end
+
+  defp changed_fields(_before, _after, path), do: [path]
 
   defp entities(artifact) do
     models = Map.new(artifact.models, &{"model:" <> &1["name"], Map.delete(&1, "metrics")})

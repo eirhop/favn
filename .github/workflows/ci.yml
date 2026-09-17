@@ -182,6 +182,7 @@ jobs:
           test/semantic_compiler_lifecycle_test.exs
           test/semantic_artifact_integration_test.exs
           test/relationship_checks_test.exs
+          test/relationship_publication_test.exs
 
   dialyzer:
     name: Dialyzer

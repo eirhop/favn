@@ -1011,5 +1011,121 @@ covers scope and design; runtime guarantees require implementation tests.
 | --- | --- | --- |
 | Startup build isolation is a caller prerequisite; the task guard precedes its explicit app.config, not all Mix bootstrap | Mix.Task.maybe_load_or_compile_task compiles dependencies (and may compile the project) to locate a task before run/1. Independent reviewer confirmed startup MIX_BUILD_PATH is the sound boundary. | Set the dedicated path before starting Mix; never launch a runner from it. Dependency output may already exist. Missing-isolation invocation is outside the deployment guarantee and a task error cannot undo earlier compilation. |
 | Native validation uses Python3 standard library supervision over the installed pinned DuckDB shared library on Linux | In-process ADBC has no reliable hard cancellation. A bounded one-shot native child needs no Python DuckDB package or downloads. | Linux/Python3 and an installed supported driver are explicit build prerequisites; unsupported platforms fail. Final native and lifecycle tests must qualify this boundary. |
-
 | Manifest-only rendering resolves compiled asset references through the pinned manifest relation map | The new generation-pinning test showed resolved references bypassed the map and could read the authored relation. | Required for relationship correctness; no fallback when a manifest binding is missing. Existing renderer tests and a real generation override fixture verify this boundary. |
+
+
+## Implementation outcome
+
+The implementation keeps the proposed ownership diagram: one SQLAsset source
+contains its contract and semantic declarations; a dedicated build emits an
+immutable semantic artifact; consumers install explicit-input DuckDB macros and
+query DuckDB directly. No query gateway, semantic service, release rewriting,
+intermediate bundle, catalog publisher, or new persistence schema was added.
+The approved plan above remains the baseline, including its planning-stage wording.
+The implementation was rebased onto main `94a2ad7a`; the equivalent rebased approved
+plan is `b3e0fe1e` (original published approval `1a723c9f`).
+
+| Planned capability | Implemented ownership |
+| --- | --- |
+| Same-file contract and semantics | SQLAsset captures literal declarations; Authoring builds from explicit asset metadata. Core never discovers or loads customer modules. |
+| Exact SQL composition | Core expands a bounded same-model graph, validates ordered inputs, and carries generated placeholder byte offsets to native AST validation. Bare SQL references cannot masquerade as declared inputs. |
+| Independent source-free artifact | Core provides a closed bounded codec, immutable atomic publication, inspection, diff, and consumed-contract compatibility. Unknown served contracts remain unknown. |
+| Native type validation and ordinary queries | The DuckDB plugin owns a pinned native AST/binder worker and confirmed process cleanup. The artifact provides exact macro SQL and invocation bindings. |
+| Enforced relationships | Existing transactional checks enforce source/target rules using pinned dependency generations; execution codecs and compatibility versions are updated without legacy shims. |
+| Documentation and discoverability | The canonical semantic guide, output-contract/check guides, SQLAsset/module docs, Favn.AI routing, Features, and Roadmap are updated together. |
+
+The native build supports the qualified DuckDB 1.5.2 and 1.5.5 shared-library
+profiles. The implementation does not publish catalogs, supply live quality
+context, or implement MCP; those remain #720, #721, and #719 respectively.
+
+### Complexity comparison
+
+The following measured additions/deletions use `git diff origin/main --numstat`.
+The change record, generated documentation/build output, dependencies, and lock
+files are excluded. File ownership assigns the shared SQLAsset edits to slice 3,
+Core semantic tests to slice 1, Catalog to slice 5, and integration examples to
+slice 6. This avoids counting a shared file more than once.
+
+| Slice | Production added/deleted | Supporting added/deleted |
+| --- | --- | --- |
+| 1: contracts, snapshots and closed codec | +771 / -0 | +691 / -0 |
+| 2: relationships and execution compatibility | +255 / -21 | +754 / -87 |
+| 3: authoring and formula composition | +1224 / -6 | +129 / -0 |
+| 4: native validation and supervision | +536 / -0 | +444 / -1 |
+| 5: build and local read tasks | +510 / -0 | +214 / -0 |
+| 6: guides, discovery and consumer integration | +19 / -0 | +416 / -4 |
+| Total | +3315 / -27 | +2648 / -92 |
+
+Production exceeds the estimated 2,760-line upper bound by 555 lines. Slice 1's
+closed decoder validates nested identities, input ordering, dependency closure,
+relationship mappings and consumed contract snapshots without atom creation or
+customer code. Slice 3 includes bounded expansion, exact input origins,
+composition rules, time/grain inheritance and source-attributed diagnostics.
+These correctness checks explain the local overruns; they do not add deployment
+or query-planning features. Tests for composition and compatibility are grouped
+in slice 1, explaining its supporting overrun and slice 3's lower test count.
+Slice 2 now also includes an actual checked-runner/native publication fixture
+requested by final review, explaining its supporting overrun; render-only and
+manual-transaction tests did not prove the whole pinned-generation path.
+Fewer deletions are expected because this introduces new authoring behavior;
+existing transaction execution and module discovery are reused rather than
+replaced. No old semantic implementation or compatibility path is retained.
+
+### Verification evidence
+
+Local verification uses an isolated checkout, disposable PostgreSQL database,
+and installed pinned DuckDB library. It does not touch a deployed platform.
+
+- The final focused Core semantic suite passed 23 tests, including rejection of
+  relation syntax without loading customer code. The native compiler, lifecycle,
+  artifact and relationship suites passed 15 tests against DuckDB 1.5.5.
+- The native consumer fixture compares macro and inline SQL plans on a physical
+  table and proves unused columns are pruned. Opening/closing values are 30/32;
+  multiple buckets, missing dates, duplicate grain, null/empty/zero-denominator
+  cases, and a wrong same-type input swap are covered.
+- A fresh consumer project built an artifact from same-file declarations. With
+  deliberately invalid customer source, artifact inspection still succeeded.
+  Changing only a formula produced a new semantic identity with the same contract
+  snapshot, retained the old artifact, and yielded a breaking diff. Every command
+  used the dedicated startup build directory; no default consumer build appeared.
+- Generated artifact macros were installed and invoked after unloading the
+  authoring module. The revenue and weighted-price fixture returned 210 and 42.
+- The first broad run exposed a local test-build issue: nested app compilation
+  removed runner test-support modules. A forced umbrella compilation restored
+  them; the rerun passed all 272 runner tests. The broad run passed every other
+  app except a pre-existing 100ms receive assertion in storage ConnectionGuardTest.
+  Its isolated rerun passed all eight tests without source changes.
+- Public ExDoc generation succeeded through the owning favn app. It reported only
+  the existing operator-authentication relative-link warning, outside this change.
+
+The favn acceptance test and both favn/orchestrator slow tiers passed. Storage
+slow tests passed 23 of 24 initially; the restore drill encountered a stale
+root-owned temporary file, then host pg_dump 16 versus server 18. Rerunning with
+an isolated temporary directory and PostgreSQL 18 client container passed.
+The separate local-development lifecycle acceptance needs hardened runtime roles
+absent from the bootstrap-owned disposable test database; its full qualification
+belongs to the configured CI acceptance job. The asset-build acceptance passed.
+
+Compilation with warnings-as-errors, formatting, changed Markdown link checks,
+and the CI test-tier guard passed. CI is a separate final-head gate, recorded in
+the pull request checks; no local test result substitutes for that gate. No live deployment, production performance,
+permanent foreign-key enforcement, or automatic AI correctness is claimed.
+
+
+### Independent implementation review
+
+A separate Astra xhigh reviewer inspected source against the approved baseline
+and main, including local corrections. Its first verdict was changes required:
+quoted aggregate calls bypassed a composition check, relationship compatibility
+incorrectly depended on target column declaration order, nested descriptions
+were classified as breaking, unavailable validators escaped bounded diagnostics,
+and unconfirmed native cleanup omitted process identity. It also requested an
+integration test through the actual checked runner with differing active/pinned
+keys and fail/warn outcomes. The fixes add lexical aggregate-call recognition, name-based target-column
+comparison, nested presentation-aware diffs, validator availability checks, and
+bounded process identity diagnostics. The actual checked runner fixture covers
+all five pinned-generation/publication scenarios, using a fresh physical database
+per scenario to avoid external fixture resets against runner-owned sessions.
+The combined native suite passed both seeds 718 and 32559 (15 tests each);
+public semantic tasks passed six tests and focused Authoring passed eight. The corrected source is ready
+for independent recheck; approval is recorded only after that recheck.

@@ -51,6 +51,7 @@ def case(mode):
             if mode == "crash":
                 os._exit(11)
             if mode in {"success", "unknown_cleanup"}:
+                os.write(output, b"ready\n")
                 return {"ok": True}
             if mode != "startup_timeout":
                 os.write(output, b"ready\n")
@@ -87,6 +88,9 @@ def case(mode):
         expected = {"success": {"ok": True}, "crash": {"error": "worker_failed"},
                     "owner_lost": {"error": "owner_lost"},
                     "unknown_cleanup": {"error": "cleanup_unconfirmed"}}
+        if mode == "unknown_cleanup":
+            assert result.pop("process") == {"supervisor_pid": pid, "worker_pid": native_pid,
+                                              "process_group": native_pid}
         assert result == expected.get(mode, {"error": "timeout"}), result
         if mode == "unknown_cleanup":
             assert worker.reap(native_pid, 2) is not None

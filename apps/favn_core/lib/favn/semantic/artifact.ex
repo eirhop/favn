@@ -49,6 +49,15 @@ defmodule Favn.Semantic.Artifact do
            )
          ]}
     end
+  rescue
+    _ in [ArgumentError, Protocol.UndefinedError] ->
+      {:error,
+       [
+         Diagnostic.new(
+           :invalid_semantic_artifact,
+           "Semantic records must contain closed JSON values."
+         )
+       ]}
   end
 
   @doc "Returns canonical JSON after validating structure, references and identities."
@@ -65,6 +74,8 @@ defmodule Favn.Semantic.Artifact do
       false -> {:error, :artifact_too_large}
       {:error, _} = error -> error
     end
+  rescue
+    _ in [ArgumentError, Protocol.UndefinedError] -> {:error, :invalid_semantic_artifact}
   end
 
   @doc "Decodes bounded JSON without atom creation or source-code loading."

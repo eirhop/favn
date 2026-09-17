@@ -14,6 +14,21 @@ defmodule Favn.Semantic.Compiler do
 
   @options [:unit, :description, :format, :time_aggregate, :minimum_grain, :file]
   @builtins ~w(sum min max avg count coalesce nullif abs round cast try_cast case)
+  @native_errors [
+    :semantic_bind_failed,
+    :semantic_driver_unavailable,
+    :semantic_python_unavailable,
+    :semantic_runtime_unsupported,
+    :semantic_validation_timeout,
+    :semantic_worker_cleanup_unconfirmed,
+    :semantic_worker_failed,
+    :semantic_worker_output_limit,
+    :semantic_worker_platform_unsupported,
+    :semantic_worker_protocol_error,
+    :semantic_worker_start_failed,
+    :invalid_semantic_input,
+    :invalid_semantic_expression
+  ]
   @max_build_ms 300_000
 
   @doc "Compiles captured models against enriched asset maps and a native validator."
@@ -159,7 +174,8 @@ defmodule Favn.Semantic.Compiler do
       "dimension" => dimension,
       "hierarchies" => hierarchies,
       "time" => time,
-      "metrics" => Enum.sort_by(compiled, & &1["name"])
+      "metrics" =>
+        compiled |> Enum.map(&Map.delete(&1, "_input_locations")) |> Enum.sort_by(& &1["name"])
     }
   end
 
@@ -184,7 +200,15 @@ defmodule Favn.Semantic.Compiler do
         {result, cache, depth}
 
       :error ->
-        compile_metric(name, context, stack, cache)
+        source =
+          context.by_name
+          |> Map.fetch!(name)
+          |> Map.merge(%{model: context.name, metric: to_string(name)})
+
+        case safely(fn -> compile_metric(name, context, stack, cache) end, source) do
+          {:ok, result} -> result
+          {:error, diagnostic} -> throw({:diagnostic, diagnostic})
+        end
     end
   end
 
@@ -244,6 +268,7 @@ defmodule Favn.Semantic.Compiler do
         line: metric.line,
         module: context.module,
         scope: :definition,
+        resolve_asset_refs: false,
         local_args: args,
         known_definitions: context.definitions
       )
@@ -256,7 +281,6 @@ defmodule Favn.Semantic.Compiler do
 
     calls = Enum.filter(template.nodes, &match?(%Call{}, &1))
     text = template.nodes |> Enum.filter(&match?(%Text{}, &1)) |> Enum.map_join(" ", & &1.sql)
-    reject_bare_arguments(text, args)
 
     require!(
       calls == [] or not Enum.any?(template.nodes, &match?(%Placeholder{}, &1)),
@@ -265,15 +289,16 @@ defmodule Favn.Semantic.Compiler do
     )
 
     require!(
-      calls == [] or not Regex.match?(~r/\b(sum|min|max|avg|count)\s*\(/i, lexical_text(text)),
+      calls == [] or not raw_aggregate?(text),
       :mixed_composition,
       "Composed metrics cannot add raw aggregates around metric calls."
     )
 
-    {expanded, used, children, cache, depth} =
-      Enum.reduce(template.nodes, {"", [], [], cache, 1}, fn node,
-                                                             {sql, used, children, cache, depth} ->
-        {fragment, inputs, child, cache, child_depth} =
+    {expanded, used, children, cache, depth, locations} =
+      Enum.reduce(template.nodes, {"", [], [], cache, 1, %{}}, fn node,
+                                                                  {sql, used, children, cache,
+                                                                   depth, locations} ->
+        {fragment, inputs, child, cache, child_depth, fragment_locations} =
           expand_node(node, args, context, [name | stack], cache)
 
         require!(
@@ -282,8 +307,11 @@ defmodule Favn.Semantic.Compiler do
           "Expanded metric SQL exceeds 65,536 bytes."
         )
 
+        shifted = shift_locations(fragment_locations, byte_size(sql))
+        locations = Map.merge(locations, shifted, fn _, a, b -> a ++ b end)
+
         {sql <> fragment, used ++ inputs, if(child, do: [child | children], else: children),
-         cache, max(depth, child_depth + 1)}
+         cache, max(depth, child_depth + 1), locations}
       end)
 
     require!(
@@ -313,7 +341,13 @@ defmodule Favn.Semantic.Compiler do
     validation_inputs =
       Enum.map(args, fn arg ->
         column = Map.fetch!(context.columns, arg)
-        %{name: to_string(arg), type: column.type, nullable: column.nullable?}
+
+        %{
+          name: to_string(arg),
+          type: column.type,
+          nullable: column.nullable?,
+          locations: Map.fetch!(locations, to_string(arg))
+        }
       end)
 
     require!(
@@ -357,15 +391,18 @@ defmodule Favn.Semantic.Compiler do
       "validation" => validation
     }
 
+    result = Map.put(result, "_input_locations", locations)
+
     {result, Map.put(cache, name, {result, depth}), depth}
   end
 
-  defp expand_node(%Text{sql: sql}, _args, _context, _stack, cache), do: {sql, [], nil, cache, 0}
+  defp expand_node(%Text{sql: sql}, _args, _context, _stack, cache),
+    do: {sql, [], nil, cache, 0, %{}}
 
   defp expand_node(%Placeholder{name: name}, args, _context, _stack, cache) do
     name = Enum.find(args, &(to_string(&1) == to_string(name)))
     require!(name != nil, :unknown_input, "Only declared metric arguments can supply columns.")
-    {quote_identifier(to_string(name)), [name], nil, cache, 0}
+    {quote_identifier(to_string(name)), [name], nil, cache, 0, %{to_string(name) => [0]}}
   end
 
   defp expand_node(%Call{definition: definition, args: fragments}, _args, context, stack, cache) do
@@ -398,7 +435,9 @@ defmodule Favn.Semantic.Compiler do
     )
 
     {compiled, cache, depth} = metric(child.name, context, stack, cache)
-    {"(" <> compiled["canonical_sql"] <> ")", child.args, compiled, cache, depth}
+
+    {"(" <> compiled["canonical_sql"] <> ")", child.args, compiled, cache, depth,
+     shift_locations(compiled["_input_locations"], 1)}
   end
 
   defp expand_node(_, _, _, _, _),
@@ -410,7 +449,13 @@ defmodule Favn.Semantic.Compiler do
 
   defp usage(opts, children, context) do
     explicit = Keyword.get(opts, :time_aggregate)
-    require!(explicit in [nil, :aggregate, :first, :last, :none], :invalid_time_rule, "Time aggregation must be aggregate, first, last or none.")
+
+    require!(
+      explicit in [nil, :aggregate, :first, :last, :none],
+      :invalid_time_rule,
+      "Time aggregation must be aggregate, first, last or none."
+    )
+
     child_rules = children |> Enum.map(& &1["time_aggregate"]) |> Enum.uniq()
 
     require!(
@@ -473,6 +518,14 @@ defmodule Favn.Semantic.Compiler do
   end
 
   defp validate(validator, sql, inputs) do
+    require!(
+      is_function(validator, 2) or
+        (is_atom(validator) and Code.ensure_loaded?(validator) and
+           function_exported?(validator, :validate, 2)),
+      :validator_unavailable,
+      "A native semantic validation capability is required to build this artifact."
+    )
+
     result =
       if is_function(validator, 2),
         do: validator.(sql, inputs),
@@ -480,16 +533,47 @@ defmodule Favn.Semantic.Compiler do
 
     case result do
       {:ok, %{native_type: type} = validation} when is_binary(type) ->
+        require!(
+          is_binary(validation[:runtime_version]) and is_binary(validation[:compiler_version]) and
+            is_map(validation[:validation_profile]) and
+            MapSet.new(Map.keys(validation.validation_profile)) ==
+              MapSet.new(Enum.map(inputs, & &1.name)),
+          :invalid_validator,
+          "Native validation must record its runtime, compiler and complete input type profile."
+        )
+
         %{
           "validation_result_type" => type,
           "nullable" => "unknown",
-          "runtime_version" => Map.get(validation, :runtime_version, "unspecified"),
-          "compiler_version" => Map.get(validation, :compiler_version, "unspecified"),
-          "profile" => normalize_profile(Map.get(validation, :validation_profile, %{}))
+          "runtime_version" => validation.runtime_version,
+          "compiler_version" => validation.compiler_version,
+          "profile" => normalize_profile(validation.validation_profile)
         }
 
-      {:error, reason} when is_atom(reason) ->
+      {:error, reason} when reason in @native_errors ->
         fail(reason, "Native semantic validation failed: #{reason}.")
+
+      {:error, {:semantic_worker_cleanup_unconfirmed, identity}} when is_map(identity) ->
+        fields = [:supervisor_pid, :worker_pid, :process_group]
+
+        require!(
+          Enum.sort(Map.keys(identity)) == Enum.sort(fields) and
+            Enum.all?(identity, fn {_, value} ->
+              is_nil(value) or (is_integer(value) and value > 0 and value <= 4_294_967_295)
+            end),
+          :invalid_validator,
+          "Native cleanup returned an invalid process identity."
+        )
+
+        detail =
+          Enum.map_join(fields, ", ", fn field ->
+            "#{field}=#{Map.get(identity, field) || "unknown"}"
+          end)
+
+        fail(
+          :semantic_worker_cleanup_unconfirmed,
+          "Native worker exit could not be confirmed (#{detail})."
+        )
 
       {:error, _reason} ->
         fail(
@@ -675,29 +759,100 @@ defmodule Favn.Semantic.Compiler do
 
   defp name!(_), do: fail(:invalid_name, "Names must be lowercase ASCII identifiers.")
 
-  defp reject_bare_arguments(sql, args) do
-    sql = lexical_text(sql)
-    tokens = Regex.scan(~r/"(?:[^"]|"")*"|[A-Za-z_][A-Za-z_0-9]*/, sql, return: :index) |> List.flatten()
-    names = Enum.map(args, &(to_string(&1) |> String.downcase()))
-    bare? = Enum.any?(tokens, fn {offset, size} ->
-      token = binary_part(sql, offset, size)
-      name = String.downcase(String.trim(token, "\""))
-      before = binary_part(sql, 0, offset)
-      after_token = binary_part(sql, offset + size, byte_size(sql) - offset - size)
-      syntax = not String.starts_with?(token, "\"") and name in ~w(case when then else end distinct filter where and or not is null true false as)
-      function = Regex.match?(~r/\A\s*\(/, after_token)
-      cast_type = Regex.match?(~r/\bas\s*\z/i, before)
-      name in names and not syntax and not function and not cast_type
+  defp shift_locations(locations, offset),
+    do: Map.new(locations, fn {name, values} -> {name, Enum.map(values, &(&1 + offset))} end)
+
+  defp raw_aggregate?(sql) do
+    sql
+    |> expression_tokens([])
+    |> Enum.reverse()
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.any?(fn
+      [{:identifier, name}, :open] -> name in ~w(sum min max avg count)
+      _ -> false
     end)
-    require!(
-      not bare?,
-      :bare_column,
-      "Source columns must use declared @ arguments, never bare identifiers."
-    )
   end
 
-  defp lexical_text(sql),
-    do: Regex.replace(~r/'(?:[^']|'')*'|--[^\n]*|\/\*[\s\S]*?\*\//, sql, " ")
+  defp expression_tokens("", tokens), do: tokens
+
+  defp expression_tokens("--" <> rest, tokens) do
+    rest =
+      case :binary.match(rest, ["\n", "\r"]) do
+        :nomatch -> ""
+        {offset, 1} -> binary_part(rest, offset + 1, byte_size(rest) - offset - 1)
+      end
+
+    expression_tokens(rest, tokens)
+  end
+
+  defp expression_tokens("/*" <> rest, tokens),
+    do: expression_tokens(skip_comment(rest, 1), tokens)
+
+  defp expression_tokens(<<e, ?\', rest::binary>>, tokens) when e in [?e, ?E] do
+    {_, rest} = quoted_token(rest, ?\', true, [])
+    expression_tokens(rest, [:literal | tokens])
+  end
+
+  defp expression_tokens(<<quote, rest::binary>>, tokens) when quote in [?\', ?\"] do
+    {value, rest} = quoted_token(rest, quote, false, [])
+    token = if quote == ?\", do: {:identifier, String.downcase(value)}, else: :literal
+    expression_tokens(rest, [token | tokens])
+  end
+
+  defp expression_tokens("$" <> _ = sql, tokens) do
+    case Regex.run(~r/\A\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/, sql) do
+      [delimiter] ->
+        rest = binary_part(sql, byte_size(delimiter), byte_size(sql) - byte_size(delimiter))
+
+        rest =
+          case :binary.match(rest, delimiter) do
+            :nomatch -> ""
+            {offset, size} -> binary_part(rest, offset + size, byte_size(rest) - offset - size)
+          end
+
+        expression_tokens(rest, [:literal | tokens])
+
+      nil ->
+        expression_tokens(binary_part(sql, 1, byte_size(sql) - 1), [:other | tokens])
+    end
+  end
+
+  defp expression_tokens("(" <> rest, tokens), do: expression_tokens(rest, [:open | tokens])
+
+  defp expression_tokens(<<char, rest::binary>>, tokens) when char in [9, 10, 11, 12, 13, 32],
+    do: expression_tokens(rest, tokens)
+
+  defp expression_tokens(sql, tokens) do
+    case Regex.run(~r/\A[A-Za-z_][A-Za-z_0-9$]*/, sql) do
+      [identifier] ->
+        rest = binary_part(sql, byte_size(identifier), byte_size(sql) - byte_size(identifier))
+        expression_tokens(rest, [{:identifier, String.downcase(identifier)} | tokens])
+
+      nil ->
+        expression_tokens(binary_part(sql, 1, byte_size(sql) - 1), [:other | tokens])
+    end
+  end
+
+  defp quoted_token(<<quote, quote, rest::binary>>, quote, escape, acc),
+    do: quoted_token(rest, quote, escape, [<<quote>> | acc])
+
+  defp quoted_token(<<quote, rest::binary>>, quote, _escape, acc),
+    do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp quoted_token(<<92, char, rest::binary>>, quote, true, acc),
+    do: quoted_token(rest, quote, true, [<<char>> | acc])
+
+  defp quoted_token(<<char, rest::binary>>, quote, escape, acc),
+    do: quoted_token(rest, quote, escape, [<<char>> | acc])
+
+  defp quoted_token("", _quote, _escape, acc),
+    do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), ""}
+
+  defp skip_comment("/*" <> rest, depth), do: skip_comment(rest, depth + 1)
+  defp skip_comment("*/" <> rest, 1), do: rest
+  defp skip_comment("*/" <> rest, depth), do: skip_comment(rest, depth - 1)
+  defp skip_comment(<<_, rest::binary>>, depth), do: skip_comment(rest, depth)
+  defp skip_comment("", _depth), do: ""
 
   defp quote_identifier(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
   defp require!(true, _, _), do: :ok
@@ -712,11 +867,14 @@ defmodule Favn.Semantic.Compiler do
        Diagnostic.new(
          :invalid_declaration,
          "Invalid semantic declaration or SQL template.",
-         source
+         if(is_map(source), do: source, else: %{})
        )}
   catch
-    {:semantic_error, code, message} -> {:error, Diagnostic.new(code, message, source)}
-    {:diagnostic, diagnostic} -> {:error, diagnostic}
+    {:semantic_error, code, message} ->
+      {:error, Diagnostic.new(code, message, if(is_map(source), do: source, else: %{}))}
+
+    {:diagnostic, diagnostic} ->
+      {:error, diagnostic}
   end
 
   defp bound_diagnostics(errors) when length(errors) <= 100, do: errors

@@ -244,9 +244,10 @@ defmodule Favn.Semantic.Schema do
           Enum.all?(
             role["on"],
             &(columns[&1["source"]] != nil and target_columns[&1["target"]] != nil and
-              columns[&1["source"]]["type"] == target_columns[&1["target"]]["type"])
+                columns[&1["source"]]["type"] == target_columns[&1["target"]]["type"])
           )
         )
+
         check!(unique?(role["on"], "source") and unique?(role["on"], "target"))
         check!(Enum.map(role["on"], & &1["target"]) == target["contract"]["grain"])
         check!(role["target"] in asset["dependencies"])
@@ -310,16 +311,26 @@ defmodule Favn.Semantic.Schema do
 
       check!(metric["formula_digest"] == Snapshot.digest("fm_", metric["canonical_sql"]))
       unit = metric["unit"]
-      check!(case unit["kind"] do
-        "currency" -> is_binary(unit["value"]) and Regex.match?(~r/\A[A-Z]{3}\z/, unit["value"])
-        "custom" -> text?(unit["value"], 128)
-        _ -> unit["value"] == nil
-      end)
+
+      check!(
+        case unit["kind"] do
+          "currency" -> is_binary(unit["value"]) and Regex.match?(~r/\A[A-Z]{3}\z/, unit["value"])
+          "custom" -> text?(unit["value"], 128)
+          _ -> unit["value"] == nil
+        end
+      )
+
       if format = metric["format"] do
         check!(format["style"] != "currency" or unit["kind"] == "currency")
         check!(format["style"] != "percent" or unit["kind"] in ["ratio", "percent"])
       end
+
       inputs = metric["inputs"]
+
+      check!(
+        MapSet.new(Map.keys(metric["validation"]["profile"])) ==
+          MapSet.new(Enum.map(inputs, & &1["parameter"]))
+      )
 
       check!(
         inputs != [] and unique?(inputs, "parameter") and

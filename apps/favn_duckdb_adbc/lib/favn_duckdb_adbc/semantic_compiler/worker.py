@@ -113,13 +113,16 @@ def logical_type(value):
         require(1 <= info["width"] <= 38 and 0 <= info["scale"] <= info["width"])
 
 
-def expression(node, names, depth=0, inside_aggregate=False):
+def expression(node, names, locations, depth=0, inside_aggregate=False):
     require(isinstance(node, dict) and depth <= 64 and node.get("alias") == "")
     kind, typ = node.get("class"), node.get("type")
     children, aggregate = [], False
     if kind == "COLUMN_REF":
         extra = {"column_names"}
         require(typ == "COLUMN_REF" and node["column_names"] in [[n] for n in names])
+        name = node["column_names"][0]
+        if name in locations:
+            require(node["query_location"] - 7 in locations[name])
     elif kind == "CONSTANT":
         extra = {"value"}
         require(typ == "VALUE_CONSTANT")
@@ -168,12 +171,12 @@ def expression(node, names, depth=0, inside_aggregate=False):
         raise Invalid()
     require(set(node) == BASE | extra)
     for child in children:
-        aggregate = expression(child, names, depth + 1, inside_aggregate or kind == "FUNCTION"
+        aggregate = expression(child, names, locations, depth + 1, inside_aggregate or kind == "FUNCTION"
                                and node["function_name"] in AGGREGATES) or aggregate
     return aggregate
 
 
-def validate_tree(parsed, names):
+def validate_tree(parsed, names, locations):
     require(set(parsed) == {"error", "statements"} and parsed["error"] is False)
     require(len(parsed["statements"]) == 1)
     statement = parsed["statements"][0]
@@ -189,7 +192,7 @@ def validate_tree(parsed, names):
     require(set(table) == {"type", "alias", "sample", "query_location"})
     require(table["type"] == "EMPTY" and table["alias"] == "" and table["sample"] is None)
     require(len(node["select_list"]) == 1)
-    require(expression(node["select_list"][0], names))
+    require(expression(node["select_list"][0], names, locations))
 
 
 def child_ownership(parent):
@@ -206,11 +209,12 @@ def native(request, output):
     os.write(output, b"ready\n")
     try:
         names = [item["name"] for item in request["inputs"]]
+        locations = {item["name"]: set(item["locations"]) for item in request["inputs"] if "locations" in item}
         require(len(names) == len(set(n.lower() for n in names)))
         profile = {item["name"]: PROFILE[item["type"]] for item in request["inputs"]}
         sql = request["sql"]
         parsed = json.loads(db.query("SELECT json_serialize_sql('SELECT " + sql.replace("'", "''") + "')"))
-        validate_tree(parsed, names)
+        validate_tree(parsed, names, locations)
         columns = ", ".join("CAST(NULL AS " + typ + ') AS "' + name.replace('"', '""') + '"'
                             for name, typ in profile.items())
         native_type = db.query("DESCRIBE SELECT " + sql + " AS result FROM (SELECT " + columns + " WHERE FALSE) AS inputs", 1)
@@ -244,7 +248,7 @@ def terminate(pid):
     return False
 
 
-def supervise():
+def supervise(report=lambda _receipt: None):
     # Initial request is bounded; continue watching the pipe for owner death.
     request_bytes = b""
     while not request_bytes.endswith(b"\n"):
@@ -273,12 +277,14 @@ def supervise():
         os.close(write_fd)
         os._exit(0)
     os.close(write_fd)
+    identity = {"supervisor_pid": parent, "worker_pid": pid, "process_group": None}
+    report({"process": identity})
     data, deadline, live = b"", time.monotonic() + STARTUP_TIMEOUT, True
     try:
         while live:
             ready, _, _ = select.select([0, read_fd], [], [], max(0, deadline - time.monotonic()))
             if not ready:
-                return {"error": "timeout" if terminate(pid) else "cleanup_unconfirmed"}
+                return {"error": "timeout"} if terminate(pid) else {"error": "cleanup_unconfirmed", "process": identity}
             if 0 in ready:
                 os.read(0, 4096)
                 terminate(pid)
@@ -288,11 +294,13 @@ def supervise():
             require(len(data) <= 16_384)
             if data.startswith(b"ready\n"):
                 data = data[6:]
+                identity["process_group"] = pid
+                report({"process": identity})
                 deadline = time.monotonic() + EXPRESSION_TIMEOUT
             if not chunk:
                 status = reap(pid, KILL_TIMEOUT)
                 if status is None:
-                    return {"error": "cleanup_unconfirmed" if not terminate(pid) else "worker_failed"}
+                    return {"error": "worker_failed"} if terminate(pid) else {"error": "cleanup_unconfirmed", "process": identity}
                 live = False
                 require(status == 0)
                 return json.loads(data)
@@ -306,9 +314,11 @@ def supervise():
 
 
 if __name__ == "__main__":
+    def report(receipt):
+        sys.stdout.write(json.dumps(receipt) + "\n")
+        sys.stdout.flush()
     try:
-        receipt = supervise()
+        receipt = supervise(report)
     except BaseException:
         receipt = {"error": "worker_failed"}
-    sys.stdout.write(json.dumps(receipt) + "\n")
-    sys.stdout.flush()
+    report(receipt)

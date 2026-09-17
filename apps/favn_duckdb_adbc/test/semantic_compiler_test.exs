@@ -51,6 +51,24 @@ defmodule FavnDuckdbADBC.SemanticCompilerTest do
     assert {:ok, _} = SemanticCompiler.validate(~s|SUM("discount" - "gross")|, @inputs)
   end
 
+  test "compiler offsets distinguish generated inputs from otherwise-binding raw references" do
+    inputs = [%{name: "gross", type: :decimal, nullable: false, locations: [4]}]
+    assert {:ok, _} = SemanticCompiler.validate(~s|SUM("gross")|, inputs)
+
+    assert {:error, :invalid_semantic_expression} =
+             SemanticCompiler.validate(~s|SUM("gross" + gross)|, inputs)
+
+    assert {:error, :invalid_semantic_expression} =
+             SemanticCompiler.validate(~s|SUM("gross" + "gross")|, inputs)
+
+    sql = ~s|SUM(CASE WHEN 'ø' = 'ø' THEN "gross" ELSE 0 END)|
+    {offset, _length} = :binary.match(sql, ~s|"gross"|)
+    assert {:ok, _} = SemanticCompiler.validate(sql, [%{hd(inputs) | locations: [offset]}])
+
+    assert {:error, :invalid_semantic_expression} =
+             SemanticCompiler.validate(sql, [%{hd(inputs) | locations: [offset - 2]}])
+  end
+
   test "count accepts every supported logical input family" do
     types = [
       :integer,

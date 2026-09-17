@@ -30,7 +30,12 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
     :uuid
   ]
 
-  @type input :: %{name: String.t(), type: atom(), nullable: boolean()}
+  @type input :: %{
+          required(:name) => String.t(),
+          required(:type) => atom(),
+          required(:nullable) => boolean(),
+          optional(:locations) => [non_neg_integer()]
+        }
   @type result :: %{
           native_type: String.t(),
           nullable: :unknown,
@@ -40,7 +45,13 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
         }
 
   @doc "Validates one expanded expression and waits for confirmed worker exit."
-  @spec validate(String.t(), [input()]) :: {:ok, result()} | {:error, atom()}
+  @type process_identity :: %{
+          supervisor_pid: pos_integer() | nil,
+          worker_pid: pos_integer() | nil,
+          process_group: pos_integer() | nil
+        }
+  @type failure :: atom() | {:semantic_worker_cleanup_unconfirmed, process_identity()}
+  @spec validate(String.t(), [input()]) :: {:ok, result()} | {:error, failure()}
   @impl true
   def validate(sql, inputs) when is_binary(sql) and is_list(inputs) do
     driver = Keyword.get(Runtime.driver_opts(), :driver) || System.get_env("DUCKDB_ADBC_DRIVER")
@@ -58,7 +69,7 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
 
       try do
         true = Port.command(port, request <> "\n")
-        receive_result(port, "", System.monotonic_time(:millisecond) + 24_000)
+        await_worker(port, 24_000)
       after
         if Port.info(port), do: Port.close(port)
       end
@@ -81,17 +92,17 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
   defp request(sql, inputs, driver) do
     if byte_size(sql) <= 65_536 and String.valid?(sql) and length(inputs) in 1..64 and
          Enum.all?(inputs, fn
-           %{name: name, type: type, nullable: nullable}
+           %{name: name, type: type, nullable: nullable} = input
            when is_binary(name) and is_atom(type) and is_boolean(nullable) ->
              byte_size(name) in 1..128 and String.valid?(name) and type in @logical_types and
-               not String.contains?(name, <<0>>)
+               not String.contains?(name, <<0>>) and valid_locations?(input)
 
            _ ->
              false
-         end) do
+         end) and Enum.sum(Enum.map(inputs, &length(Map.get(&1, :locations, [])))) <= 16_384 do
       Jason.encode(%{
         sql: sql,
-        inputs: Enum.map(inputs, &Map.take(&1, [:name, :type, :nullable])),
+        inputs: Enum.map(inputs, &Map.take(&1, [:name, :type, :nullable, :locations])),
         driver: Path.expand(driver)
       })
     else
@@ -99,27 +110,49 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
     end
   end
 
-  defp receive_result(port, output, deadline) do
+  defp valid_locations?(%{locations: locations}) when is_list(locations),
+    do:
+      length(locations) <= 16_384 and Enum.all?(locations, &(is_integer(&1) and &1 in 0..65_535))
+
+  defp valid_locations?(%{locations: _}), do: false
+  defp valid_locations?(_), do: true
+
+  @doc false
+  @spec await_worker(port(), non_neg_integer()) :: {:ok, result()} | {:error, failure()}
+  def await_worker(port, timeout) do
+    identity = %{
+      supervisor_pid: port |> Port.info(:os_pid) |> elem(1),
+      worker_pid: nil,
+      process_group: nil
+    }
+
+    receive_result(port, "", System.monotonic_time(:millisecond) + timeout, identity)
+  end
+
+  defp receive_result(port, output, deadline, identity) do
     receive do
       {^port, {:data, data}} when byte_size(output) + byte_size(data) <= @max_output ->
-        receive_result(port, output <> data, deadline)
+        output = output <> data
+        receive_result(port, output, deadline, process_identity(output, identity))
 
       {^port, {:data, _}} ->
-        {:error, :semantic_worker_output_limit}
+        {:error, {:semantic_worker_cleanup_unconfirmed, identity}}
 
       {^port, {:exit_status, 0}} ->
-        decode(output)
+        decode(output, identity)
 
       {^port, {:exit_status, _}} ->
-        {:error, :semantic_worker_failed}
+        {:error, {:semantic_worker_cleanup_unconfirmed, identity}}
     after
       max(deadline - System.monotonic_time(:millisecond), 0) ->
-        {:error, :semantic_worker_cleanup_unconfirmed}
+        {:error, {:semantic_worker_cleanup_unconfirmed, identity}}
     end
   end
 
-  defp decode(output) do
-    case Jason.decode(output) do
+  defp decode(output, identity) do
+    line = output |> String.split("\n", trim: true) |> List.last()
+
+    case Jason.decode(line || "") do
       {:ok,
        %{
          "ok" => true,
@@ -136,6 +169,9 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
            validation_profile: profile
          }}
 
+      {:ok, %{"error" => "cleanup_unconfirmed"}} ->
+        {:error, {:semantic_worker_cleanup_unconfirmed, identity}}
+
       {:ok, %{"error" => reason}} ->
         {:error, error(reason)}
 
@@ -144,10 +180,33 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
     end
   end
 
+  defp process_identity(output, identity) do
+    output
+    |> String.split("\n")
+    |> Enum.drop(-1)
+    |> Enum.reduce(identity, fn line, current ->
+      case Jason.decode(line) do
+        {:ok,
+         %{
+           "process" => %{
+             "supervisor_pid" => supervisor,
+             "worker_pid" => worker,
+             "process_group" => group
+           }
+         }}
+        when supervisor == current.supervisor_pid and is_integer(worker) and worker > 0 and
+               worker <= 2_147_483_647 and (is_nil(group) or group == worker) ->
+          %{current | worker_pid: worker, process_group: group}
+
+        _ ->
+          current
+      end
+    end)
+  end
+
   defp error("unsupported_runtime"), do: :semantic_runtime_unsupported
   defp error("invalid_expression"), do: :invalid_semantic_expression
   defp error("bind_failed"), do: :semantic_bind_failed
   defp error("timeout"), do: :semantic_validation_timeout
-  defp error("cleanup_unconfirmed"), do: :semantic_worker_cleanup_unconfirmed
   defp error(_), do: :semantic_worker_failed
 end
