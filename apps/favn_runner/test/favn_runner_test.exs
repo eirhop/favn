@@ -75,7 +75,7 @@ defmodule FavnRunnerTest do
     assert diagnostics.ready? == true
     assert diagnostics.status == :ready
     assert diagnostics.release.runner_release_id == FavnTestSupport.runner_release_id()
-    assert diagnostics.release.runner_contract_version == 16
+    assert diagnostics.release.runner_contract_version == 17
     assert diagnostics.control_plane.status == :not_configured
     assert diagnostics.registration.status == :not_required
     assert diagnostics.manifest_cache.count >= 1
@@ -369,8 +369,8 @@ defmodule FavnRunnerTest do
     refs = Enum.map(assets, & &1.ref)
 
     %Manifest{
-      schema_version: 20,
-      runner_contract_version: 16,
+      schema_version: 21,
+      runner_contract_version: 17,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],

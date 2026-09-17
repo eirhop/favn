@@ -10,6 +10,7 @@ defmodule Favn.SQLAsset.CheckedMaterialization do
     :reason,
     :contract_validation,
     :group_replacement,
+    :runtime_publication,
     check_results: [],
     write_outcome: :written
   ]
@@ -21,6 +22,7 @@ defmodule Favn.SQLAsset.CheckedMaterialization do
           write_outcome: :written | :no_op,
           reason: atom() | nil,
           contract_validation: Favn.SQL.ContractValidation.t() | nil,
-          group_replacement: GroupReplacementResult.t() | nil
+          group_replacement: GroupReplacementResult.t() | nil,
+          runtime_publication: map() | nil
         }
 end

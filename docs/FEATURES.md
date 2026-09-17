@@ -6,6 +6,9 @@ This file records current capability and limits. Forward work belongs in
 
 Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane database.
 
+Native managed SQL tables publish transactional freshness, checks and exact
+window evidence automatically. See [runtime metadata](../apps/favn/guides/sql-runtime-catalog.md).
+
 ## Authoring and execution
 
 - The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,

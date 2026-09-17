@@ -178,7 +178,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
                ctx.manifest_lease_id,
                node_key,
                ctx.stage,
-               ctx.attempt
+               ctx.attempt,
+               decision_freshness_key(ctx.decisions, node_key)
              ) do
           {:ok, work} ->
             entry_context =
@@ -1221,12 +1222,20 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          manifest_lease_id,
          node_key,
          stage,
-         attempt
+         attempt,
+         freshness_key
        ) do
     with {:ok, %{work: work}} <-
            run_state
            |> StepAttemptLifecycle.new(version, node_key, stage, attempt)
-           |> StepAttemptLifecycle.build_work(manifest_index) do
+           |> StepAttemptLifecycle.build_work(manifest_index),
+         {:ok, work} <-
+           StepAttemptLifecycle.attach_publication(
+             work,
+             manifest_index,
+             run_state.workspace_id,
+             freshness_key
+           ) do
       {:ok,
        work
        |> StepAttemptLifecycle.attach_deadline(run_state)

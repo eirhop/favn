@@ -58,6 +58,7 @@ defmodule Favn.Contracts.RunnerWork do
           pipeline: PipelineContext.t() | nil,
           deadline_at: DateTime.t() | nil,
           trigger: map(),
+          runtime_publication: Favn.RuntimeCatalog.Publication.t() | nil,
           metadata: map()
         }
 
@@ -94,6 +95,7 @@ defmodule Favn.Contracts.RunnerWork do
             pipeline: nil,
             deadline_at: nil,
             trigger: %{},
+            runtime_publication: nil,
             metadata: %{}
 
   @doc "Whether this work only resolves and pins runtime inputs without executing the asset."

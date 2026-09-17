@@ -317,6 +317,12 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
            state.run
            |> StepAttemptLifecycle.new(state.version, node_key, stage, attempt)
            |> StepAttemptLifecycle.build_work(state.manifest_index),
+         {:ok, work} <-
+           StepAttemptLifecycle.attach_publication(
+             work,
+             state.manifest_index,
+             state.run.workspace_id
+           ),
          work <-
            work
            |> StepAttemptLifecycle.attach_deadline(state.run)

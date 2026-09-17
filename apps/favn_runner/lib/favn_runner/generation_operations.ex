@@ -422,6 +422,7 @@ defmodule FavnRunner.GenerationOperations do
 
   defp sql_activation(request) do
     %GenerationActivation{
+      workspace_id: request.workspace_id,
       logical_target_id: request.target_id,
       stable_relation: request.active_relation,
       candidate_relation: request.candidate_relation,

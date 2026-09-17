@@ -162,6 +162,138 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     }
   end
 
+  test "runtime catalog retains native protection across removal and rejects unsupported reintroduction",
+       context do
+    alias FavnOrchestrator.Persistence.Commands, as: C
+    alias FavnStoragePostgres.TestSupport.TaskManifest
+    [asset] = context.version.manifest.assets
+
+    descriptor =
+      Favn.Manifest.TargetDescriptor.from_asset(asset,
+        connection_definitions: %{
+          warehouse: %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
+        },
+        manifest_schema_version: 21,
+        runner_contract_version: 17
+      )
+
+    {:ok, native} =
+      Version.new(%{
+        context.version.manifest
+        | assets: [%{asset | target_descriptor: descriptor}]
+      })
+
+    fixture = Map.put(context, :now, DateTime.utc_now())
+    TaskManifest.retain(fixture, native)
+
+    {:ok, removed} =
+      Version.new(
+        %{
+          native.manifest
+          | assets: [
+              %Asset{
+                ref: {__MODULE__, :unrelated},
+                module: __MODULE__,
+                name: :unrelated,
+                type: :elixir
+              }
+            ]
+        }
+        |> FavnTestSupport.with_manifest_graph()
+        |> FavnTestSupport.with_manifest_contract()
+      )
+
+    TaskManifest.retain(fixture, removed)
+
+    assert Repo.get_by!(FavnStoragePostgres.Schemas.AssetTargetBinding,
+             workspace_id: context.workspace_id,
+             target_id: descriptor.target_id
+           ).desired_manifest_id == native.manifest_version_id
+
+    untracked = %Asset{ref: asset.ref, module: asset.module, name: asset.name, type: :elixir}
+
+    {:ok, reintroduced} =
+      Version.new(
+        %{native.manifest | assets: [untracked]}
+        |> FavnTestSupport.with_manifest_graph()
+        |> FavnTestSupport.with_manifest_contract()
+      )
+
+    assert {:ok, _} =
+             Store.register_manifest(%C.RegisterManifest{
+               platform_context: context.platform_context,
+               version: reintroduced
+             })
+
+    assert {:error, %{details: %{reason_code: "runtime_catalog_unsupported_target_reuse"}}} =
+             Store.deploy_manifest(%C.DeployManifest{
+               platform_context: context.platform_context,
+               workspace_context: context.workspace_context,
+               deployment_id: "runtime-reintroduced",
+               manifest_version_id: reintroduced.manifest_version_id,
+               configuration: %{"resources" => %{}},
+               occurred_at: fixture.now,
+               targets: [
+                 %C.DeploymentTarget{
+                   target_kind: :asset,
+                   target_id: descriptor.target_id,
+                   selection_source: :common,
+                   customer_visible: true,
+                   descriptor: %{"target_id" => descriptor.target_id, "label" => "asset"}
+                 }
+               ]
+             })
+  end
+
+  test "runtime catalog deployment fences retained old tasks and rejects downgrade", context do
+    FavnStoragePostgres.TestSupport.RunFixture.create(context.workspace_id, [])
+    alias FavnStoragePostgres.RuntimeCatalogGuard, as: Guard
+    alias FavnStoragePostgres.Schemas.ManifestVersion
+    current = Repo.get!(ManifestVersion, "mv-" <> context.workspace_id)
+
+    old = %{
+      current
+      | manifest_version_id: current.manifest_version_id <> "-old",
+        content_hash:
+          :crypto.hash(:sha256, context.workspace_id <> "old") |> Base.encode16(case: :lower),
+        runner_contract_version: 16,
+        schema_version: 20
+    }
+
+    Repo.insert!(old)
+
+    for kind <- [
+          "asset_attempt",
+          "generation_activate",
+          "generation_marker_initialize",
+          "generation_discard"
+        ] do
+      assert {:error, %{details: %{reason_code: "runtime_catalog_tracking_required"}}} =
+               Repo.transaction(fn ->
+                 Guard.start!(%{
+                   workspace_id: context.workspace_id,
+                   task_kind: kind,
+                   manifest_version_id: old.manifest_version_id
+                 })
+               end)
+    end
+
+    assert {:error, %{details: %{reason_code: "runtime_catalog_contract_downgrade"}}} =
+             Repo.transaction(fn ->
+               ids = Guard.lock_deployment!(context.workspace_id, [])
+               Guard.validate_deployment!(context.workspace_id, old.manifest_version_id, [], ids)
+             end)
+
+    assert {:ok, :ok} =
+             Repo.transaction(fn ->
+               Guard.start!(%{
+                 workspace_id: context.workspace_id,
+                 task_kind: "asset_attempt",
+                 manifest_version_id: current.manifest_version_id
+               })
+             end)
+  end
+
   test "upload admission is distributed, bounded, and explicitly released", context do
     now = DateTime.utc_now()
 

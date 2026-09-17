@@ -102,8 +102,15 @@ defmodule Favn.SQL.Adapter do
   @doc "Opt-in backend for qualified atomic metadata and persistent macro publication."
   @callback catalog_publication_backend() :: module()
 
+  @doc "Optional backend for transactional managed-asset runtime metadata."
+  @callback runtime_catalog_backend() :: module()
+  @callback runtime_catalog_activate(term(), Favn.SQL.GenerationActivation.t(), keyword()) ::
+              :ok | {:error, term()}
+
   @optional_callbacks [
     catalog_publication_backend: 0,
+    runtime_catalog_backend: 0,
+    runtime_catalog_activate: 3,
     ping: 2,
     poolable?: 2,
     prepare_pool: 2,

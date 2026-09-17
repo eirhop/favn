@@ -35,7 +35,7 @@ publication success alone does not guarantee that a task fits this bound.
 | Assignment wire payload | 11,272,192 bytes | Base64 of the uncompressed assignment field map |
 | Persisted asset payload | 33,562,624 bytes | PostgreSQL JSONB typed envelope |
 
-The wire assignment uses protocol 14 and checks encoded and decoded bounds
+The wire assignment uses protocol 15 and checks encoded and decoded bounds
 before safe term decoding. Task persistence uses a separate current typed format;
 it does not decode stored ETF. Persisted SQL work stores a verified package
 reference; both encoding and restoration still enforce the complete-work bound.

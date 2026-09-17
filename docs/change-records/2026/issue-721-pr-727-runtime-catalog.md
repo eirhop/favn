@@ -5,7 +5,7 @@ Documentation type: implementation plan and review evidence.
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implemented; approved by independent review |
 | Type | Feature |
 | Primary issue | [#721](https://github.com/eirhop/favn/issues/721) |
 | Pull request | [#727](https://github.com/eirhop/favn/pull/727) |
@@ -61,7 +61,8 @@ freshness evaluation and full semantic readiness remain follow-ups.
   manifest, or that a later policy deployment retroactively changed that receipt.
 - PostgreSQL remains authoritative for control-plane lifecycle. A target receipt
   proves its target write committed, not that the entire run succeeded.
-- This task creates and reviews the plan only. Implementation has not started.
+- Implementation follows the approved automatic-default amendment below; the original
+  opt-in plan is preserved only as the review baseline.
 
 ### Evidence
 
@@ -663,17 +664,63 @@ re-review rather than adding a scheduler or exporter.
 
 ## Implementation outcome
 
-Implementation has not started. This change contains the planning record only;
-no runtime feature, migration or deployment is represented as completed.
+Implemented automatic publication intent on dispatched native managed SQL work,
+transactional metadata in the existing runner materialization transaction, fixed
+`favn_runtime` tables/views, and generation selection in the existing activation
+transaction. The PostgreSQL deployment/start boundary fences old execution
+contracts and retained native target reuse. No scheduler, exporter, run type,
+background process, control-plane table or migration was added.
+
+The runner exports immutable contract snapshots, publication identity, pinned
+freshness policy/key, exact window evidence, and sanitized check outcomes.
+Freshness views compare deadlines at query time. Failed checks and metadata
+failures roll back the data write; unknown commit outcomes remain unknown.
+
+```mermaid
+flowchart LR
+    A[Existing asset task with pinned intent] --> B[Existing SQL transaction]
+    B --> C[Write data and runtime metadata]
+    C --> D[One commit]
+    D --> E[End user queries favn_runtime]
+    E --> F[Compare current time with fresh_until]
+    G[Existing generation activation] --> H[Swap table and active metadata together]
+```
+
+### Actual complexity
+
+Implementation diff counts below exclude the record; supporting includes tests,
+fixtures and canonical docs. Protocol-version fixture updates are included.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| Core/Authoring | 243 | 12 | 176 | 39 |
+| Orchestrator/Runner | 215 | 20 | 268 | 42 |
+| PostgreSQL | 169 | 1 | 379 | 3 |
+| SQL runtime/native adapter | 832 | 2 | 952 | 0 |
+| Public docs/build wiring | 4 | 0 | 117 | 7 |
+
+The SQL and PostgreSQL slices exceed their estimates: native schema/shape
+validation, immutable identity checks, per-target and first-introduction CAS,
+and retained-binding/start guards need explicit code. Native fixtures also
+cover two real engines, raw failure injection and concurrent sessions. This is
+still a four-data-table extension plus schema marker and views, with no new
+service. Fewer deletions reflect extending existing transaction boundaries;
+there was no old runtime catalog implementation to remove. Review added explicit
+native catalog resolution and deterministic owner-level deployment/start races,
+which account for the additional SQL and test growth.
 
 ## Deviations from the approved plan
 
-No implementation deviations exist. Initial plan review corrections are part
-of the approved baseline. The user requested a product change after approval:
+Initial plan review corrections are part of the preserved approved baseline.
+Implementation deviations and the user-requested amendment are explicit below:
 
 | Baseline | Amendment | Reason | Review |
 | --- | --- | --- | --- |
 | Opt-in asset list and configured runtime schema | Automatic supported-asset inclusion with reserved `favn_runtime`; CI configuration stays independent | User rejected maintaining hundreds of asset references or choosing a runtime schema | Approved by Astra xhigh after retained-binding correction |
+| Unique immutable inserts on both backends | CAS the existing schema marker only when introducing a missing stable target anchor or contract; CAS the stable target anchor on every publication | DuckLake has no unique constraints; concurrent insert-if-absent alone is unsafe | Astra xhigh approved this bounded design deviation; native absence-barrier tests pass on both engines |
+| Existing ordinary materialization path for unchecked window writes | Reuse the existing temporary candidate table for tracked delete/insert | Native zero-row query results do not expose source-column names for the planner; staging supplies column metadata and supports delete-only commits | Included in final implementation review |
+| Implicit native target binding | Resolve the actual catalog before data/metadata writes; reject ambiguous search paths and catalog-only references | A session default database is not necessarily the bound write catalog; native introspection already requires a schema for explicit catalogs | Native attached-catalog, case/quote and ambiguity tests; included in final review |
+| Estimated slice sizes | Larger SQL/PG implementations and native tests, fewer deleted lines | Explicit conflict/shape/retained-binding enforcement and two-engine failure tests, without a new service | Actual counts above; final implementation review pending |
 
 ## Decision log
 
@@ -695,15 +742,67 @@ of the approved baseline. The user requested a product change after approval:
 | Local Mermaid rendering | Both revised diagrams parsed and rendered with Mermaid 11 in headless Chrome; visually inspected | Local syntax and layout only |
 | GitHub Mermaid rendering | Both diagrams in approved baseline `f7aa6ac9` rendered successfully on GitHub and were visually inspected; diagram source is unchanged in the PR-number rename | Document rendering, not runtime behavior |
 | Whitespace and baseline preservation | `git diff --check`, all nine relative links and block structure passed; comparison with `f7aa6ac9` confirms the original approved plan body is unchanged inside the historical baseline | Documentation checks only |
-| Implementation tests | Not run: no implementation exists | Planned checks above are not passing results |
+| Compilation | `mix compile --warnings-as-errors` passed | Local pinned toolchain |
+| Umbrella fast tests | All 12 owning slices passed, 3,613 total reported checks | Includes existing generation/storage/runner suites; later focused additions are qualified separately |
+| Native owning tests | 35 passed on DuckDB 1.5.5 and its DuckLake extension | Runtime metadata plus existing native generation and relationship publication tests |
+| Native concurrency | Deterministic first-target/contract races have one winner on both engines. Established independent targets committed 2/2 on DuckDB and 1/2 on DuckLake, with unchanged schema revision and atomic rollback for the loser | DuckLake may conflict on different rows in shared metadata tables; existing catalog admission remains important. No retries or production load claim |
+| Native failure paths | Metadata failure and schema conflict rollback; lost acknowledgement leaves committed data/receipt with an error; duplicate blocks mutation | No automatic settlement or mutation retry added |
+| Fresh-process codec | 45 codec/message tests passed, including 26 persistence tests with populated publication intent and receipt in the shared fixture | Fresh reader processes and retained atom reconstruction |
+| PostgreSQL owning tests | Final clean-database run: 83 task/deployment tests passed (2 slow tests qualified separately), including retained assigned/preparing tasks, both deployment/start lock orders and expired unknown effects | Real owner APIs and observed database lock blocking; removal/reintroduction and downgrade rejection included |
+| Review corrections | Sequential dispatch, read-only rebuild input freezing, candidate-first rollback recovery, exact window bounds, reserved-schema casing and native target resolution qualified | Focused native/runner/Core and owner-level PostgreSQL tests |
+| Final owning fast checks | Core 528, Runner 273 passed. Orchestrator 888/890 on first run; both existing 100ms timing failures plus sequential regression passed unchanged in a 14-test rerun | No timing thresholds relaxed |
+| Acceptance/browser | 2 local acceptance tests and 1 browser test passed against a fresh restricted-role database | Earlier reused-database startup/shutdown and role failures were local setup issues |
+| Static checks | Format, tag tiers, whitespace, Credo and Sobelow passed | No issues from the configured quick checks |
+| Slow/CI | Distributed slow tests passed (2 tests, 333 runners, p95 3,255ms); hosted checks pending | Local restore needs PostgreSQL 18 client (host client 16). A 50,000-row performance fixture hit its database statement timeout; no production threshold changed |
 
 ### Not verified
 
-- No new runtime behavior, target schema, performance, concurrency or recovery
-  path has been implemented or tested.
-- No live database, infrastructure or customer deployment was modified.
+- No production/customer deployment or production load measurement.
+- SQL behavior is qualified against the pinned native driver and extension;
+  remote serving, other engines and automatic history retention remain excluded.
+- Target history grows until an explicit future retention design is implemented.
+- Hosted final-head CI and GitHub rendering are tracked by the pull request checks;
+  local evidence does not substitute for them.
+- PostgreSQL tests used an isolated local test database; no customer infrastructure
+  was modified.
 
 ## Final review
 
-Implementation review is not applicable yet. Independent plan review does not
-approve future implementation or establish runtime proof.
+Astra xhigh requested corrections to sequential intent attachment, actual target
+binding, read-only input freezing, candidate-first anchor adoption, non-windowed
+window-success policies, reserved-schema casing and partial-window validation. Native identifier resolution
+uses ASCII-only case folding so Unicode names cannot redirect writes.
+Those corrections and the missing owner-level race tests are implemented. The
+broader distributed test also exposed an incomplete protocol bump; all message
+structs/codecs/registration now consistently use protocol 14 and the round-trip
+test asserts the shared version. The scale test's 3,000 queued fixtures expired
+before the first runner registered (deadline 19:47:43; registration 19:47:50 UTC).
+Their deadline now matches that test's existing 360-second budget; its claim
+latency assertions are unchanged.
+
+**Final verdict: approved by Astra (`gpt-6-astra`), xhigh reasoning, on 2026-09-17.**
+No remaining actionable findings. The reviewer compared the implementation with
+the preserved baseline and amendments and accepted the documented complexity,
+CAS/staging/binding deviations and qualification limits. Hosted final-head CI
+and final GitHub rendering remain delivery gates recorded on the pull request.
+
+
+### Integration with PR #726
+
+Main advanced during final CI with the runner persistence simplification. The
+runtime publication receipt now belongs to `RunnerAssetEvidence`, alongside
+other framework SQL evidence, rather than application metadata. Compaction
+retains the bounded receipt and the shared fresh-process fixture exercises it.
+The new publication intent and evidence field use message protocol **15**;
+protocol 14 is already owned by PR #726. Manifest schema 21 and runner contract
+17 remain unchanged. This integration adds no service, table, or lifecycle path.
+The previous implementation head passed every hosted CI check; the rebased head
+requires renewed independent review and CI qualification before delivery.
+
+
+Astra xhigh independently approved the PR #726 integration on 2026-09-17 with
+no remaining actionable findings. Rebased Core 532, Runner 275,
+lifecycle/sequential 19, native DuckDB/DuckLake 35, and PostgreSQL 251 checks
+passed (3 slow tests excluded from the PostgreSQL rerun). Compilation with
+warnings as errors and formatting passed. Renewed final-head CI is the remaining
+delivery gate recorded in the PR.

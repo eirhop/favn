@@ -1416,6 +1416,7 @@ defmodule FavnOrchestrator.RebuildDispatcher do
 
       {:ok,
        %GenerationActivationRequest{
+         workspace_id: operation.workspace_id,
          manifest_version_id: version.manifest_version_id,
          manifest_content_hash: version.content_hash,
          required_runner_release_id: action.required_runner_release_id,

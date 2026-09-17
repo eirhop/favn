@@ -131,6 +131,29 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
     end
   end
 
+  @doc "Attaches native publication intent using a classified key or the pinned run start."
+  @spec attach_publication(RunnerWork.t(), Index.t(), String.t(), String.t() | nil) ::
+          {:ok, RunnerWork.t()} | {:error, term()}
+  def attach_publication(work, index, workspace_id, freshness_key \\ nil) do
+    with {:ok, asset} <- Index.fetch_asset(index, work.asset_ref) do
+      if Favn.RuntimeCatalog.Publication.supported?(asset.target_descriptor) do
+        key =
+          freshness_key ||
+            FavnOrchestrator.Freshness.Decider.publication_key(
+              asset,
+              RunnerWork.window(work),
+              work.run_started_at
+            )
+
+        with {:ok, publication} <-
+               Favn.RuntimeCatalog.Publication.new(asset, work, workspace_id, key),
+             do: {:ok, %{work | runtime_publication: publication}}
+      else
+        {:ok, work}
+      end
+    end
+  end
+
   @doc "Attaches one absolute attempt deadline before any runner phase begins."
   @spec attach_deadline(RunnerWork.t(), RunState.t()) :: RunnerWork.t()
   def attach_deadline(%RunnerWork{} = work, %RunState{} = run) do

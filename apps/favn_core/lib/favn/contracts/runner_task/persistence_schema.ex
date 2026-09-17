@@ -32,6 +32,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
          true <- optional_datetime?(work.run_started_at) and optional_datetime?(work.deadline_at),
          true <- ref?(RunnerWork.asset_ref(work)),
          true <- refs?(work.asset_refs) and refs?(work.planned_asset_refs),
+         :ok <- Favn.RuntimeCatalog.Publication.validate(work.runtime_publication),
          :ok <- node_identity(work.node_identity),
          :ok <- package(work.execution_package),
          :ok <- RunnerWork.validate_generation_contract(work) do

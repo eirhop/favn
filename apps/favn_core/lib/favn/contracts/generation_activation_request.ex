@@ -32,6 +32,7 @@ defmodule Favn.Contracts.GenerationActivationRequest do
     :expected_marker
   ]
   defstruct [
+    :workspace_id,
     :manifest_version_id,
     :manifest_content_hash,
     :required_runner_release_id,
@@ -49,6 +50,7 @@ defmodule Favn.Contracts.GenerationActivationRequest do
   ]
 
   @type t :: %__MODULE__{
+          workspace_id: String.t(),
           manifest_version_id: String.t(),
           manifest_content_hash: String.t(),
           required_runner_release_id: String.t(),
@@ -68,7 +70,8 @@ defmodule Favn.Contracts.GenerationActivationRequest do
   @doc "Validates all identities required before an activation may execute."
   @spec validate(t()) :: :ok | {:error, term()}
   def validate(%__MODULE__{} = request) do
-    with :ok <- identifier(:manifest_version_id, request.manifest_version_id),
+    with :ok <- identifier(:workspace_id, request.workspace_id),
+         :ok <- identifier(:manifest_version_id, request.manifest_version_id),
          :ok <- hash(request.manifest_content_hash),
          :ok <- RunnerReleaseBinding.validate(request.required_runner_release_id),
          :ok <- identifier(:rebuild_operation_id, request.rebuild_operation_id),

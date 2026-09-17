@@ -272,7 +272,11 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task = fenced_task!(command)
       validate_transition!(command)
       {status, expires_at} = transition_values!(task, command)
-      if command.transition == :running, do: WriteOwnership.start!(task)
+
+      if command.transition == :running do
+        FavnStoragePostgres.RuntimeCatalogGuard.start!(task)
+        WriteOwnership.start!(task)
+      end
 
       {1, _} =
         Repo.update_all(task_query(task),

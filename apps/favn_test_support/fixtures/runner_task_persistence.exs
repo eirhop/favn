@@ -102,6 +102,7 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
           candidate_relation: %{relation | name: "candidate"},
           retired_relation: %{relation | name: "retired"},
           expected_candidate_fingerprint: fingerprint,
+          workspace_id: "workspace",
           activation_token: "activate-token",
           expected_marker: marker
         })
@@ -134,6 +135,32 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
       struct!(
         C.RunnerWork,
         Map.merge(pin, %{
+          runtime_publication:
+            struct!(Favn.RuntimeCatalog.Publication,
+              workspace_id: "workspace",
+              publication_id: "rp_fixture",
+              target_id: target,
+              generation_id: previous,
+              asset_ref: Favn.Semantic.Snapshot.ref(ref),
+              run_id: "run",
+              step_id: "step",
+              attempt: 1,
+              manifest_id: version.manifest_version_id,
+              manifest_hash: version.content_hash,
+              runner_release: release,
+              freshness_key: "latest",
+              policy: %{"mode" => "max_age", "amount" => 6, "unit" => "hour"},
+              windows: [
+                %{
+                  "kind" => "day",
+                  "timezone" => "Etc/UTC",
+                  "start_at" => "2026-09-04T00:00:00Z",
+                  "end_at" => "2026-09-05T00:00:00Z"
+                }
+              ],
+              coverage: nil,
+              candidate: false
+            ),
           asset_ref: ref,
           asset_refs: [ref],
           runner_pool: hd(version.manifest.assets).runner_pool,
@@ -164,6 +191,11 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
                status: :ok,
                evidence: %C.RunnerAssetEvidence{
                  kind: :sql,
+                 runtime_publication: %{
+                   "publication_id" => "rp_fixture",
+                   "published_at" => DateTime.to_iso8601(now),
+                   "fresh_until" => nil
+                 },
                  group_replacement: %Favn.SQL.GroupReplacementResult{
                    operation: :replaced,
                    scope_group_count: 1,

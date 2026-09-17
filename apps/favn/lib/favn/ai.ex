@@ -52,6 +52,10 @@ defmodule Favn.AI do
   Consumers own joins and first/last row selection. Declare enforced relationships
   inside `contract` with an explicit dependency, ordered key mapping, cardinality,
   and violation policy; read the SQL Output Contracts guide for snapshot guarantees.
+  For queryable freshness, checks and coverage of native managed SQL tables, read
+  [SQL Runtime Catalog](sql-runtime-catalog.html). Runtime publication is automatic
+  in `favn_runtime`; do not configure per-asset lists or schedule freshness updates.
+
   Build semantics with a
   dedicated `MIX_BUILD_PATH` established before Mix starts; never use active runner
   output. Publish either immutable artifact with `mix favn.catalog.publish`; read
