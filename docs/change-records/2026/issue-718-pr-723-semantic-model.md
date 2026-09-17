@@ -1205,7 +1205,7 @@ is claimed. Earlier native SQL probes established revenue 210, weighted price
 | Relative links | All repository targets exist. |
 | Elixir examples | All three retained blocks parse with `Code.string_to_quoted/1`; proposed APIs are not implemented or compiled. |
 | Whitespace | `git diff --check` passes. |
-| Diagrams | Two diagrams retained unchanged; final pushed-page rendering is checked before handoff. |
+| Diagrams | Both diagrams render on GitHub at `25d7ad80`: current flow has 8 nodes and proposed flow has 11. The complexity discussion is visible in the rendered document. |
 
 Implementation checks remain planned. No replacement complexity budget is
 approved until the simplification decisions are settled.
