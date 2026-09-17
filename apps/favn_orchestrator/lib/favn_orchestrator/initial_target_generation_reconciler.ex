@@ -223,8 +223,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
            :generation_marker_initialize,
            request,
            {:initial_generation_marker_initialize, operation_id},
-           runner_binding: binding,
-           operation_id: operation_id
+           runner_binding: binding
          ) do
       {:ok, %GenerationMarkerInitializationResult{outcome: :succeeded} = result} ->
         with :ok <- GenerationMarkerInitializationResult.validate(result, request) do

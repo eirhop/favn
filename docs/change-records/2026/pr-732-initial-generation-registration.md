@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Primary issue | None; maintainer requested the repair without a new issue |
 | Pull request | [#732](https://github.com/eirhop/favn/pull/732) |
 | Approved extraction plan | 474d9e6c |
@@ -116,4 +116,35 @@ catalog guard. Final review and current-main qualification remain required.
 
 ## Implementation outcome
 
-Implementation and final verification will be recorded after the extraction.
+The selected patch is unchanged from the approved marker repair in PR 731. It
+removes one false `operation_id` option and clarifies the separate parent/write
+identities. No retention code changed. Current main's schema-version expectation
+and runtime catalog guard remain intact. The checked repair script and operator
+guide preserve existing successful writes and keep the failed run terminal.
+The final behavior is the proposed flow above.
+
+| Verification on main 5d27a519 plus this repair | Result |
+| --- | --- |
+| PostgreSQL core-authority suite in a new disposable test database | 164 passed |
+| Reconciler and operation-task tests | 13 passed |
+| Runner generation-operation tests | 10 passed |
+| Compilation with warnings as errors | Passed |
+| Formatting, test-tier coverage and `git diff --check` | Passed |
+| Documentation links and Mermaid syntax | Reviewed; interactive GitHub rendering unavailable because the browser bridge rejected the local workspace URI |
+| Original failure reproduction | Preserved from PR 731's pre-fix PostgreSQL run; the current repair test also reproduces the false-parent rejection before repairing registration |
+
+These checks establish the control-plane registration lifecycle, real parent
+protection and checked repair conditions. PostgreSQL tests use synthetic runner
+outcomes; separate runner tests exercise generation operations with a test
+adapter. This is not a live external-database or whole-run crash qualification.
+No customer data has been repaired by this implementation work.
+
+| Planned | Actual | Reason and review |
+| --- | --- | --- |
+| Isolate reviewed repair without prototypes | Application +5/-2; script +110/-0; tests +496/-0; operator guide +48/-0 | Identical localized implementation; the original accepted size variance is carried above |
+| Requalify on current main | Preserved schema version 21 and runtime catalog guard; all targeted suites pass | Astra independently checked the extraction and owning guards |
+
+Astra xhigh approved the implementation, extraction and final record with no
+blocking findings, and independently inspected the completed local test logs.
+Exact-head CI remains required before marking the PR ready; its final status is
+tracked on the PR checks rather than inferred from this local test evidence.
