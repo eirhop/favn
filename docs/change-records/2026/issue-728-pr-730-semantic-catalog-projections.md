@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Feature and SQL schema upgrade |
 | Primary issue | [#728](https://github.com/eirhop/favn/issues/728) |
 | Pull request | [#730](https://github.com/eirhop/favn/pull/730) |
@@ -254,7 +254,9 @@ Local verification on the rebased `97ac8657` baseline:
   not the project's configured warning gate.
 - Test-tag tier guard, local guide links and `git diff --check` pass.
 - The initial reviewed plan's two diagrams rendered on GitHub before code edits.
-  Final outcome diagram render and final-head CI are delivery gates.
+  All three diagrams, including the final outcome, rendered as flowchart SVGs
+  on GitHub at `947d922f`; the final diagram was visually checked. Final-head CI
+  remains a separate delivery gate.
 
 These are synthetic local/native checks, not customer environment proof. No
 customer database was changed. Remote/cloud DuckLake, grants and workload-scale
@@ -262,7 +264,13 @@ qualification remain outside this issue. CI results belong to the PR checks.
 
 ## Final review
 
-Independent implementation review and final-head CI are required before readiness.
+Independent Astra (`gpt-6-astra`, xhigh) reviewer `review_728_implementation`
+approved the implementation and final record on 2026-09-17 with no actionable
+findings. The reviewer compared the original baseline and both approved
+deviations, checked actual complexity, requested direct retained-macro evidence,
+and rechecked that test, the rebase and rendered final diagram. All 60 native
+tests passed after rebasing. Exact final-head CI remains the PR readiness gate;
+this record does not claim customer-environment qualification.
 
 ### User-requested rebuild command (superseding reset guidance)
 
@@ -332,3 +340,15 @@ deletions exceed the estimate by 19 because existing insertion/table creation is
 shared rather than duplicated. This is a justified implementation deviation,
 not removal of existing publication behavior. Review must assess these actual
 counts and the preservation/unknown-outcome tests before readiness.
+
+
+### Integration with updated main
+
+Main advanced to `8e44ca93` (PR #727 runtime catalog) during final delivery. Rebase
+resolved only the publication guide's appended sections and HexDocs guide list,
+retaining both contributions. The runtime catalog owns `favn_runtime` with a
+disjoint table set; rebuild drops only the explicit definition-projection names.
+No runtime-catalog implementation was changed. The native requalification includes
+the new runtime catalog suite: all 60 tests passed on the rebased source, including
+our final retained-macro assertion. Warnings-as-errors compilation, formatting and
+`git diff --check` also passed after rebase.
