@@ -33,6 +33,7 @@ defmodule Mix.Tasks.Favn.Build.Manifest do
         IO.puts("archive: #{result.archive_path}")
         IO.puts("archive sha256: #{result.archive_sha256}")
         IO.puts("verified directory: #{result.dist_dir}")
+        IO.puts("public catalog: #{result.catalog_path}")
 
       {:error, reason} ->
         Mix.raise("manifest build failed: #{format_reason(reason)}")

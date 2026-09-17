@@ -139,10 +139,19 @@ defmodule Favn.Semantic.Catalog do
     %{status: if(reasons == [], do: :compatible, else: :incompatible), reasons: reasons}
   end
 
-  defp macro_sql(artifact, metric) do
+  @doc "Renders macros in an explicitly selected catalog, preserving expression and input order."
+  @spec macros(Artifact.t(), String.t()) :: [String.t()]
+  def macros(%Artifact{} = artifact, catalog) when is_binary(catalog) do
+    for model <- artifact.models,
+        metric <- model["metrics"],
+        do: macro_sql(artifact, metric, quote_identifier(catalog) <> ".")
+  end
+
+  defp macro_sql(artifact, metric, prefix \\ "") do
     args = Enum.map_join(metric["inputs"], ", ", &quote_identifier(&1["parameter"]))
 
     "CREATE MACRO " <>
+      prefix <>
       quote_identifier(namespace(artifact)) <>
       "." <>
       quote_identifier(metric["macro_name"]) <>

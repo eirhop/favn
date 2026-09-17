@@ -137,3 +137,9 @@ The older `mix favn.publish` and `mix favn.activate` commands remain available
 for interactive and local workflows. Production automation should prefer the
 single archive deployment operation because it gives one durable status and one
 safe replay identity.
+
+## Consumer catalog publication
+
+For independent CI publication of the public manifest catalog and semantic model,
+see [SQL catalog publication](sql-catalog-publication.md). Named targets and
+dedicated publisher configuration are separate from execution deployment.

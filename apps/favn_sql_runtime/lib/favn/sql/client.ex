@@ -675,7 +675,7 @@ defmodule Favn.SQL.Client do
   defp fetch_connection(connection, opts) do
     registry_name = Keyword.get(opts, :registry_name)
 
-    if is_atom(registry_name) and not is_nil(registry_name) do
+    if is_pid(registry_name) or (is_atom(registry_name) and not is_nil(registry_name)) do
       fetch_from_registry(connection, registry_name)
     else
       fetch_from_config(connection)
@@ -971,7 +971,8 @@ defmodule Favn.SQL.Client do
   defp pool_enabled?(%Resolved{adapter: adapter} = resolved, adapter_opts, %PoolConfig{
          enabled: true
        }) do
-    function_exported?(adapter, :poolable?, 2) and adapter.poolable?(resolved, adapter_opts)
+    Keyword.get(adapter_opts, :pool, true) != false and
+      function_exported?(adapter, :poolable?, 2) and adapter.poolable?(resolved, adapter_opts)
   rescue
     _ -> false
   catch

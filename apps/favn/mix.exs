@@ -12,6 +12,7 @@ defmodule Favn.MixProject do
       lockfile: "../../mix.lock",
       elixir: "~> 1.20",
       elixirc_options: [docs: true],
+      test_ignore_filters: [~r/test\/fixtures\//],
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       docs: docs()
@@ -52,6 +53,7 @@ defmodule Favn.MixProject do
         "guides/retries-and-replay.md",
         "guides/sql-output-contracts.md",
         "guides/sql-semantic-models.md",
+        "guides/sql-catalog-publication.md",
         "guides/sql-asset-checks.md",
         "guides/local-development.md",
         "guides/secure-production-deployment.md",
@@ -67,7 +69,7 @@ defmodule Favn.MixProject do
         "guides/cheatsheet.cheatmd"
       ],
       groups_for_modules: [
-        "Public Facades": [Favn, Favn.AI, Favn.SQLClient],
+        "Public Facades": [Favn, Favn.AI, Favn.SQLClient, Favn.Catalog],
         "Settings And Runtime Context": [
           Favn.Settings,
           Favn.Run.Context,

@@ -99,7 +99,11 @@ defmodule Favn.SQL.Adapter do
   @callback materialize_in_transaction(conn(), WritePlan.t(), opts()) ::
               {:ok, Result.t()} | {:error, Error.t()}
 
+  @doc "Opt-in backend for qualified atomic metadata and persistent macro publication."
+  @callback catalog_publication_backend() :: module()
+
   @optional_callbacks [
+    catalog_publication_backend: 0,
     ping: 2,
     poolable?: 2,
     prepare_pool: 2,

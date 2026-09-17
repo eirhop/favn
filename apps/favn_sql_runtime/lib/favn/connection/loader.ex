@@ -6,6 +6,17 @@ defmodule Favn.Connection.Loader do
   alias Favn.ModuleDiscovery
   alias Favn.Connection.Validator
 
+  @doc "Resolves exactly one explicitly named module without discovery or unrelated configuration."
+  @spec resolve_selected(atom(), module(), map() | keyword()) ::
+          {:ok, Favn.Connection.Resolved.t()} | {:error, [Error.t()]}
+  def resolve_selected(name, module, runtime) do
+    with {:ok, definition} <- load_definition(module),
+         :ok <- validate_missing_required_definitions([definition], [name]),
+         {:ok, values} <- normalize_runtime_values(runtime, name) do
+      Validator.resolve(definition, values)
+    end
+  end
+
   @spec load() :: {:ok, %{atom() => Favn.Connection.Resolved.t()}} | {:error, [Error.t()]}
   def load do
     with {:ok, modules} <- configured_modules(),
@@ -17,7 +28,8 @@ defmodule Favn.Connection.Loader do
     end
   end
 
-  @spec resolve_required([atom()]) :: {:ok, %{atom() => Favn.Connection.Resolved.t()}} | {:error, [Error.t()]}
+  @spec resolve_required([atom()]) ::
+          {:ok, %{atom() => Favn.Connection.Resolved.t()}} | {:error, [Error.t()]}
   def resolve_required(names) when is_list(names) do
     required_names = names |> Enum.filter(&is_atom/1) |> Enum.uniq() |> Enum.sort()
 
@@ -55,7 +67,9 @@ defmodule Favn.Connection.Loader do
     end
   end
 
-  defp discovery_enabled?(discovery, key) when is_list(discovery), do: Keyword.get(discovery, key) == :all
+  defp discovery_enabled?(discovery, key) when is_list(discovery),
+    do: Keyword.get(discovery, key) == :all
+
   defp discovery_enabled?(_discovery, _key), do: false
 
   defp discover_connection_modules(discovery) do

@@ -12,6 +12,7 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
   alias FavnAuthoring.Deployment.ManifestArchive
   alias Favn.Manifest.{Publication, Serializer}
   alias Favn.RunnerPool
+  alias Favn.Catalog.Artifact, as: CatalogArtifact
 
   @test_only_options [:allow_non_prod_build, :skip_compile]
 
@@ -20,6 +21,7 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
           runner_releases: RunnerPool.releases(),
           dist_dir: Path.t(),
           manifest_path: Path.t(),
+          catalog_path: Path.t(),
           archive_path: Path.t(),
           archive_sha256: String.t(),
           status: :built | :already_built
@@ -128,13 +130,16 @@ defmodule FavnAuthoring.Deployment.ManifestBuilder do
 
     with {:ok, directory_status} <- resolve_directory(directory_result, dist_dir, publication),
          archive_path = dist_dir <> ".tar.gz",
-         {:ok, archive} <- ManifestArchive.write(dist_dir, archive_path) do
+         {:ok, archive} <- ManifestArchive.write(dist_dir, archive_path),
+         {:ok, catalog} <- CatalogArtifact.new(publication),
+         {:ok, catalog_path} <-
+           CatalogArtifact.write(catalog, Path.join([root_dir, ".favn", "dist", "catalog"])) do
       status =
         if directory_status == :built or archive.status == :built,
           do: :built,
           else: :already_built
 
-      {:ok, result(publication, dist_dir, archive, status)}
+      {:ok, Map.put(result(publication, dist_dir, archive, status), :catalog_path, catalog_path)}
     end
   end
 
