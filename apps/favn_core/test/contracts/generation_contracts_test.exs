@@ -355,6 +355,7 @@ defmodule Favn.Contracts.GenerationContractsTest do
 
   defp activation_request do
     %GenerationActivationRequest{
+      workspace_id: "workspace",
       manifest_version_id: "mv_generation",
       manifest_content_hash: @manifest_hash,
       required_runner_release_id: release_id(),

@@ -2948,7 +2948,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
               details: %{
                 reason: :historical_manifest_not_activatable,
                 schema_version: 9,
-                current_schema_version: 20
+                current_schema_version: 21
               }
             }} =
              RegistryStore.deploy_manifest(%{

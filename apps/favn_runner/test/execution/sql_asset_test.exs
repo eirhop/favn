@@ -245,6 +245,45 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert_received {:materialize_params, ["run_sql_favn_runtime_inputs", ^run_started_at]}
   end
 
+  test "native rebuild input freezing resolves inputs without publication or target mutation" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(ref, __MODULE__.RuntimeInputsResolver,
+        native_target: true
+      )
+
+    work =
+      %RunnerWork{
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        run_id: "freeze_native_runtime_inputs",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        asset_ref: ref,
+        execution_package: execution_package_for(version),
+        params: %{submitted: 7},
+        metadata: %{runner_task_mode: :runtime_input_resolution}
+      }
+      |> generation_work(version, ref)
+
+    assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
+    assert_received {:runtime_inputs_context, _context}
+    refute_received {:connect_after_runtime_inputs, _}
+
+    # The read-only exemption cannot be used to execute an untracked write.
+    [asset] = version.manifest.assets
+
+    assert {:error, %Favn.SQLAsset.Error{type: :invalid_runtime_publication}} =
+             Favn.SQLAsset.Runtime.run_manifest(
+               asset,
+               work.execution_package,
+               version,
+               %{},
+               work,
+               %Favn.Run.Context{run_id: work.run_id}
+             )
+  end
+
   test "resolves and pins manifest-declared runtime inputs before execution" do
     ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
 
@@ -1673,8 +1712,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 20,
-        runner_contract_version: 16,
+        schema_version: 21,
+        runner_contract_version: 17,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
           %Asset{
@@ -1735,8 +1774,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 20,
-      runner_contract_version: 16,
+      schema_version: 21,
+      runner_contract_version: 17,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
@@ -1751,7 +1790,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
           execution_package_hash: package.content_hash,
           assurance: assurance(execution)
         }
-        |> FavnTestSupport.with_target_descriptor()
+        |> runtime_input_target_descriptor(Keyword.get(opts, :native_target, false))
       ],
       pipelines: [],
       schedules: [],
@@ -1768,6 +1807,22 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     :ok = FavnRunner.register_manifest(version)
     remember_execution_package(version, package)
+  end
+
+  defp runtime_input_target_descriptor(asset, false),
+    do: FavnTestSupport.with_target_descriptor(asset)
+
+  defp runtime_input_target_descriptor(asset, true) do
+    descriptor =
+      Favn.Manifest.TargetDescriptor.from_asset(asset,
+        connection_definitions: %{
+          asset.relation.connection => %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
+        },
+        manifest_schema_version: 21,
+        runner_contract_version: 17
+      )
+
+    %{asset | target_descriptor: descriptor}
   end
 
   defp register_checked_sql_manifest!(
@@ -1805,8 +1860,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     package = execution_package!(ref, execution)
 
     manifest = %Manifest{
-      schema_version: 20,
-      runner_contract_version: 16,
+      schema_version: 21,
+      runner_contract_version: 17,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
@@ -2003,8 +2058,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest =
       %Manifest{
-        schema_version: 20,
-        runner_contract_version: 16,
+        schema_version: 21,
+        runner_contract_version: 17,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
           %Asset{
@@ -2037,8 +2092,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
-      schema_version: 20,
-      runner_contract_version: 16,
+      schema_version: 21,
+      runner_contract_version: 17,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{

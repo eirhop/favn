@@ -306,6 +306,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   @spec catalog_publication_backend() :: module()
   def catalog_publication_backend, do: Favn.SQL.Adapter.DuckDB.ADBC.Catalog
 
+  @impl Favn.SQL.Adapter
+  @spec runtime_catalog_backend() :: module()
+  def runtime_catalog_backend, do: Favn.SQL.Adapter.DuckDB.ADBC.RuntimeCatalog
+
+  @impl Favn.SQL.Adapter
+  def runtime_catalog_activate(conn, request, opts),
+    do: Favn.SQL.Adapter.DuckDB.ADBC.RuntimeCatalog.activate({__MODULE__, conn}, request, opts)
+
   @impl Favn.SQL.GenerationAdapter
   @spec generation_capabilities(Resolved.t(), opts()) :: {:ok, GenerationCapabilities.t()}
   def generation_capabilities(%Resolved{}, _opts) do

@@ -194,6 +194,7 @@ jobs:
           test/relationship_checks_test.exs
           test/relationship_publication_test.exs
           test/catalog_publication_test.exs
+          test/runtime_catalog_test.exs
 
   dialyzer:
     name: Dialyzer

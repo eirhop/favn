@@ -22,6 +22,54 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   alias FavnOrchestrator.RunState
 
   defmodule FakeStore do
+    def get_execution_package(_query), do: {:ok, Process.get(:native_package)}
+
+    def claim(command) do
+      claim =
+        struct(
+          FavnOrchestrator.Persistence.Results.MaterializationClaim,
+          Map.from_struct(command)
+          |> Map.take([
+            :claim_key,
+            :deployment_id,
+            :target_kind,
+            :target_id,
+            :target_generation_id,
+            :evidence_generation_id,
+            :partition_key,
+            :run_id,
+            :owner_id,
+            :purpose
+          ])
+          |> Map.merge(%{
+            workspace_id: command.workspace_context.workspace_id,
+            fencing_token: 1,
+            status: :claimed,
+            version: 1,
+            expires_at: DateTime.add(command.occurred_at, 300, :second)
+          })
+        )
+
+      {:ok,
+       %FavnOrchestrator.Persistence.Results.MaterializationDecision{
+         claim_key: command.claim_key,
+         status: :claimed,
+         claim: claim
+       }}
+    end
+
+    def enqueue(command) do
+      send(self(), {:native_work_enqueued, command})
+
+      {:ok,
+       struct(
+         FavnOrchestrator.Persistence.Results.RunnerTask,
+         Map.from_struct(command)
+         |> Map.take([:task_id, :runner_pool, :required_runner_release_id])
+         |> Map.merge(%{status: :queued, assignment_generation: 0})
+       )}
+    end
+
     def get_run(_query), do: {:error, :forced_missing}
 
     def commit_transition(command) do
@@ -91,12 +139,16 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     end
   end
 
-  setup do
+  setup context do
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
       run_submissions: FakeStore,
-      runner_tasks: FavnOrchestrator.TestRunnerTaskStore,
+      runner_tasks:
+        if(context[:native_publication],
+          do: FakeStore,
+          else: FavnOrchestrator.TestRunnerTaskStore
+        ),
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -117,6 +169,123 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     start_supervised!({PersistenceRuntime, runtime})
 
     :ok
+  end
+
+  @tag native_publication: true
+  test "forced sequential SQL dispatch pins publication and the original calendar period" do
+    ref = {__MODULE__.Asset, :native}
+
+    relation =
+      Favn.RelationRef.new!(
+        connection: :warehouse,
+        catalog: "mart",
+        schema: "main",
+        name: "native"
+      )
+
+    sql = "SELECT 1 AS value"
+
+    {:ok, package} =
+      Favn.Manifest.ExecutionPackage.new(ref, %Favn.Manifest.SQLExecution{
+        sql: sql,
+        template: Favn.SQL.Template.compile!(sql, file: "native.sql", line: 1)
+      })
+
+    {:ok, policy} = Favn.Freshness.Policy.calendar(:day, timezone: "Etc/UTC")
+
+    asset = %Asset{
+      ref: ref,
+      module: elem(ref, 0),
+      name: :native,
+      type: :sql,
+      relation: relation,
+      materialization: :table,
+      execution_package_hash: package.content_hash,
+      freshness: policy
+    }
+
+    descriptor =
+      Favn.Manifest.TargetDescriptor.from_asset(asset,
+        connection_definitions: %{
+          warehouse: %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
+        },
+        manifest_schema_version: 21,
+        runner_contract_version: 17
+      )
+
+    asset = %{asset | target_descriptor: descriptor}
+
+    manifest =
+      %Favn.Manifest{assets: [asset], pipelines: []}
+      |> FavnTestSupport.with_manifest_contract()
+      |> FavnTestSupport.with_manifest_graph()
+
+    {:ok, version} = Version.new(manifest)
+    key = {ref, nil}
+
+    plan = %Plan{
+      target_refs: [ref],
+      target_node_keys: [key],
+      topo_order: [ref],
+      stages: [[ref]],
+      node_stages: [[key]],
+      nodes: %{
+        key => %{
+          ref: ref,
+          node_key: key,
+          window: nil,
+          upstream: [],
+          downstream: [],
+          stage: 0,
+          action: :run,
+          target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+          active_relation: relation,
+          write_relation: relation
+        }
+      }
+    }
+
+    run =
+      RunState.new(
+        id: "native-sequential",
+        workspace_id: "workspace",
+        deployment_id: "deployment",
+        manifest_version_id: version.manifest_version_id,
+        manifest_content_hash: version.content_hash,
+        runner_releases: version.runner_releases,
+        asset_ref: ref,
+        target_refs: [ref],
+        plan: plan,
+        trigger: %{force: true}
+      )
+
+    run = %{run | inserted_at: ~U[2026-01-01 12:00:00Z], storage_owner_id: "owner"}
+    Process.put(:native_package, package)
+    Process.put({FakeStore, :commit_transition}, :succeed)
+
+    state = %RunExecutionState{
+      run: run,
+      version: version,
+      work_set: ActiveTaskSet.from_entries(run, []),
+      manifest_index: %Index{assets_by_ref: %{ref => asset}},
+      sequential_refs: [{ref, key, 0}]
+    }
+
+    assert {:await, _, _} = Sequential.continue(state)
+    assert_receive {:native_work_enqueued, command}
+
+    assert {:ok, work} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
+               :asset_attempt,
+               command.payload,
+               version,
+               [package]
+             )
+
+    assert work.runtime_publication.freshness_key == "calendar:day:Etc/UTC:2026-01-01"
+
+    assert {:ok, {"deadline", ~U[2026-01-02 00:00:00Z], false}} =
+             Favn.RuntimeCatalog.Publication.expiry(work.runtime_publication, DateTime.utc_now())
   end
 
   test "pre-submit failures preserve the planned effective window" do

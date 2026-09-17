@@ -50,6 +50,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :run_started_at,
         :runner_pool,
         :runtime_input_pin,
+        :runtime_publication,
         :stage,
         :logical_target_id,
         :target_descriptor_hash,
@@ -155,6 +156,7 @@ defmodule Favn.Contracts.ContractLockTest do
     assert_runner_keys(
       struct(GenerationActivationRequest),
       [
+        :workspace_id,
         :activation_token,
         :active_relation,
         :candidate_generation_id,

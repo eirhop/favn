@@ -292,6 +292,7 @@ defmodule Favn.SQL.GenerationTransaction do
          :ok <- validate_active_relation(active, request, adapter_identity),
          {:ok, retired} <- adapter.relation(conn, request.retired_relation, opts),
          :ok <- require_retired_absent(retired, adapter_identity, request.retired_relation),
+         :ok <- activate_runtime_catalog(adapter, conn, request, opts),
          :ok <- maybe_retire_active(adapter, conn, active, request, opts),
          {:ok, _result} <-
            adapter.execute(
@@ -326,6 +327,12 @@ defmodule Favn.SQL.GenerationTransaction do
       {:error, %Error{} = error} ->
         {:error, error}
     end
+  end
+
+  defp activate_runtime_catalog(adapter, conn, request, opts) do
+    if function_exported?(adapter, :runtime_catalog_activate, 3),
+      do: adapter.runtime_catalog_activate(conn, request, opts),
+      else: :ok
   end
 
   defp inspect_existing(_adapter, _conn, _adapter_identity, _ref, nil, _opts),
@@ -743,7 +750,7 @@ defmodule Favn.SQL.GenerationTransaction do
          false,
          _opts
        ),
-    do: :ok
+       do: :ok
 
   defp maybe_validate_reconciled_relation_instance(
          _adapter,
@@ -763,7 +770,7 @@ defmodule Favn.SQL.GenerationTransaction do
          true,
          opts
        ),
-    do: validate_relation_instance(adapter, conn, relation, marker, opts)
+       do: validate_relation_instance(adapter, conn, relation, marker, opts)
 
   defp ensure_not_active(
          %GenerationMarker{active_generation_id: generation_id},

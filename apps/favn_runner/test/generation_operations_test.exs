@@ -657,16 +657,16 @@ defmodule FavnRunner.GenerationOperationsTest do
         connection_definitions: %{
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
-        manifest_schema_version: 20,
-        runner_contract_version: 16
+        manifest_schema_version: 21,
+        runner_contract_version: 17
       )
 
     asset = %{asset | target_descriptor: descriptor}
 
     manifest =
       %Manifest{
-        schema_version: 20,
-        runner_contract_version: 16,
+        schema_version: 21,
+        runner_contract_version: 17,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [asset],
         graph: %Graph{nodes: [ref], topo_order: [ref]}
@@ -703,8 +703,8 @@ defmodule FavnRunner.GenerationOperationsTest do
         connection_definitions: %{
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
-        manifest_schema_version: 20,
-        runner_contract_version: 16
+        manifest_schema_version: 21,
+        runner_contract_version: 17
       )
 
     asset = %{asset | target_descriptor: descriptor}
@@ -728,14 +728,14 @@ defmodule FavnRunner.GenerationOperationsTest do
             connection_definitions: %{
               generation_warehouse: %{adapter: Adapter, module: __MODULE__}
             },
-            manifest_schema_version: 20,
-            runner_contract_version: 16
+            manifest_schema_version: 21,
+            runner_contract_version: 17
           )
     }
 
     manifest = %Manifest{
-      schema_version: 20,
-      runner_contract_version: 16,
+      schema_version: 21,
+      runner_contract_version: 17,
       runner_releases: %{
         "default" => FavnTestSupport.runner_release_id(:alternate),
         "duckdb_image" => FavnTestSupport.runner_release_id()
@@ -796,6 +796,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     max_identifier_bytes = 128
 
     %GenerationActivationRequest{
+      workspace_id: "workspace",
       manifest_version_id: version.manifest_version_id,
       manifest_content_hash: version.content_hash,
       required_runner_release_id: Map.fetch!(version.runner_releases, "default"),

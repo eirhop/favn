@@ -239,7 +239,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
     assert :ok = Favn.Contracts.RunnerTask.RuntimeInputsAck.validate(acknowledgement)
   end
 
-  test "every protocol 14 message validates and round trips" do
+  test "every protocol 15 message validates and round trips" do
     now = DateTime.utc_now()
 
     {:ok, runtime_inputs} =
@@ -407,6 +407,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
 
     Enum.each(messages, fn message ->
       module = message.__struct__
+      assert message.version == Favn.Contracts.RunnerTask.version()
       assert :ok = module.validate(message)
       assert {:ok, encoded} = module.encode(message)
       assert {:ok, ^message} = module.decode(encoded)
@@ -484,7 +485,7 @@ defmodule Favn.Contracts.RunnerTaskTest do
     assert {:error, :invalid_runner_task_payload} =
              Favn.Contracts.RunnerTask.NoWork.decode(%{
                "type" => "no_work",
-               "version" => 14,
+               "version" => 15,
                "payload" => compressed_payload
              })
   end

@@ -10,6 +10,8 @@ defmodule Favn.SQLAsset.Runtime do
   alias Favn.RuntimeInput.Pin
   alias Favn.Run.Context
   alias Favn.SQL.Client, as: SQLClient
+  alias Favn.SQL.RuntimeCatalog
+  alias Favn.Semantic.Snapshot
   alias Favn.SQL.CancelToken
   alias Favn.SQL.Error, as: SQLError
 
@@ -87,7 +89,8 @@ defmodule Favn.SQLAsset.Runtime do
         %Context{} = context
       )
       when is_struct(manifest_identity, Version) or is_struct(manifest_identity, ManifestHandle) do
-    with {:ok, %Definition{} = definition, %Context{} = final_context, final_opts} <-
+    with :ok <- validate_runtime_publication(asset, work),
+         {:ok, %Definition{} = definition, %Context{} = final_context, final_opts} <-
            prepare_manifest_execution(
              asset,
              package,
@@ -153,12 +156,40 @@ defmodule Favn.SQLAsset.Runtime do
     opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
     {asset, relation_by_module} = GenerationWork.apply_overrides(asset, relation_by_module, work)
 
-    with {:ok, %Definition{} = definition} <-
+    with :ok <- validate_runtime_preparation(asset, work),
+         {:ok, %Definition{} = definition} <-
            manifest_definition(asset, package, relation_by_module),
          definition <- rebuild_definition(definition, work),
          {:ok, final_context, final_opts} <-
            finalize_execution_window(definition, context, opts) do
       {:ok, definition, final_context, final_opts}
+    end
+  end
+
+  defp validate_runtime_preparation(asset, work) do
+    if RunnerWork.runtime_input_resolution_only?(work),
+      do: :ok,
+      else: validate_runtime_publication(asset, work)
+  end
+
+  defp validate_runtime_publication(asset, work) do
+    if Favn.RuntimeCatalog.Publication.supported?(asset.target_descriptor) do
+      with %Favn.RuntimeCatalog.Publication{} = p <- work.runtime_publication,
+           {:ok, expected} <-
+             Favn.RuntimeCatalog.Publication.new(asset, work, p.workspace_id, p.freshness_key),
+           true <- p == expected do
+        :ok
+      else
+        _ ->
+          {:error,
+           %Error{
+             type: :invalid_runtime_publication,
+             phase: :materialize,
+             message: "Managed SQL work requires matching pinned runtime publication intent"
+           }}
+      end
+    else
+      :ok
     end
   end
 
@@ -590,7 +621,13 @@ defmodule Favn.SQLAsset.Runtime do
     |> map_sql_result_error(rendered.asset_ref, phase)
   end
 
-  defp materialize_render(
+  defp materialize_render(definition, rendered, opts) do
+    if Keyword.get(opts, :runtime_publication),
+      do: checked_materialize(definition, rendered, opts),
+      else: materialize_untracked_render(definition, rendered, opts)
+  end
+
+  defp materialize_untracked_render(
          %Definition{checks: [_check | _rest]} = definition,
          rendered,
          opts
@@ -598,10 +635,14 @@ defmodule Favn.SQLAsset.Runtime do
     checked_materialize(definition, rendered, opts)
   end
 
-  defp materialize_render(%Definition{contract: %Contract{}} = definition, rendered, opts),
-    do: checked_materialize(definition, rendered, opts)
+  defp materialize_untracked_render(
+         %Definition{contract: %Contract{}} = definition,
+         rendered,
+         opts
+       ),
+       do: checked_materialize(definition, rendered, opts)
 
-  defp materialize_render(%Definition{} = definition, %Render{} = rendered, opts) do
+  defp materialize_untracked_render(%Definition{} = definition, %Render{} = rendered, opts) do
     with_session(
       rendered.connection,
       opts,
@@ -638,11 +679,21 @@ defmodule Favn.SQLAsset.Runtime do
         session_required_catalogs(definition, base_render),
         session_required_resources(definition),
         fn session ->
-          with :ok <- ensure_group_replacement_supported(session, base_render),
+          with {:ok, session, definition, base_render} <-
+                 resolve_publication_target(session, definition, base_render, opts),
+               :ok <- ensure_group_replacement_supported(session, base_render),
                :ok <- ensure_checked_materialization_supported(session, definition, base_render) do
             SQLClient.transaction(
               session,
-              fn tx_session -> group_replacement_transaction(tx_session, definition, opts) end,
+              fn tx_session ->
+                with {:ok, prepared} <- prepare_publication(tx_session, base_render, opts),
+                     {:ok, {rendered, output}} <-
+                       group_replacement_transaction(tx_session, definition, opts),
+                     {:ok, output} <-
+                       publish_materialization(tx_session, prepared, definition, output, opts) do
+                  {:ok, {rendered, output}}
+                end
+              end,
               sql_operation_opts(opts)
               |> Keyword.put(:preserve_body_result_on_commit_error?, true)
               |> Keyword.put(:pool_safe?, true)
@@ -1266,10 +1317,16 @@ defmodule Favn.SQLAsset.Runtime do
       session_required_catalogs(definition, rendered),
       session_required_resources(definition),
       fn session ->
-        with :ok <- ensure_checked_materialization_supported(session, definition, rendered) do
+        with {:ok, session, definition, rendered} <-
+               resolve_publication_target(session, definition, rendered, opts),
+             :ok <- ensure_checked_materialization_supported(session, definition, rendered) do
           SQLClient.transaction(
             session,
-            fn tx_session -> checked_transaction(tx_session, definition, rendered, opts) end,
+            fn tx_session ->
+              with {:ok, prepared} <- prepare_publication(tx_session, rendered, opts),
+                   {:ok, output} <- checked_transaction(tx_session, definition, rendered, opts),
+                   do: publish_materialization(tx_session, prepared, definition, output, opts)
+            end,
             sql_operation_opts(opts)
             |> Keyword.put(:preserve_body_result_on_commit_error?, true)
             |> Keyword.put(:pool_safe?, true)
@@ -1279,6 +1336,83 @@ defmodule Favn.SQLAsset.Runtime do
     )
     |> map_checked_materialization_result(definition, rendered)
   end
+
+  defp resolve_publication_target(session, definition, rendered, opts) do
+    with {:ok, relation} <-
+           RuntimeCatalog.resolve(
+             session,
+             Keyword.get(opts, :runtime_publication),
+             rendered.relation,
+             sql_operation_opts(opts)
+           ) do
+      catalogs = Enum.uniq(session.required_catalogs ++ List.wrap(relation.catalog))
+
+      {:ok, %{session | required_catalogs: catalogs},
+       %{definition | asset: Map.put(definition.asset, :relation, relation)},
+       %{rendered | relation: relation}}
+    end
+  end
+
+  defp validate_publication_scope(%{strategy: :delete_insert} = plan, opts) do
+    case Favn.RuntimeCatalog.Publication.validate_window(
+           Keyword.get(opts, :runtime_publication),
+           plan.effective_window || plan.window
+         ) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         %SQLError{
+           type: reason,
+           message: "Mutation differs from pinned coverage scope",
+           retryable?: false
+         }}
+    end
+  end
+
+  defp validate_publication_scope(_, _), do: :ok
+
+  defp prepare_publication(session, rendered, opts),
+    do:
+      RuntimeCatalog.prepare(
+        session,
+        Keyword.get(opts, :runtime_publication),
+        rendered.relation,
+        sql_operation_opts(opts)
+      )
+
+  defp publish_materialization(_session, nil, _definition, output, _opts), do: {:ok, output}
+
+  defp publish_materialization(session, prepared, definition, output, opts) do
+    with {:ok, [contract]} <-
+           Snapshot.build([
+             Map.put(definition.asset, :contract, definition.contract)
+           ]),
+         {:ok, receipt} <-
+           RuntimeCatalog.record(
+             session,
+             prepared,
+             %{
+               contract: contract,
+               mutation: publication_mutation(output),
+               check_results: output.check_results,
+               write_outcome: output.write_outcome
+             },
+             sql_operation_opts(opts)
+           ) do
+      {:ok, %{output | runtime_publication: receipt}}
+    end
+  end
+
+  defp publication_mutation(%{group_replacement: %GroupReplacementResult{operation: operation}})
+       when operation in [:bootstrap_empty, :bootstrap_created], do: "replace"
+
+  defp publication_mutation(%{group_replacement: %GroupReplacementResult{}}), do: "replace_groups"
+  defp publication_mutation(%{write_plan: %{materialization: :table}}), do: "replace"
+  defp publication_mutation(%{write_plan: %{bootstrap?: true}}), do: "replace"
+  defp publication_mutation(%{write_plan: %{strategy: strategy}}), do: to_string(strategy)
+  defp publication_mutation(_), do: "none"
 
   defp ensure_checked_materialization_supported(
          %Session{capabilities: %{transactions: :supported}} = session,
@@ -1317,7 +1451,7 @@ defmodule Favn.SQLAsset.Runtime do
          %Render{} = rendered,
          opts
        ) do
-    stage = candidate_stage(definition)
+    stage = candidate_stage(definition, opts)
 
     with {:ok, target_exists?} <- checked_target(session, rendered),
          :ok <- create_candidate_stage(session, stage, rendered, opts),
@@ -1409,6 +1543,7 @@ defmodule Favn.SQLAsset.Runtime do
 
     with {:ok, write_plan} <-
            MaterializationPlanner.build(session, definition, staged_render, column_source),
+         :ok <- validate_publication_scope(write_plan, opts),
          {:ok, result} <-
            SQLClient.materialize_in_transaction(
              session,
@@ -1647,8 +1782,14 @@ defmodule Favn.SQLAsset.Runtime do
     end
   end
 
-  defp candidate_stage(%Definition{} = definition) do
-    if match?(%Contract{}, definition.contract) or Enum.any?(definition.checks, & &1.uses_query?) do
+  defp candidate_stage(%Definition{} = definition, opts) do
+    tracked_window_write? =
+      Keyword.get(opts, :runtime_publication) != nil and
+        match?({:incremental, _}, definition.materialization) and
+        Keyword.get(elem(definition.materialization, 1), :strategy) == :delete_insert
+
+    if tracked_window_write? or match?(%Contract{}, definition.contract) or
+         Enum.any?(definition.checks, & &1.uses_query?) do
       RelationRef.new!(
         name: "favn_check_candidate_#{System.unique_integer([:positive, :monotonic])}"
       )
@@ -2228,6 +2369,7 @@ defmodule Favn.SQLAsset.Runtime do
     deadline_at = work.deadline_at
 
     []
+    |> Keyword.put(:runtime_publication, work.runtime_publication)
     |> Keyword.put(:require_runtime_input_pin, true)
     |> maybe_put_runtime_input_pin(work.runtime_input_pin)
     |> maybe_put_timeout(deadline_at)
@@ -2551,7 +2693,8 @@ defmodule Favn.SQLAsset.Runtime do
       quality_status: quality_status,
       write_outcome: materialization.write_outcome,
       reason: materialization.reason,
-      group_replacement: materialization.group_replacement
+      group_replacement: materialization.group_replacement,
+      runtime_publication: materialization.runtime_publication
     }
 
     output = maybe_put_contract_validation(output, materialization.contract_validation)

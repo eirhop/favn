@@ -21,6 +21,7 @@ defmodule Favn.SQL.GenerationActivation do
     :activated_at
   ]
   defstruct [
+    :workspace_id,
     :logical_target_id,
     :stable_relation,
     :candidate_relation,
@@ -35,6 +36,7 @@ defmodule Favn.SQL.GenerationActivation do
   ]
 
   @type t :: %__MODULE__{
+          workspace_id: String.t() | nil,
           logical_target_id: String.t(),
           stable_relation: RelationRef.t(),
           candidate_relation: RelationRef.t(),

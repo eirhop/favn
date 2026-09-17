@@ -209,6 +209,16 @@ defmodule FavnOrchestrator.Freshness.Decider do
     end)
   end
 
+  @doc "Derives publication freshness identity without making a scheduling decision."
+  @spec publication_key(Favn.Manifest.Asset.t(), Favn.Window.Runtime.t() | nil, DateTime.t()) ::
+          String.t()
+  def publication_key(asset, window, %DateTime{} = now) do
+    freshness_key(%{ref: asset.ref, window: window}, %{
+      assets_by_ref: %{asset.ref => asset},
+      now: now
+    })
+  end
+
   defp freshness_key(node, context) do
     case freshness_policy(node, context) do
       %Policy{mode: :window_success} ->

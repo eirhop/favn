@@ -14,6 +14,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     DateTime,
     Decimal,
     Favn.Contracts.RunnerWork,
+    Favn.RuntimeCatalog.Publication,
     Favn.Contracts.RunnerResult,
     Favn.Contracts.RunnerAssetEvidence,
     Favn.Contracts.RunnerAssetResult,
@@ -84,6 +85,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     Favn.SQL.Template.RuntimeRelation
   ]
   @atoms [
+    :runtime_publication,
+    :invalid_runtime_publication,
     :many_to_one,
     :one_to_one,
     :backfill_id,

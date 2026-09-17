@@ -1032,8 +1032,22 @@ defmodule FavnStoragePostgres.Registry.Store do
          manifest_summary
        ) do
     verify_manifest_activation_lease!(command)
+
+    locked_ids =
+      FavnStoragePostgres.RuntimeCatalogGuard.lock_deployment!(
+        command.workspace_context.workspace_id,
+        targets
+      )
+
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
     verify_expected_active_deployment!(command, locked_runtime_state)
+
+    FavnStoragePostgres.RuntimeCatalogGuard.validate_deployment!(
+      command.workspace_context.workspace_id,
+      command.manifest_version_id,
+      targets,
+      locked_ids
+    )
 
     {deployment, deployment_status} =
       insert_or_replay_deployment!(

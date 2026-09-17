@@ -227,3 +227,7 @@ endpoint and does not sandbox SQL formulas.
 **Selected means published definitions**, not an active execution deployment,
 fresh data, or a verified compatible serving schema. Runtime readiness and
 served-contract evidence belong to #721; MCP discovery belongs to #719.
+
+Runtime freshness, checks and coverage are published automatically with managed
+table writes, independently of this CI command. See
+[query runtime metadata](sql-runtime-catalog.md).

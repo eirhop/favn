@@ -22,6 +22,7 @@ defmodule FavnRunner.ResultCompactorTest do
     assert kept.ref == asset.ref
     assert kept.evidence.kind == :sql
     assert kept.evidence.metrics == %{}
+    assert kept.evidence.runtime_publication == asset.evidence.runtime_publication
     assert {:ok, encoded} = PersistenceCodec.encode_result(:asset_attempt, :succeeded, compacted)
     assert {:ok, _} = PersistenceCodec.decode_result(:asset_attempt, :succeeded, encoded, version)
   end

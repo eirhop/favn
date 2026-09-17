@@ -22,6 +22,7 @@ defmodule Favn.Contracts.RunnerAssetEvidence do
           contract_validation: Favn.SQL.ContractValidation.t() | nil,
           group_replacement: Favn.SQL.GroupReplacementResult.t() | nil,
           runtime_inputs: map() | nil,
+          runtime_publication: map() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,
           message: String.t() | nil,
@@ -44,6 +45,7 @@ defmodule Favn.Contracts.RunnerAssetEvidence do
     :contract_validation,
     :group_replacement,
     :runtime_inputs,
+    :runtime_publication,
     :manifest_version_id,
     :manifest_content_hash,
     :message,
@@ -79,10 +81,26 @@ defmodule Favn.Contracts.RunnerAssetEvidence do
       value.transaction_outcome in [nil, :committed, :rolled_back, :not_started, :unknown] and
       optional_struct?(value.contract_validation, Favn.SQL.ContractValidation) and
       optional_struct?(value.group_replacement, Favn.SQL.GroupReplacementResult) and
-      (is_nil(value.runtime_inputs) or is_map(value.runtime_inputs)) and is_map(value.metrics)
+      (is_nil(value.runtime_inputs) or is_map(value.runtime_inputs)) and
+      valid_publication?(value.runtime_publication) and is_map(value.metrics)
   end
 
   def valid?(_value), do: false
+
+  defp valid_publication?(nil), do: true
+
+  defp valid_publication?(
+         %{
+           "publication_id" => id,
+           "published_at" => published_at,
+           "fresh_until" => fresh_until
+         } = receipt
+       ) do
+    map_size(receipt) == 3 and is_binary(id) and is_binary(published_at) and
+      (is_nil(fresh_until) or is_binary(fresh_until))
+  end
+
+  defp valid_publication?(_receipt), do: false
 
   defp optional_struct?(nil, _module), do: true
   defp optional_struct?(value, module), do: is_struct(value, module)

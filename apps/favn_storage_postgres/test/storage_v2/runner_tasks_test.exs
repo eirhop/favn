@@ -90,6 +90,245 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
      now: now}
   end
 
+  for phase <- [:assigned, :preparing] do
+    test "runtime catalog deployment fences retained #{phase} work through durable start",
+         fixture do
+      {work, assigned, deployment} = runtime_upgrade_fixture(fixture, unquote(phase))
+
+      {deployed, started} =
+        runtime_upgrade_race(
+          fixture,
+          work.logical_target_id,
+          fn -> RegistryStore.deploy_manifest(deployment) end,
+          fn ->
+            Store.transition(transition_command(fixture, assigned, "legacy-start", :running))
+          end
+        )
+
+      assert {:ok, _} = deployed
+      assert {:error, %{details: %{reason_code: "runtime_catalog_tracking_required"}}} = started
+
+      assert %{rows: [[status]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT status FROM favn_control.runner_tasks WHERE workspace_id=$1 AND task_id=$2",
+                 [fixture.workspace_id, assigned.task_id]
+               )
+
+      assert status == to_string(unquote(phase))
+      assert runtime_effect(fixture) == "not_started"
+    end
+  end
+
+  test "runtime catalog deployment waits for an earlier durable start and rejects its live write",
+       fixture do
+    {work, assigned, deployment} = runtime_upgrade_fixture(fixture, :assigned)
+
+    {started, deployed} =
+      runtime_upgrade_race(
+        fixture,
+        work.logical_target_id,
+        fn ->
+          Store.transition(transition_command(fixture, assigned, "legacy-start", :running))
+        end,
+        fn -> RegistryStore.deploy_manifest(deployment) end
+      )
+
+    assert {:ok, %{status: :running}} = started
+    assert {:error, %{details: %{reason_code: "target_write_in_progress"}}} = deployed
+    assert runtime_effect(fixture) == "in_flight"
+    refute runtime_active_deployment(fixture) == deployment.deployment_id
+  end
+
+  test "expired unknown legacy writes still block runtime catalog deployment", fixture do
+    {_work, assigned, deployment} = runtime_upgrade_fixture(fixture, :assigned)
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "legacy-start", :running))
+
+    assert {:ok, %{status: :unknown}} =
+             Store.release(
+               release_command(fixture, running, "legacy-unknown", :unknown, :runner_lost)
+             )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.materialization_claims SET expires_at='2000-01-01' WHERE workspace_id=$1",
+      [fixture.workspace_id]
+    )
+
+    assert {:error, %{details: %{reason_code: "target_write_outcome_unknown"}}} =
+             RegistryStore.deploy_manifest(deployment)
+
+    assert runtime_effect(fixture) == "outcome_unknown"
+    refute runtime_active_deployment(fixture) == deployment.deployment_id
+  end
+
+  defp runtime_upgrade_fixture(fixture, phase) do
+    alias FavnStoragePostgres.TestSupport.TaskManifest
+    {version, work} = TaskManifest.sql_work(fixture)
+    claim = TaskManifest.ownership_claim(fixture, version, work)
+
+    command =
+      enqueue_command(fixture, "legacy-sql",
+        task_kind: :asset_attempt,
+        payload: work,
+        run_id: work.run_id,
+        required_runner_release_id: work.required_runner_release_id,
+        orchestration_context: %{kind: :sequential, materialization_claim: claim}
+      )
+      |> Map.merge(%{
+        write_target_id: work.logical_target_id,
+        write_claim_key: claim.claim_key,
+        write_claim_fence: claim.fencing_token
+      })
+
+    assert {:ok, _} = Store.enqueue(command)
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "legacy", "legacy",
+                 required_runner_release_id: work.required_runner_release_id,
+                 supported_task_kinds: [:asset_attempt],
+                 capabilities: ["asset_execution"]
+               )
+             )
+
+    assigned =
+      if phase == :preparing do
+        assert {:ok, preparing} =
+                 Store.transition(transition_command(fixture, assigned, "prepare", :preparing))
+
+        preparing
+      else
+        assigned
+      end
+
+    # Model a retained pre-upgrade row after current-code enqueue/assignment.
+    # The test exercises durable startup fencing, not historical payload decoding.
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.manifest_versions SET runner_contract_version=16, schema_version=20 WHERE manifest_version_id=$1",
+      [version.manifest_version_id]
+    )
+
+    next =
+      TaskManifest.version(
+        fixture.runner_pool,
+        work.required_runner_release_id,
+        {__MODULE__.UpgradedAsset, :asset}
+      )
+
+    assert {:ok, _} =
+             RegistryStore.register_manifest(%C.RegisterManifest{
+               platform_context: fixture.platform_context,
+               version: next
+             })
+
+    target = Favn.TargetIdentity.for_asset(hd(next.manifest.assets).ref)
+
+    deployment = %C.DeployManifest{
+      platform_context: fixture.platform_context,
+      workspace_context: fixture.workspace_context,
+      deployment_id: "runtime-upgrade-" <> fixture.workspace_id,
+      manifest_version_id: next.manifest_version_id,
+      configuration: %{"resources" => %{}},
+      targets: [
+        %C.DeploymentTarget{
+          target_kind: :asset,
+          target_id: target,
+          selection_source: :common,
+          customer_visible: true,
+          descriptor: %{"target_id" => target, "label" => target}
+        }
+      ],
+      occurred_at: fixture.now
+    }
+
+    {work, assigned, deployment}
+  end
+
+  defp runtime_effect(fixture) do
+    %{rows: [[state]]} =
+      SQL.query!(
+        Repo,
+        "SELECT effect_state FROM favn_control.materialization_claims WHERE workspace_id=$1",
+        [fixture.workspace_id]
+      )
+
+    state
+  end
+
+  defp runtime_active_deployment(fixture) do
+    %{rows: [[id]]} =
+      SQL.query!(
+        Repo,
+        "SELECT active_deployment_id FROM favn_control.workspace_runtime_state WHERE workspace_id=$1",
+        [fixture.workspace_id]
+      )
+
+    id
+  end
+
+  defp runtime_upgrade_race(fixture, target, first, second) do
+    parent = self()
+
+    winner =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          FavnStoragePostgres.RunnerTasks.WriteOwnership.lock_target!(
+            fixture.workspace_id,
+            target
+          )
+
+          result = first.()
+          send(parent, :runtime_winner_ready)
+
+          receive do
+            :commit -> result
+          end
+        end)
+      end)
+
+    assert_receive :runtime_winner_ready, 5_000
+
+    contender =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          %{rows: [[pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()", [])
+          send(parent, {:runtime_contender_pid, pid})
+          result = second.()
+          send(parent, {:runtime_contender_result, result})
+          result
+        end)
+      end)
+
+    assert_receive {:runtime_contender_pid, pid}, 5_000
+    assert_runtime_blocked(pid, 100)
+    send(winner.pid, :commit)
+    assert {:ok, first_result} = Task.await(winner, 10_000)
+    Task.await(contender, 10_000)
+    assert_receive {:runtime_contender_result, second_result}
+    {first_result, second_result}
+  end
+
+  defp assert_runtime_blocked(_pid, 0), do: flunk("runtime contender never reached target lock")
+
+  defp assert_runtime_blocked(pid, remaining) do
+    case SQL.query!(Repo, "SELECT cardinality(pg_blocking_pids($1::integer))", [pid]) do
+      %{rows: [[n]]} when n > 0 ->
+        :ok
+
+      _ ->
+        receive do
+        after
+          10 -> :ok
+        end
+
+        assert_runtime_blocked(pid, remaining - 1)
+    end
+  end
+
   defmodule LargeSQLAdapter do
     @moduledoc false
     def connect(%Favn.Connection.Resolved{}, _opts), do: {:ok, :postgres_test}
@@ -3593,7 +3832,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       |> Task.async_stream(
         fn index ->
           Store.enqueue(
-            enqueue_command(pool_fixture, "scale-#{pool_fixture.runner_pool}-#{index}")
+            # Prefill is setup for the distributed claim test. Keep its tasks
+            # alive for the test's full budget instead of expiring during setup.
+            %{
+              enqueue_command(pool_fixture, "scale-#{pool_fixture.runner_pool}-#{index}")
+              | deadline_at: DateTime.add(fixture.now, 360, :second)
+            }
           )
         end,
         max_concurrency: 16,

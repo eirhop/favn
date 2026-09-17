@@ -164,3 +164,14 @@ and read-only reconciliation; qualified adapters implement `Catalog.Backend`.
 The DuckDB plugin owns DDL, native macros, conditional selection and receipts.
 There is no control-plane persistence or runner registration in this workflow.
 See the [public guide](../../apps/favn/guides/sql-catalog-publication.md).
+
+## Transactional runtime catalog
+
+Orchestration pins `Favn.RuntimeCatalog.Publication` in runner work. The runner
+validates it against the retained asset and records the adapter-owned metadata
+inside the existing materialization transaction. The native adapter owns SQL
+schema validation, conflict guards and immutable receipts. Generation activation
+selects candidate metadata inside the existing table-swap transaction. PostgreSQL
+uses existing target locks and the durable start barrier to fence older writers;
+it does not store or schedule target freshness updates. See the
+[runtime catalog guide](../../apps/favn/guides/sql-runtime-catalog.md).
