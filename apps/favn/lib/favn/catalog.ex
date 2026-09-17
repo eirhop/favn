@@ -7,6 +7,9 @@ defmodule Favn.Catalog do
   orchestrator/runner. Targets name an explicit connection, catalog and schema.
   `connection_modules` is a name-to-module keyword/map for scoped resolution.
 
+  `rebuild/2` regenerates derived metadata from retained artifacts in the same
+  target without changing publication selections or receipts.
+
   Inputs must come from trusted builds. Publishing definitions never proves that
   compatible data is served: every receipt reports compatibility as `unknown`.
   The overall deadline defaults to five minutes and cannot exceed fifteen.
@@ -19,12 +22,30 @@ defmodule Favn.Catalog do
 
   @doc "Publishes selected artifacts, or reads a receipt when `:reconcile` is true."
   @spec publish(keyword(), keyword()) :: {:ok, map()} | {:error, map()}
-  def publish(opts, config) when is_list(opts) and is_list(config) do
+  def publish(opts, config) when is_list(opts) and is_list(config),
+    do: run(opts, config, if(opts[:reconcile], do: :reconcile, else: :publish))
+
+  @doc """
+  Rebuilds derived catalog tables from all retained artifacts in one target.
+
+  Accepts `:target` and optional `:timeout_ms` (300000 by default, at most 900000),
+  using the same dedicated configuration as `publish/2`. Preserves releases,
+  selections, receipts and macros. Stop publishers during maintenance. An uncertain
+  commit returns `rebuild_outcome_unknown`; no write is automatically retried.
+  """
+  @spec rebuild(keyword(), keyword()) :: {:ok, map()} | {:error, map()}
+  def rebuild(opts, config) when is_list(opts) and is_list(config) do
+    if Keyword.keys(opts) -- [:target, :config, :timeout_ms] == [],
+      do: run(opts, config, :rebuild),
+      else: failure(:invalid_rebuild_request)
+  end
+
+  defp run(opts, config, mode) do
     timeout = Keyword.get(opts, :timeout_ms, 300_000)
 
     if is_integer(timeout) and timeout in 1..900_000 do
       case Runtime.start() do
-        {:ok, runtime} -> publish_with_runtime(opts, config, timeout, runtime)
+        {:ok, runtime} -> publish_with_runtime(opts, config, timeout, runtime, mode)
         {:error, _} -> failure(:catalog_runtime_busy)
       end
     else
@@ -32,7 +53,7 @@ defmodule Favn.Catalog do
     end
   end
 
-  defp publish_with_runtime(opts, config, timeout, runtime) do
+  defp publish_with_runtime(opts, config, timeout, runtime, mode) do
     deadline = Deadline.new(timeout)
     {:ok, supervisor} = Task.Supervisor.start_link()
     owner = self()
@@ -40,7 +61,7 @@ defmodule Favn.Catalog do
 
     task =
       Task.Supervisor.async_nolink(supervisor, fn ->
-        prepare(opts, config, deadline, runtime, {owner, ref})
+        prepare(opts, config, deadline, runtime, {owner, ref}, mode)
       end)
 
     try do
@@ -54,7 +75,11 @@ defmodule Favn.Catalog do
               {:error,
                %{
                  "outcome" => "error",
-                 "reason" => "publication_outcome_unknown",
+                 "reason" =>
+                   if(mode == :rebuild,
+                     do: "rebuild_outcome_unknown",
+                     else: "publication_outcome_unknown"
+                   ),
                  "operation_id" => request.operation_id,
                  "target" => request.target,
                  "compatibility" => "unknown"
@@ -75,11 +100,9 @@ defmodule Favn.Catalog do
     end
   end
 
-  defp prepare(opts, config, deadline, runtime_owner, {owner, ref}) do
+  defp prepare(opts, config, deadline, runtime_owner, {owner, ref}, mode) do
     with {:ok, target, settings} <- target(config[:catalog_targets], opts[:target]),
-         {:ok, artifacts} <- artifacts(opts),
-         {:ok, expectations} <- expectations(opts),
-         {:ok, request} <- Request.new(target, settings, artifacts, expectations),
+         {:ok, request} <- request(mode, target, settings, opts),
          _ <- send(owner, {ref, request}),
          {:ok, module} <- entry(config[:connection_modules], request.connection),
          {:ok, runtime} <- entry(config[:connections], request.connection),
@@ -103,7 +126,7 @@ defmodule Favn.Catalog do
             request,
             registry,
             deadline,
-            if(opts[:reconcile], do: :reconcile, else: :publish),
+            mode,
             Keyword.take(config, [:duckdb_adbc])
           )
         after
@@ -118,6 +141,14 @@ defmodule Favn.Catalog do
     end
   rescue
     _ -> failure(:invalid_catalog_configuration)
+  end
+
+  defp request(:rebuild, target, settings, _opts), do: Request.rebuild(target, settings)
+
+  defp request(_, target, settings, opts) do
+    with {:ok, artifacts} <- artifacts(opts),
+         {:ok, expectations} <- expectations(opts),
+         do: Request.new(target, settings, artifacts, expectations)
   end
 
   defp target(entries, name) when is_binary(name) do

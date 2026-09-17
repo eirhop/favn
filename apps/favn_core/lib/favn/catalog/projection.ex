@@ -4,7 +4,13 @@ defmodule Favn.Catalog.Projection do
 
   Every table starts with `context` and `version`. Semantic source rows come from
   that artifact's embedded snapshot, never the currently selected manifest.
-  JSON detail preserves declared policy, dimensions, time rules and contracts.
+  Scalar discovery metadata is typed; repeated keys, grouping requirements,
+  hierarchy levels and relationships have child rows with one-based ordinals.
+  Missing declarations produce NULL scalars or no child rows. JSON detail remains
+  the complete representation. See the public SQL catalog reference for joins.
+
+  This is a breaking pre-v1 SQL layout. Existing metadata needs an explicit
+  rebuild in the configured schema; artifact versions and macros are unchanged.
   """
   alias Favn.Catalog.Artifact
   alias Favn.Manifest.Serializer
@@ -47,7 +53,17 @@ defmodule Favn.Catalog.Projection do
       tables =
         Map.merge(common(artifact.snapshot), %{
           "model" =>
-            Enum.map(models, &[&1["name"], &1["source_asset"], json(Map.delete(&1, "metrics"))]),
+            Enum.map(
+              models,
+              &[
+                &1["name"],
+                &1["source_asset"],
+                json(Map.delete(&1, "metrics")),
+                get_in(&1, ["time", "column"]),
+                get_in(&1, ["time", "grain"]),
+                get_in(&1, ["time", "timezone"])
+              ]
+            ),
           "metric" =>
             Enum.map(metrics, fn {model, metric} ->
               [
@@ -57,9 +73,45 @@ defmodule Favn.Catalog.Projection do
                 nil,
                 Favn.Semantic.Catalog.namespace(artifact),
                 metric["canonical_sql"],
-                json(metric)
+                json(metric),
+                metric["description"],
+                metric["unit"]["kind"],
+                metric["unit"]["value"],
+                get_in(metric, ["format", "style"]),
+                get_in(metric, ["format", "decimals"]),
+                metric["time_aggregate"]
               ]
             end),
+          "metric_minimum_grain" => ordered_metrics(metrics, "minimum_grain"),
+          "metric_entity_key" => ordered_metrics(metrics, "entity_key"),
+          "metric_dependency" =>
+            for(
+              {_model, metric} <- metrics,
+              ref <- metric["metric_dependencies"],
+              do: [metric["ref"], ref]
+            ),
+          "dimension" =>
+            for(
+              model <- models,
+              dimension = model["dimension"],
+              dimension,
+              do: [model["name"], dimension["name"], dimension["label"]]
+            ),
+          "dimension_key" =>
+            for(
+              model <- models,
+              dimension = model["dimension"],
+              dimension,
+              {column, ordinal} <- Enum.with_index(dimension["key"], 1),
+              do: [model["name"], ordinal, column]
+            ),
+          "hierarchy_level" =>
+            for(
+              model <- models,
+              hierarchy <- model["hierarchies"],
+              {column, ordinal} <- Enum.with_index(hierarchy["columns"], 1),
+              do: [model["name"], hierarchy["name"], ordinal, column]
+            ),
           "metric_input" =>
             for(
               {_model, metric} <- metrics,
@@ -103,7 +155,14 @@ defmodule Favn.Catalog.Projection do
       "edge" => [{"asset_ref", "VARCHAR"}, {"dependency_ref", "VARCHAR"}],
       "pipeline" => [{"ref", "VARCHAR"}, {"detail", "VARCHAR"}],
       "schedule" => [{"ref", "VARCHAR"}, {"detail", "VARCHAR"}],
-      "model" => [{"name", "VARCHAR"}, {"source_asset", "VARCHAR"}, {"detail", "VARCHAR"}],
+      "model" => [
+        {"name", "VARCHAR"},
+        {"source_asset", "VARCHAR"},
+        {"detail", "VARCHAR"},
+        {"time_column", "VARCHAR"},
+        {"time_grain", "VARCHAR"},
+        {"time_timezone", "VARCHAR"}
+      ],
       "metric" => [
         {"ref", "VARCHAR"},
         {"model", "VARCHAR"},
@@ -111,7 +170,46 @@ defmodule Favn.Catalog.Projection do
         {"macro_catalog", "VARCHAR"},
         {"macro_schema", "VARCHAR"},
         {"canonical_sql", "VARCHAR"},
-        {"detail", "VARCHAR"}
+        {"detail", "VARCHAR"},
+        {"description", "VARCHAR"},
+        {"unit_kind", "VARCHAR"},
+        {"unit_value", "VARCHAR"},
+        {"format_style", "VARCHAR"},
+        {"format_decimals", "BIGINT"},
+        {"time_aggregate", "VARCHAR"}
+      ],
+      "metric_minimum_grain" => [
+        {"metric_ref", "VARCHAR"},
+        {"ordinal", "BIGINT"},
+        {"relationship_name", "VARCHAR"}
+      ],
+      "metric_entity_key" => [
+        {"metric_ref", "VARCHAR"},
+        {"ordinal", "BIGINT"},
+        {"column", "VARCHAR"}
+      ],
+      "metric_dependency" => [{"metric_ref", "VARCHAR"}, {"dependency_ref", "VARCHAR"}],
+      "dimension" => [{"model", "VARCHAR"}, {"name", "VARCHAR"}, {"label_column", "VARCHAR"}],
+      "dimension_key" => [{"model", "VARCHAR"}, {"ordinal", "BIGINT"}, {"column", "VARCHAR"}],
+      "hierarchy_level" => [
+        {"model", "VARCHAR"},
+        {"hierarchy", "VARCHAR"},
+        {"ordinal", "BIGINT"},
+        {"column", "VARCHAR"}
+      ],
+      "relationship" => [
+        {"asset_ref", "VARCHAR"},
+        {"name", "VARCHAR"},
+        {"target_asset_ref", "VARCHAR"},
+        {"cardinality", "VARCHAR"},
+        {"on_violation", "VARCHAR"}
+      ],
+      "relationship_key" => [
+        {"asset_ref", "VARCHAR"},
+        {"relationship_name", "VARCHAR"},
+        {"ordinal", "BIGINT"},
+        {"source_column", "VARCHAR"},
+        {"target_column", "VARCHAR"}
       ],
       "metric_input" => [
         {"metric_ref", "VARCHAR"},
@@ -127,7 +225,18 @@ defmodule Favn.Catalog.Projection do
     end)
   end
 
+  defp ordered_metrics(metrics, field) do
+    for {_model, metric} <- metrics,
+        {value, ordinal} <- Enum.with_index(metric[field], 1),
+        do: [metric["ref"], ordinal, value]
+  end
+
   defp common(assets) do
+    relationships =
+      for asset <- assets,
+          relationship <- get_in(asset, ["contract", "relationships"]) || [],
+          do: {asset, relationship}
+
     %{
       "asset" =>
         Enum.map(
@@ -159,6 +268,23 @@ defmodule Favn.Catalog.Projection do
             column["description"],
             json(column)
           ]
+        ),
+      "relationship" =>
+        for(
+          {asset, relationship} <- relationships,
+          do: [
+            asset["ref"],
+            relationship["name"],
+            relationship["target"],
+            relationship["cardinality"],
+            relationship["on_violation"]
+          ]
+        ),
+      "relationship_key" =>
+        for(
+          {asset, relationship} <- relationships,
+          {pair, ordinal} <- Enum.with_index(relationship["on"], 1),
+          do: [asset["ref"], relationship["name"], ordinal, pair["source"], pair["target"]]
         ),
       "edge" => for(asset <- assets, ref <- asset["dependencies"], do: [asset["ref"], ref])
     }

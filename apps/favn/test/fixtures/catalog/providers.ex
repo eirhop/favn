@@ -49,6 +49,11 @@ defmodule CatalogTest.Backend do
          "compatibility" => "unknown"
        }}
 
+  def rebuild(%{conn: "slow"}, request, deadline), do: publish(%{conn: "slow"}, request, deadline)
+
+  def rebuild(_, request, _),
+    do: {:ok, %{"outcome" => "rebuilt", "operation_id" => request.operation_id}}
+
   def reconcile(_, request, _),
     do:
       {:ok,

@@ -19,6 +19,17 @@ defmodule Favn.CatalogPublishTest do
              )
   end
 
+  test "rebuild validates its own options without artifact inputs" do
+    assert {:error, %{"reason" => "invalid_rebuild_request"}} =
+             Favn.Catalog.rebuild([manifest: "file"], [])
+
+    assert {:error, %{"reason" => "invalid_timeout"}} =
+             Favn.Catalog.rebuild([timeout_ms: 900_001], [])
+
+    assert {:error, %{"reason" => "unknown_catalog_target"}} =
+             Favn.Catalog.rebuild([target: "missing"], [])
+  end
+
   test "overall deadline preserves operation identity for recovery" do
     Code.require_file("fixtures/catalog/providers.ex", __DIR__)
     root = Path.join(System.tmp_dir!(), "catalog-timeout-#{System.unique_integer([:positive])}")
@@ -42,6 +53,9 @@ defmodule Favn.CatalogPublishTest do
     assert System.monotonic_time(:millisecond) - started < 2500
     assert result["operation_id"] =~ "cp_"
     assert result["reason"] == "publication_outcome_unknown"
+    assert {:error, result} = Favn.Catalog.rebuild([target: "analytics", timeout_ms: 500], config)
+    assert result["operation_id"] =~ "cr_"
+    assert result["reason"] == "rebuild_outcome_unknown"
   end
 
   @tag :acceptance
@@ -73,10 +87,8 @@ defmodule Favn.CatalogPublishTest do
     ebin = Path.join(root, "ebin")
     File.mkdir_p!(ebin)
 
-    paths =
-      :code.get_path()
-      |> Enum.map(&to_string/1)
-      |> Enum.filter(&String.contains?(&1, "/_build/test/lib/"))
+    build = :code.lib_dir(:favn_core) |> to_string() |> Path.dirname()
+    paths = Path.wildcard(Path.join(build, "*/ebin"))
 
     erl = Enum.map_join([ebin | paths], " ", &("-pa " <> &1))
 
@@ -117,6 +129,19 @@ defmodule Favn.CatalogPublishTest do
 
     assert code == 0, output
     assert output =~ ~s("outcome":"replayed")
+
+    {output, code} =
+      System.cmd(
+        System.find_executable("mix"),
+        ["favn.catalog.rebuild", "--target", "analytics"],
+        cd: root,
+        env: [{"ELIXIR_ERL_OPTIONS", erl}, {"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert code == 0, output
+    assert output =~ ~s("outcome":"rebuilt")
+    refute File.exists?(Path.join(root, "_build"))
 
     # A fresh VM must stop only applications this timed-out invocation started.
     script = Path.join(root, "timeout.exs")

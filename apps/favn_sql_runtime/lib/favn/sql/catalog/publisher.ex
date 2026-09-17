@@ -9,8 +9,8 @@ defmodule Favn.SQL.Catalog.Publisher do
   alias Favn.SQL.{Client, Deadline, Error}
   alias Favn.SQL.Catalog.Request
 
-  @doc "Publishes or reconciles one validated request within the supplied overall deadline."
-  @spec run(Request.t(), pid(), Deadline.t(), :publish | :reconcile, keyword()) ::
+  @doc "Publishes, reconciles or rebuilds one validated request within the supplied overall deadline."
+  @spec run(Request.t(), pid(), Deadline.t(), :publish | :reconcile | :rebuild, keyword()) ::
           {:ok, map()} | {:error, map()}
   def run(
         %Request{} = request,
@@ -21,7 +21,9 @@ defmodule Favn.SQL.Catalog.Publisher do
       ) do
     result =
       session(request, registry, deadline, connect_options, fn session, backend ->
-        apply(backend, mode, [session, request, deadline])
+        if function_exported?(backend, mode, 3),
+          do: apply(backend, mode, [session, request, deadline]),
+          else: {:error, :unsupported_catalog_publication}
       end)
 
     case result do
@@ -40,21 +42,32 @@ defmodule Favn.SQL.Catalog.Publisher do
         failure_result(request, :catalog_conflict, observed)
 
       {:error, reason} ->
-        if mode == :publish and uncertain?(reason) do
-          case session(request, registry, deadline, connect_options, fn session, backend ->
-                 backend.reconcile(session, request, deadline)
-               end) do
-            {:ok, receipt} -> {:ok, Map.put(receipt, "target", request.target)}
-            _ -> failure(request, :publication_outcome_unknown)
-          end
+        if mode == :rebuild and uncertain?(reason) do
+          failure(request, :rebuild_outcome_unknown)
         else
-          failure(request, code(reason), reason)
+          reconcile_failure(mode, reason, request, registry, deadline, connect_options)
         end
     end
   rescue
-    _ -> failure(request, :publication_outcome_unknown)
+    _ -> failure(request, unknown(mode))
   catch
-    :exit, _ -> failure(request, :publication_outcome_unknown)
+    :exit, _ -> failure(request, unknown(mode))
+  end
+
+  defp unknown(:rebuild), do: :rebuild_outcome_unknown
+  defp unknown(_), do: :publication_outcome_unknown
+
+  defp reconcile_failure(mode, reason, request, registry, deadline, connect_options) do
+    if mode == :publish and uncertain?(reason) do
+      case session(request, registry, deadline, connect_options, fn session, backend ->
+             backend.reconcile(session, request, deadline)
+           end) do
+        {:ok, receipt} -> {:ok, Map.put(receipt, "target", request.target)}
+        _ -> failure(request, :publication_outcome_unknown)
+      end
+    else
+      failure(request, code(reason), reason)
+    end
   end
 
   defp session(request, registry, deadline, connect_options, fun) do
@@ -98,7 +111,7 @@ defmodule Favn.SQL.Catalog.Publisher do
   defp uncertain?(_), do: false
 
   defp code(%Error{type: type})
-       when type in [:catalog_conflict, :catalog_integrity_failure, :catalog_schema_conflict],
+       when type in [:catalog_conflict, :catalog_integrity_failure, :catalog_schema_conflict, :catalog_rebuild_limit_exceeded],
        do: type
 
   defp code(reason) when is_atom(reason), do: reason

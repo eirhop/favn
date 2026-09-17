@@ -18,7 +18,6 @@ defmodule FavnDuckdbADBC.CatalogPublicationTest do
           open: 2,
           connection: 1,
           query: 3,
-          execute: 3,
           fetch_all: 4,
           columns: 1,
           bulk_insert: 3,
@@ -30,6 +29,24 @@ defmodule FavnDuckdbADBC.CatalogPublicationTest do
 
       def unquote(name)(unquote_splicing(args)),
         do: apply(Native, unquote(name), [unquote_splicing(args)])
+    end
+
+    def execute(conn, sql, params) do
+      result = Native.execute(conn, sql, params)
+
+      if String.contains?(sql, "SET revision = revision") do
+        if parent = :persistent_term.get({__MODULE__, :rebuild_parent}, nil) do
+          send(parent, {:rebuild_locked, self()})
+
+          receive do
+            :continue -> :ok
+          after
+            5000 -> raise "rebuild barrier expired"
+          end
+        end
+      end
+
+      result
     end
 
     def begin_transaction(conn) do
@@ -91,8 +108,9 @@ defmodule FavnDuckdbADBC.CatalogPublicationTest do
     def execute(conn, sql, params) do
       mode = Agent.get(__MODULE__, & &1)
 
-      if mode == :fail_receipt and String.starts_with?(sql, "INSERT INTO") and
-           String.contains?(sql, "\"receipt\"") do
+      if String.starts_with?(sql, "INSERT INTO") and
+           ((mode == :fail_receipt and String.contains?(sql, "\"receipt\"")) or
+              (mode == :fail_projection and String.contains?(sql, "\"metric_dependency\""))) do
         {:error, :injected_receipt_failure}
       else
         Native.execute(conn, sql, params)
@@ -194,6 +212,18 @@ end")
 
     assert code == 0, text
     assert text =~ ~s("outcome":"replayed")
+
+    {text, code} =
+      System.cmd(
+        System.find_executable("mix"),
+        ["favn.catalog.rebuild", "--target", "analytics"],
+        cd: root,
+        env: [{"ELIXIR_ERL_OPTIONS", erl}, {"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
+
+    assert code == 0, text
+    assert text =~ ~s("outcome":"rebuilt")
   end
 
   test "publisher reconciles lost commit acknowledgement and explicit replay on fresh sessions" do
@@ -237,6 +267,41 @@ end")
     end)
   end
 
+  test "rebuild unknown commits are not retried or reconciled as publications" do
+    with_publisher(fn registry, opts, _root ->
+      assert {:ok, _} =
+               Favn.SQL.Catalog.Publisher.run(
+                 request([Fixture.rich_semantic()]),
+                 registry,
+                 deadline(),
+                 :publish,
+                 opts
+               )
+
+      Agent.update(FaultClient, fn _ -> :lost_ack end)
+
+      assert {:error, %{"reason" => "rebuild_outcome_unknown"}} =
+               Favn.SQL.Catalog.Publisher.run(
+                 rebuild_request(),
+                 registry,
+                 deadline(),
+                 :rebuild,
+                 opts
+               )
+
+      Agent.update(FaultClient, fn _ -> :normal end)
+
+      assert {:ok, %{"outcome" => "rebuilt"}} =
+               Favn.SQL.Catalog.Publisher.run(
+                 rebuild_request(),
+                 registry,
+                 deadline(),
+                 :rebuild,
+                 opts
+               )
+    end)
+  end
+
   defp with_publisher(fun) do
     root = Path.join(System.tmp_dir!(), "catalog-publisher-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -277,6 +342,277 @@ end")
 
   for backend <- [:duckdb, :ducklake] do
     @backend backend
+    test "#{backend}: typed metadata and documented queries use the semantic snapshot" do
+      with_session(@backend, fn session ->
+        semantic = Fixture.rich_semantic()
+        initial = request([Fixture.manifest(), semantic])
+        assert {:ok, receipt} = Catalog.publish(session, initial, deadline())
+        {:ok, projection} = Favn.Catalog.Projection.build(semantic)
+
+        for {table, rows} <- projection.tables do
+          columns = Enum.map(Favn.Catalog.Projection.columns()[table], &elem(&1, 0))
+
+          expected =
+            Enum.map(rows, fn row ->
+              row = if table == "metric", do: List.replace_at(row, 5, "mart"), else: row
+              Map.new(Enum.zip(columns, row))
+            end)
+
+          actual =
+            query_rows(session, ~s(SELECT * FROM mart.meta."#{table}" WHERE context='semantic'))
+
+          assert Enum.sort(actual) == Enum.sort(expected), table
+        end
+
+        guide = Path.expand("../../favn/guides/sql-catalog-reference.md", __DIR__)
+
+        examples =
+          Regex.scan(
+            ~r/```sql
+-- catalog-example: (\w+)
+(.*?)```/s,
+            File.read!(guide)
+          )
+
+        assert length(examples) == 4
+        results = Map.new(examples, fn [_, name, sql] -> {name, query_rows(session, sql)} end)
+        assert [%{"ref" => "sales.revenue", "unit_value" => "NOK"}] = results["descriptions"]
+        assert length(results["grouping"]) == 4
+
+        assert Enum.map(results["grouping"], & &1["source_column"]) == [
+                 "tenant_id",
+                 "store_id",
+                 "tenant_id",
+                 "store_id"
+               ]
+
+        assert [%{"metric_ref" => "sales.doubled", "dependency_ref" => "sales.revenue"}] =
+                 results["dependencies"]
+
+        assert Enum.map(results["hierarchies"], & &1["column"]) == [
+                 "country",
+                 "tenant_id",
+                 "store_id"
+               ]
+
+        changed = Fixture.rich_semantic("New revenue")
+
+        assert {:ok, updated} =
+                 Catalog.publish(
+                   session,
+                   request([changed], %{"semantic" => receipt["selections"]["semantic"]}),
+                   deadline()
+                 )
+
+        assert {:ok, _} = Catalog.publish(session, initial, deadline())
+        assert selected(session) == updated["selections"]["semantic"]
+
+        assert [%{"count" => 2}] =
+                 query_rows(session, "SELECT COUNT(*) AS count FROM mart.meta.metric_dependency")
+      end)
+    end
+
+    test "#{backend}: rebuild preserves retained artifacts, selections, receipts and unrelated data" do
+      with_session(@backend, fn session ->
+        initial = request([Fixture.manifest(), Fixture.rich_semantic()])
+        assert {:ok, receipt} = Catalog.publish(session, initial, deadline())
+
+        assert {:ok, _} =
+                 Catalog.publish(
+                   session,
+                   request([Fixture.rich_semantic("Changed")], %{
+                     "semantic" => receipt["selections"]["semantic"]
+                   }),
+                   deadline()
+                 )
+
+        before = bookkeeping_rows(session)
+
+        assert {:ok, _} =
+                 ADBC.execute(
+                   session.conn,
+                   "CREATE TABLE mart.meta.unrelated AS SELECT 42 AS value",
+                   []
+                 )
+
+        assert {:ok, _} = ADBC.execute(session.conn, "DROP TABLE mart.meta.metric_dependency", [])
+
+        assert {:ok, _} =
+                 ADBC.execute(
+                   session.conn,
+                   "ALTER TABLE mart.meta.metric DROP COLUMN description",
+                   []
+                 )
+
+        assert {:error, %{type: :catalog_schema_conflict}} =
+                 Catalog.publish(session, initial, deadline())
+
+        assert {:error, %{type: :catalog_schema_conflict}} =
+                 Catalog.reconcile(session, initial, deadline())
+
+        assert {:ok, %{"outcome" => "rebuilt", "releases" => 3}} =
+                 Catalog.rebuild(session, rebuild_request(), deadline())
+
+        assert bookkeeping_rows(session) == before
+        namespace = Semantics.namespace(initial.semantic)
+
+        metric =
+          Enum.find(hd(initial.semantic.models)["metrics"], &(&1["ref"] == "sales.revenue"))
+
+        assert [%{"value" => 210.0}] =
+                 query_rows(
+                   session,
+                   ~s|SELECT mart."#{namespace}"."#{metric["macro_name"]}"(net)::DOUBLE AS value FROM (VALUES (90), (120)) t(net)|
+                 )
+
+        assert [%{"value" => 42}] = query_rows(session, "SELECT * FROM mart.meta.unrelated")
+
+        assert [%{"count" => 2}] =
+                 query_rows(session, "SELECT COUNT(*) AS count FROM mart.meta.metric_dependency")
+
+        assert {:ok, %{"outcome" => "replayed"}} = Catalog.publish(session, initial, deadline())
+        assert bookkeeping_rows(session) == before
+        assert {:ok, _} = Catalog.rebuild(session, rebuild_request(), deadline())
+        assert bookkeeping_rows(session) == before
+      end)
+    end
+
+    test "#{backend}: rebuild rejects corrupt sources and rolls back after replacing tables" do
+      with_session(@backend, fn session ->
+        initial = request([Fixture.rich_semantic()])
+        assert {:ok, _} = Catalog.publish(session, initial, deadline())
+        before = bookkeeping_rows(session)
+        original = query_rows(session, "SELECT * FROM mart.meta.metric ORDER BY ref")
+        {:ok, agent} = Agent.start_link(fn -> :fail_projection end, name: FaultClient)
+        faulty = %{session | conn: %{session.conn | client: FaultClient}}
+
+        try do
+          assert {:error, _} = Catalog.rebuild(faulty, rebuild_request(), deadline())
+          assert query_rows(session, "SELECT * FROM mart.meta.metric ORDER BY ref") == original
+          assert bookkeeping_rows(session) == before
+        after
+          Agent.stop(agent)
+        end
+
+        for mutation <- [
+              "UPDATE mart.meta.release SET identity='wrong'",
+              "UPDATE mart.meta.release SET document='{}'",
+              "UPDATE mart.meta.selection SET revision=-1 WHERE context='semantic'",
+              "UPDATE mart.meta.selection SET version='missing' WHERE context='semantic'",
+              "INSERT INTO mart.meta.release SELECT * FROM mart.meta.release",
+              "UPDATE mart.meta.catalog_schema SET version=99"
+            ] do
+          assert {:ok, _} = ADBC.execute(session.conn, "BEGIN", [])
+          assert {:ok, _} = ADBC.execute(session.conn, mutation, [])
+          # Commit the malformed fixture, then restore it after rejection.
+          assert {:ok, _} = ADBC.execute(session.conn, "COMMIT", [])
+          assert {:error, _} = Catalog.rebuild(session, rebuild_request(), deadline())
+
+          if String.contains?(mutation, "catalog_schema") do
+            assert {:error, %{type: :catalog_schema_conflict}} =
+                     Catalog.publish(session, initial, deadline())
+
+            assert {:error, %{type: :catalog_schema_conflict}} =
+                     Catalog.reconcile(session, initial, deadline())
+          end
+
+          assert query_rows(session, "SELECT * FROM mart.meta.metric ORDER BY ref") == original
+
+          for {table, rows} <- before do
+            assert {:ok, _} = ADBC.execute(session.conn, ~s(DELETE FROM mart.meta."#{table}"), [])
+
+            for row <- rows do
+              columns = Map.keys(row) |> Enum.sort()
+              names = Enum.map_join(columns, ",", &~s("#{&1}"))
+              params = Enum.map(columns, &row[&1])
+              placeholders = Enum.map_join(columns, ",", fn _ -> "?" end)
+
+              assert {:ok, _} =
+                       ADBC.execute(
+                         session.conn,
+                         ~s|INSERT INTO mart.meta."#{table}" (#{names}) VALUES (#{placeholders})|,
+                         params: params
+                       )
+            end
+          end
+        end
+      end)
+    end
+
+    test "#{backend}: rebuild bounds retained inputs before replacing projections" do
+      with_session(@backend, fn session ->
+        assert {:ok, _} = Catalog.publish(session, request([Fixture.semantic()]), deadline())
+        original = query_rows(session, "SELECT * FROM mart.meta.metric")
+
+        assert {:ok, _} =
+                 ADBC.execute(
+                   session.conn,
+                   "INSERT INTO mart.meta.release SELECT 'semantic', 'unused-' || i, 'invalid', '{}' FROM range(10001) t(i)",
+                   []
+                 )
+
+        assert {:error, %{type: :catalog_rebuild_limit_exceeded}} =
+                 Catalog.rebuild(session, rebuild_request(), deadline())
+
+        assert query_rows(session, "SELECT * FROM mart.meta.metric") == original
+      end)
+    end
+
+    test "#{backend}: rebuild conflicts with overlapping publication without advancing revisions" do
+      with_session(@backend, fn session ->
+        assert {:ok, receipt} =
+                 Catalog.publish(session, request([Fixture.rich_semantic()]), deadline())
+
+        resolved = %{
+          session.resolved
+          | adapter: SharedAdapter,
+            config: %{shared_conn: session.conn}
+        }
+
+        {:ok, registry} =
+          Favn.Connection.Registry.start_link(name: nil, connections: %{warehouse: resolved})
+
+        :persistent_term.put({BarrierClient, :rebuild_parent}, self())
+
+        try do
+          task =
+            Task.async(fn ->
+              Favn.SQL.Catalog.Publisher.run(rebuild_request(), registry, deadline(), :rebuild)
+            end)
+
+          assert_receive {:rebuild_locked, worker}, 5000
+
+          update =
+            request([Fixture.rich_semantic("Overlapping")], %{
+              "semantic" => receipt["selections"]["semantic"]
+            })
+
+          published = Catalog.publish(session, update, deadline())
+          send(worker, :continue)
+          rebuilt = Task.await(task, 30_000)
+
+          case published do
+            {:ok, changed} ->
+              assert {:error, %{"reason" => "catalog_conflict"}} = rebuilt
+              assert selected(session) == changed["selections"]["semantic"]
+
+              assert [%{"count" => 2}] =
+                       query_rows(
+                         session,
+                         "SELECT COUNT(*) AS count FROM mart.meta.metric_dependency"
+                       )
+
+            {:error, %{type: :catalog_conflict}} ->
+              assert {:ok, %{"outcome" => "rebuilt"}} = rebuilt
+              assert selected(session) == receipt["selections"]["semantic"]
+          end
+        after
+          :persistent_term.erase({BarrierClient, :rebuild_parent})
+          GenServer.stop(registry)
+        end
+      end)
+    end
+
     test "#{backend}: independently publishes, retains, replays and rolls back definitions" do
       with_session(@backend, fn session ->
         manifest = Fixture.manifest()
@@ -498,6 +834,25 @@ end")
         assert result.rows == [%{"value" => 42.0}]
       end)
     end
+  end
+
+  defp query_rows(session, sql) do
+    assert {:ok, result} = ADBC.query(session.conn, sql, [])
+    result.rows
+  end
+
+  defp bookkeeping_rows(session),
+    do:
+      Map.new(
+        ~w(release selection receipt catalog_schema),
+        &{&1, query_rows(session, ~s(SELECT * FROM mart.meta."#{&1}" ORDER BY ALL))}
+      )
+
+  defp rebuild_request do
+    {:ok, request} =
+      Request.rebuild("analytics", connection: :warehouse, catalog: "mart", schema: "meta")
+
+    request
   end
 
   defp selected(session) do
