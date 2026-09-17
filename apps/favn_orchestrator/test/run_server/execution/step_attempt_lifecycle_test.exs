@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
 
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
+  alias Favn.Contracts.RunnerTask.PersistenceData
   alias Favn.Manifest
   alias Favn.Manifest.Asset
   alias Favn.Manifest.Graph
@@ -156,15 +157,47 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
   end
 
   test "runner work preserves the logical run start across attempts" do
+    control_plane_keys = [
+      :runner_metadata,
+      :pipeline_context,
+      :execution_pool_policy,
+      :connection_circuit_policy,
+      :active_runner_task_ids,
+      :cancel_outcomes,
+      :cancellation_needs_attention,
+      :cancel_requested,
+      :cancel_reason,
+      :cancel_requested_at,
+      :cancelled,
+      :retrying,
+      :next_attempt,
+      :retry_state,
+      :next_retry_at,
+      :pipeline_active_stage_outcome,
+      :stage_draining_after_failure,
+      :terminal_event_type
+    ]
+
+    control_plane_metadata =
+      control_plane_keys
+      |> Enum.reduce(%{}, fn key, acc ->
+        acc |> Map.put(key, "internal") |> Map.put(Atom.to_string(key), "internal")
+      end)
+      |> Map.put(:pipeline_context, %{})
+
     run =
       run_state(max_attempts: 2)
       |> Map.update!(:metadata, fn metadata ->
-        Map.merge(metadata, %{
-          "execution_pool_policy" => %{"untrusted" => %{"max_concurrency" => 99}},
-          "connection_circuit_policy" => %{"untrusted" => %{"failure_threshold" => 99}},
-          execution_pool_policy: %{"api" => %{"max_concurrency" => 3}},
-          connection_circuit_policy: %{"warehouse" => %{"failure_threshold" => 5}},
-          request_id: "request-1"
+        metadata
+        |> Map.merge(control_plane_metadata)
+        |> Map.merge(%{
+          "request_id" => "request-1",
+          backfill_id: "backfill-1",
+          backfill_window_id: "window-1",
+          backfill_window_key: "2026-09-16",
+          backfill_execution_group_id: "group-1",
+          backfill_root_run_id: "root-1",
+          operator_metadata: %{"requested_by" => "operator-1"}
         })
       end)
 
@@ -181,11 +214,23 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     assert {:ok, %{work: work}} = StepAttemptLifecycle.build_work(lifecycle, index)
     assert work.run_started_at == run.inserted_at
     assert work.required_runner_release_id == run.runner_releases["default"]
-    assert work.metadata.request_id == "request-1"
-    refute Map.has_key?(work.metadata, :execution_pool_policy)
-    refute Map.has_key?(work.metadata, "execution_pool_policy")
-    refute Map.has_key?(work.metadata, :connection_circuit_policy)
-    refute Map.has_key?(work.metadata, "connection_circuit_policy")
+    assert work.metadata["request_id"] == "request-1"
+
+    Enum.each(control_plane_keys, fn key ->
+      refute Map.has_key?(work.metadata, key)
+      refute Map.has_key?(work.metadata, Atom.to_string(key))
+    end)
+
+    assert work.metadata.backfill_id == "backfill-1"
+    assert work.metadata.backfill_window_id == "window-1"
+    assert work.metadata.backfill_window_key == "2026-09-16"
+    assert work.metadata.backfill_execution_group_id == "group-1"
+    assert work.metadata.backfill_root_run_id == "root-1"
+    assert work.metadata.operator_metadata == %{"requested_by" => "operator-1"}
+
+    assert {:ok, encoded} = PersistenceData.encode(work.metadata, 1_048_576)
+    assert {:ok, decoded_metadata} = PersistenceData.decode(encoded, 1_048_576, version)
+    assert decoded_metadata == work.metadata
   end
 
   test "runner work returns an explicit error when the compact index lacks the planned asset" do

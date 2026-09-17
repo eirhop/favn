@@ -77,7 +77,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           freshness_context: map() | nil,
           freshness_checkpoint: map() | nil,
           terminal_failure: map() | nil,
-          pipeline_continuation: map() | nil
+          pipeline_continuation: map() | nil,
+          paused_admission: map() | nil
         }
 
   defstruct run: nil,
@@ -107,7 +108,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             freshness_context: nil,
             freshness_checkpoint: nil,
             terminal_failure: nil,
-            pipeline_continuation: nil
+            pipeline_continuation: nil,
+            paused_admission: nil
 
   @doc "Creates base execution state for a run."
   @spec new(RunState.t(), Version.t(), keyword()) :: t()
