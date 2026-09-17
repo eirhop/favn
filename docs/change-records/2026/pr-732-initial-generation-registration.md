@@ -2,9 +2,10 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Primary issue | None; maintainer requested the repair without a new issue |
-| Pull request | Pending |
+| Pull request | [#732](https://github.com/eirhop/favn/pull/732) |
+| Approved extraction plan | 474d9e6c |
 | Related work | [#731](https://github.com/eirhop/favn/pull/731), [#726](https://github.com/eirhop/favn/pull/726) |
 | Inspected baseline | Main at 5d27a519 |
 | Last updated | 2026-09-17 |
