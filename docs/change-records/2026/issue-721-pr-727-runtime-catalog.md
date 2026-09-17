@@ -8,10 +8,10 @@ Documentation type: implementation plan and review evidence.
 | Status | Plan reviewed |
 | Type | Feature |
 | Primary issue | [#721](https://github.com/eirhop/favn/issues/721) |
-| Pull request | Pending |
+| Pull request | [#727](https://github.com/eirhop/favn/pull/727) |
 | Related work | [#723](https://github.com/eirhop/favn/pull/723), [#724](https://github.com/eirhop/favn/pull/724), [#720](https://github.com/eirhop/favn/issues/720) |
 | Affected areas | Core contracts, Authoring manifest configuration, Orchestrator runner-work construction, PostgreSQL activation/write-start guards, Runner SQL execution, SQL runtime, DuckDB adapter, public catalog guide |
-| Approved plan commit | Recorded in the immediate PR-number update after this baseline commit |
+| Approved plan commit | `f7aa6ac985953257819593b471a112ae53bc0f9c` |
 | Last updated | 2026-09-17 |
 
 ## One-minute summary
@@ -539,7 +539,9 @@ of the approved baseline.
 | Source and issue inspection | Inspected base `ba3fa194` and current #721 | Static behavior/evidence only |
 | Independent plan review | Astra xhigh approved after two correction rounds; no remaining blocking findings | Plan approval only, not implementation approval |
 | Local link review | All nine relative links resolve | Local paths, not remote rendering |
-| Local Mermaid rendering | Both revised diagrams parsed and rendered with Mermaid 11 in headless Chrome; visually inspected | GitHub rendering still to verify |
+| Local Mermaid rendering | Both revised diagrams parsed and rendered with Mermaid 11 in headless Chrome; visually inspected | Local syntax and layout only |
+| GitHub Mermaid rendering | Both diagrams in approved baseline `f7aa6ac9` rendered successfully on GitHub and were visually inspected; diagram source is unchanged in the PR-number rename | Document rendering, not runtime behavior |
+| Whitespace and baseline preservation | `git diff --check` passed; the approved plan body is unchanged by the PR-number and evidence update | Documentation checks only |
 | Implementation tests | Not run: no implementation exists | Planned checks above are not passing results |
 
 ### Not verified
@@ -547,8 +549,6 @@ of the approved baseline.
 - No new runtime behavior, target schema, performance, concurrency or recovery
   path has been implemented or tested.
 - No live database, infrastructure or customer deployment was modified.
-- GitHub Mermaid rendering is recorded after the draft PR exists; local rendering
-  and independent plan review have passed.
 
 ## Final review
 
