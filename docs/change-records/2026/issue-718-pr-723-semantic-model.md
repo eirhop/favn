@@ -2,10 +2,10 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Feature |
 | Primary issue | [#718](https://github.com/eirhop/favn/issues/718) |
-| Pull request | [#723](https://github.com/eirhop/favn/pull/723) (draft) |
+| Pull request | [#723](https://github.com/eirhop/favn/pull/723) |
 | Related work | [#720 catalog publication](https://github.com/eirhop/favn/issues/720), [#721 runtime state](https://github.com/eirhop/favn/issues/721), [#719 AI/MCP](https://github.com/eirhop/favn/issues/719) |
 | Affected areas | Public authoring, Core contracts/compiler, local build tooling, DuckDB integration, generated relationship checks |
 | Source baseline | `8d2b8e1f1e574dabb4670ef0e56f46e073f51f8d` on `origin/main` |
@@ -1078,8 +1078,8 @@ and installed pinned DuckDB library. It does not touch a deployed platform.
 
 - The final focused Core semantic suite passed 25 tests, including rejection of
   relation syntax without loading customer code. The native compiler, lifecycle,
-  artifact and relationship suites passed 18 tests on both DuckDB 1.5.2 and 1.5.5.
-  Including existing adapter tests, the exact native CI command passed 26 tests
+  artifact and relationship suites passed 19 tests on both DuckDB 1.5.2 and 1.5.5.
+  Including existing adapter tests, the exact native CI command passed 27 tests
   on 1.5.5. Core plus the affected shared Template suite passed 39 tests.
 - The native consumer fixture compares macro and inline SQL plans on a physical
   table and proves unused columns are pruned. Opening/closing values are 30/32;
@@ -1157,7 +1157,24 @@ of 1,024 aggregate calls keeps compilation bounded. The fourth recheck closed
 all prior findings but exposed a combined input/aggregate response larger than
 the original 16 KiB output limit. Both supervisor and adapter now allow 64 KiB;
 the worst accepted escaped-name profile, aggregate offsets, and process
-handshakes fit within 57,932 bytes. A combined maximum-shaped native regression
+handshakes fit within 57,980 bytes. A combined maximum-shaped native regression
 exercises this boundary. Validator adapters use the explicit three-argument boundary, with no
 fallback that could silently omit composition validation. This simplifies the
 implementation and closes the mismatch rather than adding more lexical exceptions.
+
+
+The final independent Astra xhigh recheck approved implementation commit
+`478b143d` for pushing to PR/CI and explicitly closed every prior finding.
+The reviewer independently passed all 12 native compiler tests on each supported
+DuckDB pin and reproduced a 57,980-byte receipt including maximal process
+handshakes, leaving 7,556 bytes of capacity. Its only non-blocking correction was
+the response-size figure above, now corrected. Later changes to this record are
+review/verification receipts only; production changes require another review.
+
+The final fresh-database fast run passed every app except the same pre-existing
+100ms ConnectionGuard receive assertion. Its owning suite then passed all eight
+tests in isolation without source changes. Core passed 517 tests, Runner 272,
+Orchestrator 889, and the final native CI command passed 27 tests on DuckDB 1.5.5;
+the semantic/native subset passed 19 on 1.5.2. Format and test-tier checks passed
+again. Final-head CI, including configured hardened-runtime acceptance, is
+tracked in [PR checks](https://github.com/eirhop/favn/pull/723/checks).
