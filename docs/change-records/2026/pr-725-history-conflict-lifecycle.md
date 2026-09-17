@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | None; the maintainer supplied the incident and authorized this repair without a separate issue. |
-| Pull request | Pending |
+| Pull request | [#725](https://github.com/eirhop/favn/pull/725) |
 | Related work | [#711](https://github.com/eirhop/favn/pull/711), [#716](https://github.com/eirhop/favn/pull/716), [#717](https://github.com/eirhop/favn/pull/717), [#722](https://github.com/eirhop/favn/pull/722) |
 | Affected areas | PostgreSQL history protection; orchestrator admission, settlement, retry, cancellation and error projection |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `7967ac33` |
 | Last updated | 2026-09-17 |
 
 ## One-minute summary
