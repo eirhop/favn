@@ -57,6 +57,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     def get_run(_query), do: {:error, :forced_missing}
 
     def commit_transition(command) do
+      case Process.get({__MODULE__, :commit_error_by_event}, %{})
+           |> Map.get(command.event.event_type) do
+        nil -> do_commit_transition(command)
+        reason -> {:error, reason}
+      end
+    end
+
+    defp do_commit_transition(command) do
       send(self(), {:commit_transition, command})
 
       case Process.get({__MODULE__, :commit_results}, []) do
@@ -735,63 +743,76 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     assert RunExecutionState.in_flight_count(awaiting) == 1
   end
 
-  @tag runner_task_store: AcceptingTaskStore
-  test "ambiguous enqueue retains earlier same-batch tasks without cancelling them", %{
-    fixture: fixture
-  } do
-    conflict =
-      Error.new(:conflict, "history busy",
-        retryable?: true,
-        details: %{reason_code: "execution_history_owner_busy"}
+  for external_cancel <- [false, true] do
+    @tag runner_task_store: AcceptingTaskStore, external_cancel: external_cancel
+    test "ambiguous enqueue retains same-batch tasks with external cancellation=#{external_cancel}",
+         %{
+           fixture: fixture,
+           external_cancel: external_cancel
+         } do
+      conflict =
+        Error.new(:conflict, "history busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      Process.put(
+        {FakeStore, :claimable_target_ids},
+        Enum.map([fixture.b_key, fixture.c_key], &TargetIdentity.for_asset(elem(&1, 0)))
       )
 
-    Process.put(
-      {FakeStore, :claimable_target_ids},
-      Enum.map([fixture.b_key, fixture.c_key], &TargetIdentity.for_asset(elem(&1, 0)))
-    )
+      step =
+        FavnOrchestrator.AssetStepIdentity.asset_step_id(
+          fixture.run.id,
+          fixture.c_key,
+          elem(fixture.c_key, 0)
+        )
 
-    step =
-      FavnOrchestrator.AssetStepIdentity.asset_step_id(
-        fixture.run.id,
-        fixture.c_key,
-        elem(fixture.c_key, 0)
-      )
+      Process.put({AcceptingTaskStore, :lost_replies}, %{
+        step => Error.new(:unavailable, "reply lost", retryable?: true)
+      })
 
-    Process.put({AcceptingTaskStore, :lost_replies}, %{
-      step => Error.new(:unavailable, "reply lost", retryable?: true)
-    })
+      Process.put({FakeStore, :commit_results}, [{:error, conflict}])
 
-    Process.put({FakeStore, :commit_results}, [{:error, conflict}])
+      state = %{
+        fixture.state
+        | stage_state: %{
+            fixture.state.stage_state
+            | deferred_node_keys: [fixture.b_key, fixture.c_key]
+          }
+      }
 
-    state = %{
-      fixture.state
-      | stage_state: %{
-          fixture.state.stage_state
-          | deferred_node_keys: [fixture.b_key, fixture.c_key]
-        }
-    }
+      assert {:persist_retry, paused, retry, ^conflict} = Execution.handle_event(state, :continue)
+      {:stage_attempt_start, continuation} = retry.resume
 
-    assert {:persist_retry, paused, retry, ^conflict} = Execution.handle_event(state, :continue)
-    {:stage_attempt_start, continuation} = retry.resume
+      continuation =
+        put_in(continuation.ctx.batch_started_ms, System.monotonic_time(:millisecond) + 10_000)
 
-    continuation =
-      put_in(continuation.ctx.batch_started_ms, System.monotonic_time(:millisecond) + 10_000)
+      retry = %{retry | resume: {:stage_attempt_start, continuation}}
 
-    retry = %{retry | resume: {:stage_attempt_start, continuation}}
-    assert {:ownership_gate, gated, ^retry} = Execution.retry_persistence(paused, retry)
-    assert {:cont, draining} = Execution.resume_persisted_retry(gated, retry)
-    assert_receive {:accepted_enqueue, first}
-    assert_receive {:accepted_enqueue, second}
-    assert_receive {:accepted_store_cancellation, %{task_id: task_id}}
-    assert task_id == second.task_id
-    first_id = first.task_id
-    refute_received {:accepted_store_cancellation, %{task_id: ^first_id}}
-    assert first.task_id in ActiveTaskSet.task_ids(draining.work_set)
-    assert second.task_id in ActiveTaskSet.task_ids(draining.work_set)
-    assert Map.has_key?(draining.awaits, first.task_id)
-    assert Map.has_key?(draining.awaits, second.task_id)
-    refute_received {:materialization_finish, _}
-    refute_received {:release_execution_lease, _}
+      if external_cancel do
+        Process.put({FakeStore, :commit_error_by_event}, %{step_failed: :external_cancel})
+      end
+
+      assert {:ownership_gate, gated, ^retry} = Execution.retry_persistence(paused, retry)
+      assert {:cont, draining} = Execution.resume_persisted_retry(gated, retry)
+      assert_receive {:accepted_enqueue, first}
+      assert_receive {:accepted_enqueue, second}
+      assert_receive {:accepted_store_cancellation, %{task_id: task_id}}
+      assert task_id == second.task_id
+      first_id = first.task_id
+
+      if external_cancel,
+        do: assert_received({:accepted_store_cancellation, %{task_id: ^first_id}}),
+        else: refute_received({:accepted_store_cancellation, %{task_id: ^first_id}})
+
+      assert first.task_id in ActiveTaskSet.task_ids(draining.work_set)
+      assert second.task_id in ActiveTaskSet.task_ids(draining.work_set)
+      assert Map.has_key?(draining.awaits, first.task_id)
+      assert Map.has_key?(draining.awaits, second.task_id)
+      refute_received {:materialization_finish, _}
+      refute_received {:release_execution_lease, _}
+    end
   end
 
   for phase <- [:admission, :materialization_claim], action <- [:cancel, :exhaust] do

@@ -828,13 +828,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
     terminalize_stage_admission_failure(state, failed_run, step_results, cleanup_entries)
   end
 
-  defp resume_persisted(
-         %RunExecutionState{} = state,
-         {:stage_admission, _attempt, {:error, failed_run, step_results, _attempted_node_keys}}
-       ) do
-    terminalize_stage_admission_failure(state, failed_run, step_results)
-  end
-
   defp start_await(%RunExecutionState{} = state, entry, kind) do
     parent = self()
     task_id = entry.task_id
@@ -1496,9 +1489,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       {:error, failed_run, step_results, _attempted_node_keys, cleanup_entries} ->
         terminalize_stage_admission_failure(state, failed_run, step_results, cleanup_entries)
 
-      {:error, failed_run, step_results, _attempted_node_keys} ->
-        terminalize_stage_admission_failure(state, failed_run, step_results)
-
       {:persist_retry, %PersistenceRetry{} = retry, reason} ->
         {:persist_retry, state, retry, reason}
 
@@ -1936,9 +1926,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
       {:error, failed_run, step_results, _attempted_node_keys, cleanup_entries} ->
         terminalize_stage_admission_failure(state, failed_run, step_results, cleanup_entries)
 
-      {:error, failed_run, step_results, _attempted_node_keys} ->
-        terminalize_stage_admission_failure(state, failed_run, step_results)
-
       {:persist_retry, %PersistenceRetry{} = retry, reason} ->
         {:persist_retry, state, retry, reason}
 
@@ -2008,9 +1995,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {_stage_state, {:error, failed_run, step_results, _keys, cleanup_entries}} ->
         terminalize_stage_admission_failure(state, failed_run, step_results, cleanup_entries)
-
-      {_stage_state, {:error, failed_run, step_results, _keys}} ->
-        terminalize_stage_admission_failure(state, failed_run, step_results)
 
       {_stage_state, {:persist_retry, %PersistenceRetry{} = retry, reason, pause}} ->
         paused = pause_stage_admission(state, pause)
@@ -2124,7 +2108,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          state,
          failed_run,
          step_results,
-         cleanup_entries \\ []
+         cleanup_entries
        ) do
     failure = %{status: failed_run.status, error: failed_run.error}
     work_set = Enum.reduce(cleanup_entries, state.work_set, &ActiveTaskSet.add_entry(&2, &1))

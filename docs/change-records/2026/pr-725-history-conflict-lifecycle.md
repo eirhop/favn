@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented; final PR qualification in progress |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | None; the maintainer supplied the incident and authorized this repair without a separate issue. |
 | Pull request | [#725](https://github.com/eirhop/favn/pull/725) |
@@ -317,7 +317,15 @@ all unrelated storage errors have the same recovery semantics.
   Initial and replayed writer contention now follow domain waiting rather than
   the history retry budget. The added real PostgreSQL test needed a complete
   physical-relation pin in its fixture; it passed after that fixture correction.
-- Final pushed-head CI remains the merge-readiness gate.
+- The final local orchestrator fast suite passed **907 tests**. CI fast,
+  acceptance, quick/security, image and HTTP qualification passed on `cb4c5b6f`.
+  Dialyzer then identified six unreachable patterns left by the new result
+  shapes. The obsolete four-element admission error form and classifier/fallback
+  clauses were removed without suppressing warnings. Review also retained the
+  full uncertain-task cleanup entry in the already-terminal cancellation branch;
+  an injected cancellation regression checks both task awaits remain installed.
+  All **161 RunServer tests** passed after this cleanup. Final pushed-head CI is
+  the merge-readiness gate; its live results are attached to the PR.
 
 ### Deviations and scope accounting
 

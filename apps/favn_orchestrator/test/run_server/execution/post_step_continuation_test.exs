@@ -559,7 +559,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
         pending.run,
         :step_failed,
         %{},
-        {:stage_admission, 1, {:error, failed_run, [], []}}
+        {:stage_admission, 1, {:error, failed_run, [], [], []}}
       )
 
     assert {:cont, draining} = Execution.retry_persistence(pending, retry)

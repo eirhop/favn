@@ -93,7 +93,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
            deferred_refill_cause()}
           | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
              MapSet.t(term()), [map()], map() | nil, deferred_refill_cause()}
-          | {:error, RunState.t(), [term()], [node_key()]}
           | {:error, RunState.t(), [term()], [node_key()], [entry()]}
           | {:persist_retry, PersistenceRetry.t(), term()}
           | {:persist_retry, PersistenceRetry.t(), term(), map()}
@@ -1186,11 +1185,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
          retryable?,
          cleanup_entries
        ) do
-    result =
-      case cleanup_entries do
-        [] -> {:error, failed, [], attempted_node_keys(ctx), entries(ctx)}
-        entries -> {:error, failed, [], attempted_node_keys(ctx), entries}
-      end
+    result = {:error, failed, [], attempted_node_keys(ctx), cleanup_entries}
 
     case persist_stage_submit_failure_event(
            ctx,
@@ -1204,7 +1199,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         result
 
       {:error, :external_cancel} ->
-        {:error, Snapshots.cancelled_snapshot(failed), [], attempted_node_keys(ctx), entries(ctx)}
+        {:error, Snapshots.cancelled_snapshot(failed), [], attempted_node_keys(ctx),
+         cleanup_entries}
 
       {:error, persist_reason, retry} ->
         {:persist_retry, retry, persist_reason}

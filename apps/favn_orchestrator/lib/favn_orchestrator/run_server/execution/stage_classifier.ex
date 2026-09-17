@@ -164,12 +164,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
   defp restore_runnable_order({:ok, run, runnable, decisions, context, failure}),
     do: {:ok, run, Enum.reverse(runnable), decisions, context, failure}
 
-  defp restore_runnable_order({:error, %RunState{}} = error), do: error
-
   defp append_remaining({:ok, run, runnable, decisions, context, failure}, remaining),
     do: {:ok, run, runnable, decisions, context, failure, remaining}
-
-  defp append_remaining({:error, %RunState{}} = error, _remaining), do: error
 
   defp take_batch(node_keys) do
     started_at = System.monotonic_time(:millisecond)
