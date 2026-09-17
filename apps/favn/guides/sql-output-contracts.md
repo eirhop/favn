@@ -324,7 +324,7 @@ inspection.
 One contract supports up to 1,000 ordered columns, 128 explicit fragment
 compositions, 128 explicit unique keys, and 16 ordered row-count claims.
 Automatic enforcement uses one grouped required-column check, one grouped key
-check, and one check per row-count claim, for at most 18 generated checks. Wide
+check, one check per row-count claim, and up to two per relationship, for at most 82 generated checks. Wide
 schemas do not consume the separate budget of 50 authored custom checks.
 Candidate schema evidence retains up to 1,000 observed columns. If an adapter
 reports more, validation fails with a structured column limit difference and
@@ -382,3 +382,50 @@ read `Favn.SQL.Contract`, `Favn.SQL.Contract.Column`,
 `Favn.SQL.ContractFragment`,
 `Favn.SQL.Contract.Fragment`, `Favn.SQL.Contract.Composition`,
 `Favn.SQL.Contract.Param`, and `Favn.SQL.ContractValidation`.
+
+## Relationships to dependency grains
+
+Declare a relationship inside the source asset's `contract` and declare its target
+with `depends`. The target must be a SQL asset on the same connection with a
+structured contract grain:
+
+```elixir
+alias MyApp.Mart.Store
+
+depends Store
+
+contract do
+  column :sale_id, :integer, null: false
+  column :store_id, :integer, null: false
+
+  relationship :store, Store,
+    on: [store_id: :store_id],
+    cardinality: :many_to_one,
+    on_violation: :fail
+end
+```
+
+`on:` is an ordered mapping from local columns to the complete target grain, in
+target-grain order. Logical key types must match. Roles are unique within an
+asset; several roles may reference the same target. There are at most 32
+relationships per asset. Targets are explicit dependencies; relationships never
+add dependencies implicitly.
+
+Use `:many_to_one` for ordinary foreign keys or `:one_to_one` when the source key
+must also be unique. Before publication, generated checks detect missing
+references and duplicate target keys against the pinned dependency generation.
+One-to-one uniqueness is checked after materialization against the complete
+transaction-visible output, including retained rows of incremental assets.
+`:fail` prevents publication or rolls back the mutation; `:warn` records a
+quality warning and allows publication. Execution errors always fail.
+
+Nullability comes from the source columns. Composite keys must be entirely
+required or entirely nullable. An entirely null optional key has no reference;
+a partially null composite key violates the relationship. Relationships require
+checked table or incremental materialization and an adapter supporting the
+existing transactional check protocol.
+
+These checks describe the publication snapshot. They do not install permanent
+database foreign keys: a later independent target publication can invalidate
+previously published references. Consumers should consider check outcomes,
+especially when `on_violation: :warn` is used.

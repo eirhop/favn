@@ -218,6 +218,7 @@ defmodule Favn.SQL.Template do
           | {:local_args, [atom()]}
           | {:local_arg_index, %{optional(atom()) => non_neg_integer()}}
           | {:enforce_query_root, boolean()}
+          | {:resolve_asset_refs, boolean()}
 
   @spec reserved_runtime_inputs() :: [atom()]
   def reserved_runtime_inputs, do: @reserved_runtime_inputs
@@ -262,6 +263,7 @@ defmodule Favn.SQL.Template do
       file: file,
       module: module,
       known_definitions: known_definitions,
+      resolve_asset_refs: Keyword.get(opts, :resolve_asset_refs, true),
       local_args: local_arg_index,
       position: start_pos,
       relation_entry?: false,
@@ -993,6 +995,7 @@ defmodule Favn.SQL.Template do
     template =
       compile!(source,
         known_definitions: state.known_definitions,
+        resolve_asset_refs: state.resolve_asset_refs,
         file: state.file,
         line: start_pos.line,
         column: start_pos.column,
@@ -1022,7 +1025,11 @@ defmodule Favn.SQL.Template do
 
   defp build_asset_ref(module, state, next_state) do
     {resolution, relation} =
-      resolve_asset_reference(module, state.file, state.position.line, state.module)
+      if state.resolve_asset_refs do
+        resolve_asset_reference(module, state.file, state.position.line, state.module)
+      else
+        {:deferred, nil}
+      end
 
     %AssetRef{
       module: module,

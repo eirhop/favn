@@ -23,7 +23,7 @@ defmodule Favn.SQL.Check do
   Validation also enforces the cross-field rules needed by the runner:
   `:skip_materialization` is before-only and target-existence guarded, and any
   before check using `target()` has the same guard. One asset may carry at most
-  50 authored checks plus up to 18 generated contract checks; messages are
+  50 authored checks plus up to 82 generated contract checks; messages are
   limited to 1,024 bytes.
   """
 
@@ -35,7 +35,7 @@ defmodule Favn.SQL.Check do
   @conditions [nil, :target_exists]
   @max_message_bytes 1_024
   @max_per_asset 50
-  @max_contract_per_asset 18
+  @max_contract_per_asset 82
 
   @enforce_keys [:name, :at, :on_violation, :sql, :template, :uses_query?, :uses_target?]
   defstruct [

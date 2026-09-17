@@ -39,6 +39,24 @@ defmodule Favn.AI do
   directly from the Favn repository, then select that image in their own
   deployment configuration.
 
+  ## Semantic metrics and dashboard SQL
+
+  Read `mix favn.read_doc Favn.SQLAsset semantic` and the
+  [SQL Semantic Models](sql-semantic-models.html) guide to author business metrics.
+  Keep `contract` and `semantic :name do` together in one SQL asset before `query`.
+  Metric signatures name exact source columns in macro argument order. Compose
+  ordinary SQL expressions; do not introduce a separate measure DSL or Favn API
+  wrapper. Use `mix favn.semantic.inspect --format json` on the finished artifact
+  for descriptions, ordered bindings, dependencies, units, and time/grain rules.
+  Construct SQL from those bindings; same-type wrong arguments can still bind.
+  Consumers own joins and first/last row selection. Declare enforced relationships
+  inside `contract` with an explicit dependency, ordered key mapping, cardinality,
+  and violation policy; read the SQL Output Contracts guide for snapshot guarantees.
+  Build semantics with a
+  dedicated `MIX_BUILD_PATH` established before Mix starts; never use active runner
+  output. The finished artifact is independently versioned; catalog publication,
+  freshness context, and MCP are separate capabilities.
+
   ## What To Read
 
   - To author one Elixir asset, read `Favn.Asset`, then `Favn.Namespace` and

@@ -28,7 +28,18 @@ defmodule Favn.Manifest.Rehydrate do
   alias Favn.SQL.PartitionSpec
   alias Favn.SQL.SessionRequirements
   alias Favn.SQL.Contract
-  alias Favn.SQL.Contract.{Column, Composition, Grain, Lineage, Param, RowCount, UniqueKey}
+
+  alias Favn.SQL.Contract.{
+    Column,
+    Composition,
+    Grain,
+    Lineage,
+    Param,
+    Relationship,
+    RowCount,
+    UniqueKey
+  }
+
   alias Favn.SQL.Template
   alias Favn.SQLAsset.RelationUsage
 
@@ -602,7 +613,9 @@ defmodule Favn.Manifest.Rehydrate do
         |> Enum.map(&build_contract_composition/1),
       unique_keys:
         value |> field_value(:unique_keys, []) |> Enum.map(&build_contract_unique_key/1),
-      row_counts: value |> field_value(:row_counts, []) |> build_contract_row_counts()
+      row_counts: value |> field_value(:row_counts, []) |> build_contract_row_counts(),
+      relationships:
+        value |> field_value(:relationships, []) |> Enum.map(&build_contract_relationship/1)
     })
   end
 
@@ -620,12 +633,32 @@ defmodule Favn.Manifest.Rehydrate do
       :unique_keys,
       "unique_keys",
       :row_counts,
-      "row_counts"
+      "row_counts",
+      :relationships,
+      "relationships"
     ]
 
     if Enum.any?(Map.keys(value), &(&1 not in allowed)) do
       raise ArgumentError, "invalid SQL output contract fields"
     end
+  end
+
+  defp build_contract_relationship(%Relationship{} = value), do: Relationship.validate!(value)
+
+  defp build_contract_relationship(value) when is_map(value) do
+    Relationship.new!(%{
+      name: value |> field_value(:name) |> decode_atom_optional(),
+      target: value |> field_value(:target) |> decode_ref(),
+      on:
+        value
+        |> field_value(:on, [])
+        |> Enum.map(fn
+          {a, b} -> {decode_atom_optional(a), decode_atom_optional(b)}
+          [a, b] -> {decode_atom_optional(a), decode_atom_optional(b)}
+        end),
+      cardinality: value |> field_value(:cardinality) |> decode_atom_optional(),
+      on_violation: value |> field_value(:on_violation) |> decode_atom_optional()
+    })
   end
 
   defp build_contract_grain(nil), do: nil
