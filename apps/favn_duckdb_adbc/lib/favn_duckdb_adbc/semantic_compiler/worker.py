@@ -301,7 +301,7 @@ def supervise(report=lambda _receipt: None):
                 return {"error": "owner_lost"}
             chunk = os.read(read_fd, 16_384)
             data += chunk
-            require(len(data) <= 16_384)
+            require(len(data) <= 65_536)
             if data.startswith(b"ready\n"):
                 data = data[6:]
                 identity["process_group"] = pid

@@ -123,6 +123,34 @@ defmodule FavnDuckdbADBC.SemanticCompilerTest do
              SemanticCompiler.validate(balanced_aggregates(1025), inputs)
   end
 
+  test "maximum escaped input profiles and aggregate evidence fit one bounded receipt" do
+    inputs =
+      for index <- 0..63 do
+        name = <<1 + div(index, 8), 1 + rem(index, 8)>> <> String.duplicate(<<1>>, 126)
+        %{name: name, type: :decimal, nullable: false}
+      end
+
+    sql = "/*" <> String.duplicate("p", 40_000) <> "*/" <> balanced_constant_aggregates(1024)
+    assert byte_size(sql) < 65_536
+    assert {:ok, result} = SemanticCompiler.validate(sql, inputs)
+    assert length(result.aggregate_locations) == 1024
+    assert map_size(result.validation_profile) == 64
+
+    assert Map.keys(result.validation_profile) |> Enum.sort() ==
+             Enum.map(inputs, & &1.name) |> Enum.sort()
+  end
+
+  defp balanced_constant_aggregates(1), do: "SUM(1)"
+
+  defp balanced_constant_aggregates(count) do
+    left = div(count, 2)
+
+    "(" <>
+      balanced_constant_aggregates(left) <>
+      "+" <>
+      balanced_constant_aggregates(count - left) <> ")"
+  end
+
   defp balanced_aggregates(1), do: ~s|SUM("gross")|
 
   defp balanced_aggregates(count) do

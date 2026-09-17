@@ -18,7 +18,7 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
 
   @external_resource Path.join(__DIR__, "semantic_compiler/worker.py")
   @worker File.read!(@external_resource)
-  @max_output 16_384
+  @max_output 65_536
   @logical_types [
     :integer,
     :float,

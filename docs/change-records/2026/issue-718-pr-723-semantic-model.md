@@ -1051,10 +1051,10 @@ slice 6. This avoids counting a shared file more than once.
 | 1: contracts, snapshots and closed codec | +771 / -0 | +757 / -0 |
 | 2: relationships and execution compatibility | +256 / -21 | +754 / -87 |
 | 3: authoring and formula composition | +1180 / -6 | +129 / -0 |
-| 4: native validation and supervision | +583 / -0 | +505 / -1 |
+| 4: native validation and supervision | +583 / -0 | +533 / -1 |
 | 5: build and local read tasks | +510 / -0 | +215 / -0 |
 | 6: guides, discovery and consumer integration | +19 / -0 | +508 / -4 |
-| Total | +3319 / -27 | +2868 / -92 |
+| Total | +3319 / -27 | +2896 / -92 |
 
 Production exceeds the estimated 2,760-line upper bound by 559 lines. Slice 1's
 closed decoder validates nested identities, input ordering, dependency closure,
@@ -1153,7 +1153,11 @@ native validation returns exact aggregate-call byte offsets, Core shifts them
 when inserting validated child expressions, and native validation requires the
 actual aggregate positions to equal those inherited by a composition. Offsets
 are transient compiler evidence, never part of the published artifact. A bound
-of 1,024 aggregate calls keeps requests/results within the existing protocol
-budget. Validator adapters use the explicit three-argument boundary, with no
+of 1,024 aggregate calls keeps compilation bounded. The fourth recheck closed
+all prior findings but exposed a combined input/aggregate response larger than
+the original 16 KiB output limit. Both supervisor and adapter now allow 64 KiB;
+the worst accepted escaped-name profile, aggregate offsets, and process
+handshakes fit within 57,932 bytes. A combined maximum-shaped native regression
+exercises this boundary. Validator adapters use the explicit three-argument boundary, with no
 fallback that could silently omit composition validation. This simplifies the
 implementation and closes the mismatch rather than adding more lexical exceptions.
