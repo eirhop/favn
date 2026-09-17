@@ -491,3 +491,53 @@ For manual repair, require the matching committed materialization before marker
 dispatch (the reconciler's final store validation occurs after dispatch), and
 leave an already failed run terminal. This approval does not qualify the broader
 crash-recovery retention and historical-outcome design.
+
+The concrete repair script is restricted to a quiescent target in the existing
+administrator console. Review found that a preflight cannot exclude writes
+starting during runner waits, and initial activation does not itself acquire the
+write-ownership lock. Rather than silently extending this repair into a new
+concurrent administration contract, the script requires submissions and other
+writes to remain paused throughout repair. It rejects currently unresolved holds,
+uses retained exact evidence and leaves the failed run terminal. A concurrent
+repair API is outside this localized addition. The earliest-materialization
+lookup deliberately refuses a later source task rather than guessing.
+
+### Initial marker repair outcome and verification
+
+The application correction removes one false parent option. Deterministic marker
+write identity, task/token identity, target write fences and all actual operation
+parent guards are unchanged. The optional operator-console script qualifies the
+original saved success against committed evidence, repairs only registration,
+and leaves failed run history intact. It never clears unknown write holds.
+
+Astra xhigh reviewed the change and the console-only repair. Findings addressed:
+check materialization evidence before any marker dispatch; constrain repair to a
+quiescent target; continue quiescence after timeout until dispatched tasks settle;
+and copy the reviewed script into release hosts, which do not contain repository
+scripts. No new runtime repair API or retention exemption was introduced.
+
+| Verification | Result and limit |
+| --- | --- |
+| New composed PostgreSQL test on unchanged marker code | Reproduced `operation history not found` after successful asset/materialization and inspection/capability completion |
+| Complete PostgreSQL core authority test file | 164 passed, including normal first registration, checked repair after the original rejection, missing evidence, changed binding, unresolved write holds, actual rebuild/recovery parents, missing parents, retirement during completion, idempotence and existing contention/recovery tests |
+| Focused orchestrator tests | 19 passed: reconciler and operation tasks plus the six separate progress-reducer tests |
+| Compile with warnings as errors | Passed with `MIX_ENV=test` |
+| Documentation relative links and `git diff --check` | Passed |
+| External writes / actual runner callbacks | The new PostgreSQL tests submit synthetic runner results. They establish the control-plane lifecycle and persistence guard correction, not external adapter execution or the broader fresh-process crash qualification |
+
+The added regression scope is larger than its rough supporting-file estimate:
+application code is +5/-2 lines (four additions clarify the contract); the checked
+maintenance script is +110/-0; tests are +496/-0; operator documentation is +48/-0.
+The script exceeds the 60-line production upper estimate because review required
+explicit preflight proof and unresolved-write rejection. Test and guide additions
+exceed the 350-line estimate to compose the real PostgreSQL/run-server path,
+reproduce the pre-fix failure for repair, and cover both parent lifecycles and
+negative repair evidence. Astra accepted those explicit checks as justified;
+there is no additional application state machine. These figures exclude this
+record and the still-unintegrated broader crash-recovery progress reducer.
+
+Final independent review of this localized addition: Astra xhigh approved the
+application fix, checked maintenance procedure, test evidence and size deviation
+against addendum baseline `bd5a2f28`, with no blocking findings. This approval
+explicitly excludes the unintegrated recovery reducer and does not establish
+external-effect or full crash-recovery qualification.
