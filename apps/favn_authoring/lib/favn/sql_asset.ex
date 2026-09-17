@@ -191,13 +191,22 @@ defmodule Favn.SQLAsset do
   rewritten. Run a full Favn rebuild when the whole table should use the new
   layout.
 
+  ## Semantic Models
+
+  Place an optional `semantic :name do` block after the output contract and before
+  `query`. It describes dimensions, business dates, and SQL metrics for this asset.
+  Semantic definitions compile into an independent artifact with exact ordered
+  macro arguments and usage rules; they are not execution-package fields.
+  See `semantic/2` and the SQL Semantic Models guide for authoring, isolated build,
+  dashboard invocation, and AI discovery. Consumers still own their SQL queries.
+
   ## Output Contracts
 
   Table and incremental assets may declare one typed output contract. The
   contract is compiled into the manifest and describes ordered columns,
   structured or descriptive grain, unique keys, ordered exact or bounded
-  row-count claims, reusable column-fragment provenance, and explicit column
-  lineage:
+  row-count claims, reusable column-fragment provenance, explicit dependency
+  relationships, and column lineage:
 
       contract do
         grain by: [:record_id], description: "one normalized record"
@@ -225,7 +234,7 @@ defmodule Favn.SQLAsset do
   `:contract` and stable claim identities; authored checks carry origin
   `:authored`, and both appear in the same assurance result model.
   Required-column and key enforcement is grouped; every row-count declaration
-  adds one ordered check. A contract adds at most 18 generated checks and does
+  adds one ordered check. A contract adds at most 82 generated checks and does
   not consume the 50 authored-check budget.
 
   Grain may use `by:`, `description:`, or both. A description is useful when
@@ -257,7 +266,7 @@ defmodule Favn.SQLAsset do
   ## Transactional Checks
 
   Table and incremental assets can declare up to 50 uniquely named authored
-  SQL-native checks. An output contract adds at most 18 generated checks. Checks
+  SQL-native checks. An output contract adds at most 82 generated checks. Checks
   use the same compiler, reusable `defsql` definitions,
   parameters, window values, and relation resolution as `query`.
 
@@ -494,7 +503,7 @@ defmodule Favn.SQLAsset do
   alias Favn.SQL
   alias Favn.SQL.Check
   alias Favn.SQL.Contract
-  alias Favn.SQL.Contract.{Composition, Fragment, Param}
+  alias Favn.SQL.Contract.{Composition, Fragment, Param, Relationship}
   alias Favn.SQL.Definition, as: SQLDefinition
   alias Favn.SQL.PartitionSpec
   alias Favn.SQL.SessionRequirements
@@ -521,6 +530,7 @@ defmodule Favn.SQLAsset do
       ])
 
       Module.register_attribute(__MODULE__, :favn_sql_asset_raw, persist: false)
+      Module.register_attribute(__MODULE__, :favn_semantic, persist: false)
 
       Module.register_attribute(__MODULE__, :favn_sql_checks, accumulate: true)
       Module.register_attribute(__MODULE__, :favn_sql_contracts, accumulate: true)
@@ -554,6 +564,7 @@ defmodule Favn.SQLAsset do
         only: [
           check: 3,
           contract: 1,
+          semantic: 2,
           materialized: 1,
           param: 1,
           partitioned_by: 1,
@@ -564,6 +575,41 @@ defmodule Favn.SQLAsset do
         ]
 
       import Favn.SQL, only: [sigil_SQL: 2]
+    end
+  end
+
+  @doc """
+  Declares the analytical model beside this asset's output contract.
+
+  Place one `semantic :name do` block after `contract` and before `query`.
+  `dimension`, `hierarchy`, `time`, and function-style `metric` declarations
+  are captured separately from execution definitions. A metric signature names
+  its source columns in public macro argument order; its body is one `~SQL`
+  aggregate expression, or `file: "metrics/revenue.sql"` relative to this file.
+
+      semantic :sales do
+        time :sale_date, grain: :day, timezone: "Europe/Oslo"
+
+        metric revenue(gross_value, discount_value),
+          unit: {:currency, "NOK"}, time_aggregate: :aggregate,
+          description: "Revenue after discounts" do
+          ~SQL"SUM(@gross_value - @discount_value)"
+        end
+      end
+
+  Build the independent artifact with `mix favn.build.semantics` from dedicated
+  build output. This does not deploy a runner. Consumers use ordinary SQL with
+  explicit column arguments; macros cannot enforce argument provenance or
+  time/grain selection. See the SQL Semantic Models guide for the full contract.
+  """
+  @spec semantic(atom(), keyword()) :: Macro.t()
+  defmacro semantic(name, do: body) do
+    quote do
+      FavnAuthoring.Semantic.DSL.capture!(
+        unquote(Macro.escape(name)),
+        unquote(Macro.escape(body)),
+        __ENV__
+      )
     end
   end
 
@@ -754,6 +800,12 @@ defmodule Favn.SQLAsset do
   A SQL asset may declare at most one contract. Columns are ordered and use
   backend-neutral logical types. Grain may be structured with `by:` and/or
   descriptive when row identity cannot be expressed by output columns.
+  Declare `relationship :role, Target, on: [local: :target_key],
+  cardinality: :many_to_one, on_violation: :fail` for checked references to an
+  explicit SQL dependency's complete grain. Use `:one_to_one` to also enforce
+  uniqueness on the complete source output after mutation. Composite keys must
+  be entirely required or nullable. Checks use the pinned dependency generation.
+
   Record column lineage with an explicit plain `from:` list. `renamed_from:`
   records evolution intent for semantic diffing; emit the new column name in
   the query output.
@@ -1009,6 +1061,7 @@ defmodule Favn.SQLAsset do
         env.module |> DSLCompiler.fetch_accum_attribute(:favn_sql_contracts) |> Enum.reverse()
       )
 
+    semantic = Module.get_attribute(env.module, :favn_semantic)
     Module.put_attribute(env.module, :favn_sql_asset_generating, true)
 
     quote do
@@ -1018,6 +1071,9 @@ defmodule Favn.SQLAsset do
 
       @doc false
       def __favn_assets_raw__, do: [unquote(Macro.escape(raw_definition))]
+
+      @doc false
+      def __favn_semantic__, do: unquote(Macro.escape(semantic))
 
       @doc false
       @spec __favn_sql_asset_definition__() :: Favn.SQLAsset.Definition.t()
@@ -1038,6 +1094,7 @@ defmodule Favn.SQLAsset do
   end
 
   defp capture_query_declarations!(env) do
+    Module.put_attribute(env.module, :favn_query_captured, true)
     AssetDeclarations.reject_legacy_attributes!(env.module, env.file, env.line)
     resources = AssetDeclarations.take(env.module, :resources)
     validate_resource_declarations!(resources, env)
@@ -1189,6 +1246,8 @@ defmodule Favn.SQLAsset do
         namespace.relation
       )
 
+    validate_relationship_targets!(contract, depends_on, relation, raw_definition)
+
     known_definitions = fetch_sql_definitions!(raw_definition)
 
     replacement_scopes =
@@ -1335,6 +1394,31 @@ defmodule Favn.SQLAsset do
       end
     end)
     |> then(&Contract.validate_generated_checks!(contract, &1))
+  end
+
+  defp validate_relationship_targets!(nil, _depends, _relation, _raw_definition), do: :ok
+
+  defp validate_relationship_targets!(contract, depends, relation, raw_definition) do
+    Enum.each(contract.relationships, fn relationship ->
+      unless relationship.target in depends,
+        do: raise(ArgumentError, "relationship target must be explicitly declared with depends")
+
+      {module, :asset} = relationship.target
+
+      unless Code.ensure_loaded?(module) and
+               function_exported?(module, :__favn_sql_asset_definition__, 0),
+             do: raise(ArgumentError, "relationship target must resolve to a SQL asset")
+
+      target = module.__favn_sql_asset_definition__()
+
+      unless target.asset.relation.connection == relation.connection,
+        do: raise(ArgumentError, "relationship target must use the same SQL connection")
+
+      Relationship.validate_target!(relationship, contract, target.contract)
+    end)
+  rescue
+    error in ArgumentError ->
+      DSLCompiler.compile_error!(raw_definition.file, raw_definition.line, error.message)
   end
 
   defp generated_contract_checks(nil, _raw_definition), do: []
@@ -2000,7 +2084,14 @@ defmodule Favn.SQLAsset do
     definition =
       Enum.reduce(
         statements,
-        %{grain: nil, columns: [], compositions: [], unique_keys: [], row_counts: []},
+        %{
+          grain: nil,
+          columns: [],
+          compositions: [],
+          unique_keys: [],
+          row_counts: [],
+          relationships: []
+        },
         &parse_contract_statement!(&1, &2, env)
       )
 
@@ -2030,6 +2121,25 @@ defmodule Favn.SQLAsset do
          env
        ) do
     parse_contract_column!(name_ast, type_ast, opts_ast, meta, definition, env)
+  end
+
+  defp parse_contract_statement!(
+         {:relationship, meta, [name_ast, target_ast, opts_ast]},
+         definition,
+         env
+       ) do
+    name = contract_literal!(name_ast, env, meta, "relationship role")
+    target = contract_module!(target_ast, env, meta)
+
+    opts =
+      contract_keyword!(opts_ast, env, meta, :relationship, [:on, :cardinality, :on_violation])
+
+    relationship =
+      Relationship.new!(Map.merge(Map.new(opts), %{name: name, target: {target, :asset}}))
+
+    %{definition | relationships: definition.relationships ++ [relationship]}
+  rescue
+    error in ArgumentError -> contract_compile_error!(env, meta, error.message)
   end
 
   defp parse_contract_statement!({:unique, meta, [columns_ast]}, definition, env) do

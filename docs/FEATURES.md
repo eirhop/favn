@@ -10,7 +10,7 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 
 - The `favn` package provides manifest-first asset, SQL-asset, pipeline, schedule,
   window, coverage, freshness, retry, settings, and runtime-input DSLs.
-- Compilation produces a deterministic schema-19 manifest whose user-defined
+- Compilation produces a deterministic schema-20 manifest whose user-defined
   runner pools are bound to exact verified runner releases and whose referenced
   execution-pool defaults are strictly validated, with graph metadata,
   compact catalogue/planning indexes, content-addressed SQL execution packages,
@@ -56,6 +56,13 @@ Favn is private pre-v1 software. PostgreSQL 18 is the only control-plane databas
 
 Authoring and manifest contracts are comparatively mature. Planning, execution,
 runtime inputs, and SQL integrations remain pre-v1 and may change.
+
+- SQL assets may declare same-file semantic models with explicit SQL metric
+  arguments, dependency metadata, time/grain usage rules, and independent local
+  artifact build/inspect/diff commands. See the canonical
+  [SQL Semantic Models guide](../apps/favn/guides/sql-semantic-models.md).
+  Native validation requires Linux, Python 3, and the installed supported DuckDB
+  driver. Catalog activation, runtime analytical context, and MCP remain forward work.
 
 ## Control plane
 

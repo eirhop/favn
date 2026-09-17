@@ -28,15 +28,15 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert Base.encode16(:crypto.hash(:sha256, payload), case: :lower) == expected_hash
     assert published["content_hash"] == expected_hash
 
-    assert {:error, {:unsupported_execution_package_schema, 4, 5}} =
+    assert {:error, {:unsupported_execution_package_schema, 4, 6}} =
              ExecutionPackage.from_published(published)
 
     assert Favn.Manifest.Serializer.encode_manifest!(published) == original
 
-    for schema <- [4, 6] do
+    for schema <- [4, 5, 7] do
       malformed = %{schema_version: schema, sql_execution: %{checks: :invalid}}
 
-      assert {:error, {:unsupported_execution_package_schema, ^schema, 5}} =
+      assert {:error, {:unsupported_execution_package_schema, ^schema, 6}} =
                ExecutionPackage.from_published(malformed)
 
       package = %ExecutionPackage{
@@ -46,10 +46,10 @@ defmodule Favn.Manifest.ExecutionPackageTest do
         sql_execution: nil
       }
 
-      assert {:error, {:unsupported_execution_package_schema, ^schema, 5}} =
+      assert {:error, {:unsupported_execution_package_schema, ^schema, 6}} =
                ExecutionPackage.verify(package)
 
-      assert {:error, {:unsupported_execution_package_schema, ^schema, 5}} =
+      assert {:error, {:unsupported_execution_package_schema, ^schema, 6}} =
                ExecutionPackage.from_published(package)
     end
   end
@@ -197,7 +197,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
   test "rejects non-current execution-package schemas" do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
-    assert {:error, {:unsupported_execution_package_schema, 1, 5}} =
+    assert {:error, {:unsupported_execution_package_schema, 1, 6}} =
              ExecutionPackage.verify(%{package | schema_version: 1})
   end
 
@@ -267,7 +267,7 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     package = execution_package({MyApp.Orders, :asset}, "SELECT 1 AS id")
 
     invalid = %{package | sql_execution: nil}
-    payload = %{schema_version: 5, asset_ref: invalid.asset_ref, sql_execution: nil}
+    payload = %{schema_version: 6, asset_ref: invalid.asset_ref, sql_execution: nil}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
@@ -291,12 +291,12 @@ defmodule Favn.Manifest.ExecutionPackageTest do
     assert {:error, {:invalid_manifest_payload, %ArgumentError{}}} =
              ExecutionPackage.new(ref, execution)
 
-    payload = %{schema_version: 5, asset_ref: ref, sql_execution: execution}
+    payload = %{schema_version: 6, asset_ref: ref, sql_execution: execution}
     {:ok, encoded} = Favn.Manifest.Serializer.encode_manifest(payload)
     hash = :crypto.hash(:sha256, encoded) |> Base.encode16(case: :lower)
 
     package = %ExecutionPackage{
-      schema_version: 5,
+      schema_version: 6,
       content_hash: hash,
       asset_ref: ref,
       sql_execution: execution

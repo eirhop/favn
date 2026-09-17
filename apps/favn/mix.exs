@@ -51,6 +51,7 @@ defmodule Favn.MixProject do
         "guides/sql-runtime-inputs.md",
         "guides/retries-and-replay.md",
         "guides/sql-output-contracts.md",
+        "guides/sql-semantic-models.md",
         "guides/sql-asset-checks.md",
         "guides/local-development.md",
         "guides/secure-production-deployment.md",

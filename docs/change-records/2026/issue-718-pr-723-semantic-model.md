@@ -2,13 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature |
 | Primary issue | [#718](https://github.com/eirhop/favn/issues/718) |
 | Pull request | [#723](https://github.com/eirhop/favn/pull/723) (draft) |
 | Related work | [#720 catalog publication](https://github.com/eirhop/favn/issues/720), [#721 runtime state](https://github.com/eirhop/favn/issues/721), [#719 AI/MCP](https://github.com/eirhop/favn/issues/719) |
 | Affected areas | Public authoring, Core contracts/compiler, local build tooling, DuckDB integration, generated relationship checks |
 | Source baseline | `8d2b8e1f1e574dabb4670ef0e56f46e073f51f8d` on `origin/main` |
+| Approved implementation plan | `1a723c9f` |
 | Last updated | 2026-09-17 |
 
 ## One-minute summary
@@ -1003,3 +1004,12 @@ No backwards-compatibility shims or legacy DSL forms are required.
 Independent reviewer `review_semantic_plan` approved the implementation plan
 after recheck on 2026-09-17, with no remaining blocking findings. Approval
 covers scope and design; runtime guarantees require implementation tests.
+
+## Implementation decisions and deviations
+
+| Decision | Reason and evidence | Impact |
+| --- | --- | --- |
+| Startup build isolation is a caller prerequisite; the task guard precedes its explicit app.config, not all Mix bootstrap | Mix.Task.maybe_load_or_compile_task compiles dependencies (and may compile the project) to locate a task before run/1. Independent reviewer confirmed startup MIX_BUILD_PATH is the sound boundary. | Set the dedicated path before starting Mix; never launch a runner from it. Dependency output may already exist. Missing-isolation invocation is outside the deployment guarantee and a task error cannot undo earlier compilation. |
+| Native validation uses Python3 standard library supervision over the installed pinned DuckDB shared library on Linux | In-process ADBC has no reliable hard cancellation. A bounded one-shot native child needs no Python DuckDB package or downloads. | Linux/Python3 and an installed supported driver are explicit build prerequisites; unsupported platforms fail. Final native and lifecycle tests must qualify this boundary. |
+
+| Manifest-only rendering resolves compiled asset references through the pinned manifest relation map | The new generation-pinning test showed resolved references bypassed the map and could read the authored relation. | Required for relationship correctness; no fallback when a manifest binding is missing. Existing renderer tests and a real generation override fixture verify this boundary. |

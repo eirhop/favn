@@ -593,6 +593,13 @@ defmodule Favn.SQLAsset.Renderer do
   defp put_definition_relation_defaults(env, %SQLDefinition{}), do: env
 
   defp resolve_asset_ref(
+         %AssetRef{resolution: :resolved} = asset_ref,
+         %{deferred_resolution: :manifest_only} = env
+       ) do
+    resolve_asset_ref(%{asset_ref | resolution: :deferred, relation: nil}, env)
+  end
+
+  defp resolve_asset_ref(
          %AssetRef{resolution: :resolved, relation: %RelationRef{} = relation_ref} =
            asset_ref,
          env

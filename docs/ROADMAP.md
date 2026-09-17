@@ -79,6 +79,12 @@ remaining item is explicitly removed from the supported product contract.
 
 ## Later
 
+- Semantic catalog publication/activation and served-contract compatibility
+  [#720](https://github.com/eirhop/favn/issues/720), runtime quality/freshness context
+  [#721](https://github.com/eirhop/favn/issues/721), and AI/MCP discovery
+  [#719](https://github.com/eirhop/favn/issues/719) consume the independent semantic
+  artifact documented in the [semantic guide](../apps/favn/guides/sql-semantic-models.md).
+
 - Standalone, manually approved SQL asset migrations are tracked in
   [#533](https://github.com/eirhop/favn/issues/533). They follow the target-generation,
   locking, validation, activation, audit, and unknown-outcome contracts proven by

@@ -216,8 +216,8 @@ defmodule FavnRunner.ManifestStoreTest do
     {:ok, graph} = Graph.build(assets)
 
     %Manifest{
-      schema_version: 19,
-      runner_contract_version: 15,
+      schema_version: 20,
+      runner_contract_version: 16,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],

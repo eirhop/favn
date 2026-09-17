@@ -20,7 +20,8 @@ defmodule Favn.SQL.Contract.Diff do
             | :nullability_changed
             | :grain_changed
             | :unique_keys_changed
-            | :row_count_changed,
+            | :row_count_changed
+            | :relationships_changed,
           optional(:column) => atom(),
           optional(:from) => term(),
           optional(:to) => term()
@@ -207,7 +208,8 @@ defmodule Favn.SQL.Contract.Diff do
   defp contract_changes(previous, current) do
     maybe_change(:grain_changed, previous.grain, current.grain) ++
       maybe_change(:unique_keys_changed, previous.unique_keys, current.unique_keys) ++
-      maybe_change(:row_count_changed, previous.row_counts, current.row_counts)
+      maybe_change(:row_count_changed, previous.row_counts, current.row_counts) ++
+      maybe_change(:relationships_changed, previous.relationships, current.relationships)
   end
 
   defp maybe_change(_kind, value, value), do: []

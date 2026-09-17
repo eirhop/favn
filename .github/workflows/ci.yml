@@ -171,13 +171,17 @@ jobs:
           mkdir -p "$RUNNER_TEMP/duckdb"
           unzip -q "$RUNNER_TEMP/libduckdb-linux-amd64.zip" libduckdb.so -d "$RUNNER_TEMP/duckdb"
 
-      - name: Test native multi-statement DuckDB ADBC bootstrap
+      - name: Test native DuckDB bootstrap and semantic compiler
         env:
           DUCKDB_ADBC_DRIVER: ${{ runner.temp }}/duckdb/libduckdb.so
           FAVN_DUCKDB_ADBC_INTEGRATION: '1'
         run: >-
           mix do --app favn_duckdb_adbc cmd mix test --no-compile
           test/sql/adapter/duckdb_adbc_integration_test.exs
+          test/semantic_compiler_test.exs
+          test/semantic_compiler_lifecycle_test.exs
+          test/semantic_artifact_integration_test.exs
+          test/relationship_checks_test.exs
 
   dialyzer:
     name: Dialyzer

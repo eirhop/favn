@@ -65,6 +65,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     Favn.SQL.Contract.Param,
     Favn.SQL.Contract.Grain,
     Favn.SQL.Contract.UniqueKey,
+    Favn.SQL.Contract.Relationship,
     Favn.SQL.Contract.RowCount,
     Favn.SQL.Contract.Lineage,
     Favn.SQL.Contract.Fragment,
@@ -82,6 +83,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     Favn.SQL.Template.RuntimeRelation
   ]
   @atoms [
+    :many_to_one,
+    :one_to_one,
     :backfill_id,
     :backfill_window_id,
     :backfill_window_key,
