@@ -90,14 +90,7 @@ defmodule FavnDuckdbADBC.SemanticArtifactIntegrationTest do
              compile_closing("closing(@gross) + CASE WHEN 'ø' = 'ø' THEN 1 ELSE 0 END /* ø */")
 
     for function <- ["sum", ~s|"sum"|],
-        {separator, code} <- [
-          {" ", :mixed_composition},
-          {"/* gap */", :mixed_composition},
-          {"/* ø */", :mixed_composition},
-          {"\u00A0", :unsupported_sql_token},
-          {"\u200B", :unsupported_sql_token},
-          {"\u00A0/* gap */", :unsupported_sql_token}
-        ] do
+        separator <- [" ", "/* gap */", "/* ø */", "\u00A0", "\u200B", "\u00A0/* gap */"] do
       extra = function <> separator <> "(1)"
 
       # DuckDB accepts these formulas; Favn must enforce the stronger declared
@@ -108,8 +101,21 @@ defmodule FavnDuckdbADBC.SemanticArtifactIntegrationTest do
                ])
 
       assert {:error, [diagnostic]} = compile_closing("closing(@gross) + " <> extra)
-      assert diagnostic.code == code
+      assert diagnostic.code == :invalid_semantic_expression
     end
+
+    continued = "closing(@gross) + CASE WHEN E''\n'\\'' = '' THEN 1 ELSE 0 END + sum(1)"
+
+    assert {:ok, _} =
+             SemanticCompiler.validate(
+               String.replace(continued, "closing(@gross)", ~s|SUM("gross")|),
+               [%{name: "gross", type: :decimal, nullable: false}]
+             )
+
+    assert {:error, [diagnostic]} = compile_closing(continued)
+    assert diagnostic.code == :invalid_semantic_expression
+
+    assert {:ok, _} = compile_closing("closing(@gross)\u00A0+\u200B1")
   end
 
   defp compile_closing(sql) do

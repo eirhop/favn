@@ -75,8 +75,13 @@ defmodule Favn.SemanticTest do
     }
   end
 
-  defp validator(sql, inputs) do
+  defp validator(sql, inputs, options) do
     send(self(), {:validated, sql, inputs})
+    send(self(), {:validation_options, sql, options})
+
+    aggregate_locations =
+      Regex.scan(~r/\b(?:SUM|MIN|MAX|AVG|COUNT)\s*\(/, sql, return: :index)
+      |> Enum.map(fn [{index, _}] -> index end)
 
     {:ok,
      %{
@@ -84,12 +89,13 @@ defmodule Favn.SemanticTest do
        nullable: :unknown,
        runtime_version: "v1.5.5",
        compiler_version: "test-validator-v1",
-       validation_profile: Map.new(inputs, &{&1.name, "DECIMAL(18,2)"})
+       validation_profile: Map.new(inputs, &{&1.name, "DECIMAL(18,2)"}),
+       aggregate_locations: aggregate_locations
      }}
   end
 
   defp compile!(model \\ model(), assets \\ assets()) do
-    assert {:ok, artifact} = Compiler.compile([model], assets, &validator/2)
+    assert {:ok, artifact} = Compiler.compile([model], assets, &validator/3)
     artifact
   end
 
@@ -149,41 +155,14 @@ defmodule Favn.SemanticTest do
 
     for {invalid, code} <- cases do
       assert {:error, [%{code: ^code}]} =
-               Compiler.compile([model([invalid, metric()])], assets(), &validator/2)
-    end
-
-    for aggregate <- [
-          "SUM(1)",
-          "\"sum\"(1)",
-          "\"SUM\"\n(1)",
-          "sum/* comment */(1)",
-          "sum/* outer /* nested */ comment */(1)",
-          "sum\f(1)",
-          "-- comment\rsum(1)"
-        ] do
-      invalid =
-        metric(:derived, [:gross, :discount], "revenue(@gross, @discount) + " <> aggregate)
-
-      assert {:error, [%{code: :mixed_composition}]} =
-               Compiler.compile([model([invalid, metric()])], assets(), &validator/2)
-    end
-
-    for literal <- ["'\"sum\"(1)'", "E'sum(1)'", "$$\"sum\"(1)$$", "$tag$SUM(1)$tag$"] do
-      valid =
-        metric(
-          :derived,
-          [:gross, :discount],
-          "CASE WHEN #{literal} = 'text' THEN revenue(@gross, @discount) ELSE 0 END"
-        )
-
-      assert {:ok, _} = Compiler.compile([model([valid, metric()])], assets(), &validator/2)
+               Compiler.compile([model([invalid, metric()])], assets(), &validator/3)
     end
 
     cycle = metric(:revenue, [:gross, :discount], "other(@gross, @discount)")
     other = metric(:other, [:gross, :discount], "revenue(@gross, @discount)")
 
     assert {:error, [%{code: :metric_cycle}]} =
-             Compiler.compile([model([cycle, other])], assets(), &validator/2)
+             Compiler.compile([model([cycle, other])], assets(), &validator/3)
   end
 
   test "declarations fail explicitly for bare, unused, undeclared and oversized inputs" do
@@ -202,7 +181,7 @@ defmodule Favn.SemanticTest do
 
     for {invalid, code} <- cases do
       assert {:error, [%{code: ^code}]} =
-               Compiler.compile([model([invalid])], assets(), &validator/2)
+               Compiler.compile([model([invalid])], assets(), &validator/3)
     end
   end
 
@@ -210,13 +189,23 @@ defmodule Favn.SemanticTest do
     assert {:error, [%{code: :validator_unavailable}]} =
              Compiler.compile([model()], assets(), Favn.NoSemanticValidatorInstalled)
 
-    assert {:error, [%{code: :semantic_driver_unavailable, file: "/project/sales.ex", line: 20}]} =
+    assert {:error, [%{code: :validator_unavailable}]} =
              Compiler.compile([model()], assets(), fn _, _ ->
+               flunk("The old callback must never run")
+             end)
+
+    assert {:error, [%{code: :semantic_driver_unavailable, file: "/project/sales.ex", line: 20}]} =
+             Compiler.compile([model()], assets(), fn _, _, _ ->
                {:error, :semantic_driver_unavailable}
              end)
 
+    assert {:error, [%{code: :aggregate_limit}]} =
+             Compiler.compile([model()], assets(), fn _, _, _ ->
+               {:error, :aggregate_limit}
+             end)
+
     assert {:error, [%{code: :native_validation_failed, message: message}]} =
-             Compiler.compile([model()], assets(), fn _, _ ->
+             Compiler.compile([model()], assets(), fn _, _, _ ->
                {:error, %{secret: "do-not-leak"}}
              end)
 
@@ -224,7 +213,7 @@ defmodule Favn.SemanticTest do
     identity = %{supervisor_pid: 123, worker_pid: 456, process_group: 456}
 
     assert {:error, [%{code: :semantic_worker_cleanup_unconfirmed, message: message}]} =
-             Compiler.compile([model()], assets(), fn _, _ ->
+             Compiler.compile([model()], assets(), fn _, _, _ ->
                {:error, {:semantic_worker_cleanup_unconfirmed, identity}}
              end)
 
@@ -243,10 +232,10 @@ defmodule Favn.SemanticTest do
     assert metric["time_aggregate"] == "first"
 
     assert {:error, [%{code: :time_grain_required}]} =
-             Compiler.compile([model([first])], assets(), &validator/2)
+             Compiler.compile([model([first])], assets(), &validator/3)
 
     assert {:error, [%{code: :time_required}]} =
-             Compiler.compile([%{model([first]) | time: nil}], assets(), &validator/2)
+             Compiler.compile([%{model([first]) | time: nil}], assets(), &validator/3)
   end
 
   test "composed selection rules are inherited and cannot mix opening and closing" do
@@ -265,7 +254,7 @@ defmodule Favn.SemanticTest do
     derived = metric(:difference, [:gross, :discount], "opening(@gross) - closing(@discount)")
 
     assert {:error, [%{code: :incompatible_time_rules}]} =
-             Compiler.compile([model([derived, opening, closing])], [asset], &validator/2)
+             Compiler.compile([model([derived, opening, closing])], [asset], &validator/3)
 
     derived =
       metric(:double_opening, [:gross], "opening(@gross) * 2")
@@ -291,20 +280,20 @@ defmodule Favn.SemanticTest do
              Compiler.compile(
                [%{dimension | hierarchies: [%{name: :bad, columns: [:sale_id, :sale_date]}]}],
                assets(),
-               &validator/2
+               &validator/3
              )
 
     assert {:error, [%{code: :invalid_time_grain}]} =
-             Compiler.compile([put_in(model().time.grain, :hour)], assets(), &validator/2)
+             Compiler.compile([put_in(model().time.grain, :hour)], assets(), &validator/3)
 
     assert {:error, [%{code: :invalid_time_column}]} =
-             Compiler.compile([put_in(model().time.column, :gross)], assets(), &validator/2)
+             Compiler.compile([put_in(model().time.column, :gross)], assets(), &validator/3)
 
     assert {:error, [%{code: :invalid_timezone}]} =
              Compiler.compile(
                [put_in(model().time.timezone, "Not/A_Zone")],
                assets(),
-               &validator/2
+               &validator/3
              )
   end
 
@@ -322,8 +311,8 @@ defmodule Favn.SemanticTest do
     reversed = metric(:revenue, [:discount, :gross], "SUM(@gross - @discount)")
     refute compile!(model([reversed])).semantic_version == a.semantic_version
     other = %{model() | name: :other}
-    assert {:ok, one} = Compiler.compile([model(), other], assets(), &validator/2)
-    assert {:ok, two} = Compiler.compile([other, model()], assets(), &validator/2)
+    assert {:ok, one} = Compiler.compile([model(), other], assets(), &validator/3)
+    assert {:ok, two} = Compiler.compile([other, model()], assets(), &validator/3)
     assert one.semantic_version == two.semantic_version
     assert {:ok, json} = Artifact.encode(one)
     assert {:ok, ^one} = Artifact.decode(json)
@@ -460,9 +449,66 @@ defmodule Favn.SemanticTest do
     refute_receive {:validated, _, _}
   end
 
+  test "aggregate origins use exact native positions for each cached child occurrence" do
+    leaf_sql = "SUM(CASE WHEN 'SUM(1)' = 'SUM(1)' THEN \"gross\" ELSE \"gross\" END)"
+    prefix = "CASE WHEN 'ø' = 'ø' THEN "
+    first = byte_size(prefix) + 1
+    expected = [first, first + byte_size(leaf_sql) + 5]
+
+    leaf =
+      metric(:value, [:gross], "SUM(CASE WHEN 'SUM(1)' = 'SUM(1)' THEN @gross ELSE @gross END)")
+
+    derived = metric(:doubled, [:gross], prefix <> "value(@gross) + value(@gross) ELSE 0 END")
+
+    native = fn sql, inputs, options ->
+      {:ok, result} = validator(sql, inputs, options)
+
+      locations =
+        if sql == leaf_sql do
+          assert options == [allowed_aggregate_locations: nil]
+          [0]
+        else
+          assert options == [allowed_aggregate_locations: expected]
+          expected
+        end
+
+      {:ok, %{result | aggregate_locations: locations}}
+    end
+
+    assert {:ok, artifact} = Compiler.compile([model([derived, leaf])], assets(), native)
+    assert {:ok, json} = Artifact.encode(artifact)
+    refute json =~ "aggregate_locations"
+  end
+
+  test "native aggregate positions are required, bounded and cannot hide child aggregates" do
+    leaf = metric(:value, [:gross], "SUM(@gross) + SUM(@gross)")
+    derived = metric(:doubled, [:gross], "value(@gross) * 2")
+
+    hide = fn sql, inputs, options ->
+      {:ok, result} = validator(sql, inputs, options)
+
+      if options[:allowed_aggregate_locations],
+        do: {:ok, %{result | aggregate_locations: Enum.take(result.aggregate_locations, 1)}},
+        else: {:ok, result}
+    end
+
+    assert {:error, [%{code: :mixed_composition}]} =
+             Compiler.compile([model([derived, leaf])], assets(), hide)
+
+    for locations <- [nil, [], [-1], [65_536], [0, 0], Enum.to_list(0..1024)] do
+      malformed = fn sql, inputs, options ->
+        {:ok, result} = validator(sql, inputs, options)
+        {:ok, %{result | aggregate_locations: locations}}
+      end
+
+      assert {:error, [%{code: :invalid_validator}]} =
+               Compiler.compile([model([leaf])], assets(), malformed)
+    end
+  end
+
   test "rejected relation syntax never invokes customer module metadata" do
     invalid = metric(:bad, [:gross], "SELECT SUM(@gross) FROM Favn.SemanticTest.AssetTrap")
-    assert {:error, [_]} = Compiler.compile([model([invalid])], assets(), &validator/2)
+    assert {:error, [_]} = Compiler.compile([model([invalid])], assets(), &validator/3)
     refute_receive :customer_asset_loaded
 
     for sql <- [
@@ -472,31 +518,10 @@ defmodule Favn.SemanticTest do
       invalid = metric(:bad, [:gross, :discount], sql)
 
       assert {:error, [_]} =
-               Compiler.compile([model([invalid, metric()])], assets(), &validator/2)
+               Compiler.compile([model([invalid, metric()])], assets(), &validator/3)
 
       refute_receive :customer_asset_loaded
     end
-  end
-
-  test "SQL syntax is ASCII while Unicode strings and comments remain valid" do
-    for separator <- ["\u00A0", "\u200B", "\u2007", "\u202F"] do
-      for sql <- ["SUM#{separator}(@gross)", "revenue(@gross, @discount) + sum#{separator}(1)"] do
-        args = if String.starts_with?(sql, "SUM"), do: [:gross], else: [:gross, :discount]
-        invalid = metric(:bad, args, sql)
-
-        assert {:error, [%{code: :unsupported_sql_token}]} =
-                 Compiler.compile([model([invalid, metric()])], assets(), &validator/2)
-      end
-    end
-
-    valid =
-      metric(
-        :unicode,
-        [:gross],
-        "SUM(CASE WHEN 'ø\u00A0\u200B' = 'ø' THEN @gross ELSE 0 END) /* ø\u00A0\u200B */"
-      )
-
-    assert {:ok, _} = Compiler.compile([model([valid])], assets(), &validator/2)
   end
 
   test "relationship minimum grain inherits and compatibility validates referenced target keys" do
@@ -548,7 +573,7 @@ defmodule Favn.SemanticTest do
     weakened = Map.update!(composed, :opts, &Keyword.put(&1, :minimum_grain, []))
 
     assert {:error, [%{code: :weakened_minimum_grain}]} =
-             Compiler.compile([model([weakened, leaf])], [sales, store], &validator/2)
+             Compiler.compile([model([weakened, leaf])], [sales, store], &validator/3)
   end
 
   test "relationship compatibility preserves key order but ignores column declaration order" do
@@ -661,7 +686,7 @@ defmodule Favn.SemanticTest do
       end)
 
     assert {:error, [%{code: :dependency_depth}]} =
-             Compiler.compile([model(chain)], assets(), &validator/2)
+             Compiler.compile([model(chain)], assets(), &validator/3)
 
     growth =
       Enum.reduce(1..16, [], fn index, acc ->
@@ -669,20 +694,28 @@ defmodule Favn.SemanticTest do
 
         sql =
           if index == 1,
-            do: "SUM(@gross)",
+            do: "SUM(@gross)" <> String.duplicate(" + 1", 1000),
             else: "growth_#{index - 1}(@gross) + growth_#{index - 1}(@gross)"
 
         [metric(name, [:gross], sql) | acc]
       end)
 
     assert {:error, [%{code: :expansion_limit}]} =
-             Compiler.compile([model(growth)], assets(), &validator/2)
+             Compiler.compile([model(growth)], assets(), &validator/3)
+
+    many_aggregates =
+      Enum.map(growth, fn metric ->
+        if metric.name == :growth_1, do: %{metric | sql: "SUM(@gross)"}, else: metric
+      end)
+
+    assert {:error, [%{code: :aggregate_limit}]} =
+             Compiler.compile([model(many_aggregates)], assets(), &validator/3)
   end
 
   test "diagnostics are bounded and report omitted count" do
     invalid = metric(:bad, [:missing], "SUM(@missing)")
     models = for index <- 1..105, do: %{model([invalid]) | name: String.to_atom("model_#{index}")}
-    assert {:error, diagnostics} = Compiler.compile(models, assets(), &validator/2)
+    assert {:error, diagnostics} = Compiler.compile(models, assets(), &validator/3)
     assert length(diagnostics) == 100
     assert List.last(diagnostics).code == :diagnostics_omitted
     assert List.last(diagnostics).message =~ "6 additional"

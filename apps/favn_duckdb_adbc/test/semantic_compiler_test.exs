@@ -51,6 +51,48 @@ defmodule FavnDuckdbADBC.SemanticCompilerTest do
     assert {:ok, _} = SemanticCompiler.validate(~s|SUM("discount" - "gross")|, @inputs)
   end
 
+  test "aggregate origins use exact native byte offsets across SQL lexical forms" do
+    inputs = [%{name: "gross", type: :decimal, nullable: false}]
+
+    assert {:ok, %{aggregate_locations: [0]}} =
+             SemanticCompiler.validate(~s|SUM("gross")|, inputs)
+
+    assert {:ok, %{aggregate_locations: [1]}} =
+             SemanticCompiler.validate(~s|(SUM("gross")) + 1|, inputs,
+               allowed_aggregate_locations: [1]
+             )
+
+    assert {:error, :invalid_semantic_expression} =
+             SemanticCompiler.validate(~s|(SUM("gross")) + 1|, inputs,
+               allowed_aggregate_locations: [1, 20]
+             )
+
+    assert {:error, :invalid_semantic_expression} =
+             SemanticCompiler.validate(~s|SUM("gross")|, inputs, allowed_aggregate_locations: [])
+
+    for suffix <- [
+          "sum(1)",
+          ~s|"sum"/* comment */(1)|,
+          "sum\u00A0(1)",
+          "sum\u200B(1)",
+          "CASE WHEN E''\n'\\'' = '' THEN 1 ELSE 0 END + sum(1)"
+        ] do
+      sql = ~s|(SUM("gross")) + | <> suffix
+      assert {:ok, %{aggregate_locations: [1, extra]}} = SemanticCompiler.validate(sql, inputs)
+      assert extra > 1
+
+      assert {:error, :invalid_semantic_expression} =
+               SemanticCompiler.validate(sql, inputs, allowed_aggregate_locations: [1])
+    end
+
+    assert {:error, :aggregate_limit} =
+             SemanticCompiler.validate(
+               ~s|SUM("gross")|,
+               inputs,
+               allowed_aggregate_locations: Enum.to_list(0..1024)
+             )
+  end
+
   test "compiler offsets distinguish generated inputs from otherwise-binding raw references" do
     inputs = [%{name: "gross", type: :decimal, nullable: false, locations: [4]}]
     assert {:ok, _} = SemanticCompiler.validate(~s|SUM("gross")|, inputs)
@@ -67,6 +109,25 @@ defmodule FavnDuckdbADBC.SemanticCompilerTest do
 
     assert {:error, :invalid_semantic_expression} =
              SemanticCompiler.validate(sql, [%{hd(inputs) | locations: [offset - 2]}])
+  end
+
+  test "native aggregate evidence has a bounded 1024-location budget" do
+    inputs = [%{name: "gross", type: :decimal, nullable: false}]
+
+    assert {:ok, %{aggregate_locations: locations}} =
+             SemanticCompiler.validate(balanced_aggregates(1024), inputs)
+
+    assert length(locations) == 1024
+
+    assert {:error, :aggregate_limit} =
+             SemanticCompiler.validate(balanced_aggregates(1025), inputs)
+  end
+
+  defp balanced_aggregates(1), do: ~s|SUM("gross")|
+
+  defp balanced_aggregates(count) do
+    left = div(count, 2)
+    "(" <> balanced_aggregates(left) <> "+" <> balanced_aggregates(count - left) <> ")"
   end
 
   test "count accepts every supported logical input family" do

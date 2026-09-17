@@ -7,9 +7,9 @@ defmodule Favn.Semantic.Compiler do
   loads a customer module. Diagnostics retain authoring locations, while artifact
   identity depends only on the public contract and validated formula content.
 
-  SQL syntax, separators and identifiers are ASCII. Unicode is supported inside
-  string literals and comments, and in business descriptions. This closed lexical
-  boundary avoids dialect-specific invisible separators changing composition.
+  Native validation returns aggregate token locations. Inlining shifts those
+  locations so a composed expression must contain exactly its children's
+  aggregates, without a second SQL lexer or parser in Core.
   """
 
   alias Favn.Semantic.{Artifact, Diagnostic, Snapshot}
@@ -19,6 +19,7 @@ defmodule Favn.Semantic.Compiler do
   @options [:unit, :description, :format, :time_aggregate, :minimum_grain, :file]
   @builtins ~w(sum min max avg count coalesce nullif abs round cast try_cast case)
   @native_errors [
+    :aggregate_limit,
     :semantic_bind_failed,
     :semantic_driver_unavailable,
     :semantic_python_unavailable,
@@ -179,7 +180,9 @@ defmodule Favn.Semantic.Compiler do
       "hierarchies" => hierarchies,
       "time" => time,
       "metrics" =>
-        compiled |> Enum.map(&Map.delete(&1, "_input_locations")) |> Enum.sort_by(& &1["name"])
+        compiled
+        |> Enum.map(&Map.drop(&1, ["_input_locations", "_aggregate_locations"]))
+        |> Enum.sort_by(& &1["name"])
     }
   end
 
@@ -284,8 +287,6 @@ defmodule Favn.Semantic.Compiler do
     )
 
     calls = Enum.filter(template.nodes, &match?(%Call{}, &1))
-    text = template.nodes |> Enum.filter(&match?(%Text{}, &1)) |> Enum.map_join(" ", & &1.sql)
-    raw_aggregate? = raw_aggregate?(text)
 
     require!(
       calls == [] or not Enum.any?(template.nodes, &match?(%Placeholder{}, &1)),
@@ -293,16 +294,11 @@ defmodule Favn.Semantic.Compiler do
       "Composed metrics cannot mix metric calls and raw column inputs."
     )
 
-    require!(
-      calls == [] or not raw_aggregate?,
-      :mixed_composition,
-      "Composed metrics cannot add raw aggregates around metric calls."
-    )
-
-    {expanded, used, children, cache, depth, locations} =
-      Enum.reduce(template.nodes, {"", [], [], cache, 1, %{}}, fn node,
-                                                                  {sql, used, children, cache,
-                                                                   depth, locations} ->
+    {expanded, used, children, cache, depth, locations, aggregate_locations} =
+      Enum.reduce(template.nodes, {"", [], [], cache, 1, %{}, []}, fn node,
+                                                                      {sql, used, children, cache,
+                                                                       depth, locations,
+                                                                       aggregate_locations} ->
         {fragment, inputs, child, cache, child_depth, fragment_locations} =
           expand_node(node, args, context, [name | stack], cache)
 
@@ -315,8 +311,21 @@ defmodule Favn.Semantic.Compiler do
         shifted = shift_locations(fragment_locations, byte_size(sql))
         locations = Map.merge(locations, shifted, fn _, a, b -> a ++ b end)
 
+        aggregate_locations =
+          if child,
+            do:
+              aggregate_locations ++
+                Enum.map(child["_aggregate_locations"], &(&1 + byte_size(sql) + 1)),
+            else: aggregate_locations
+
+        require!(
+          length(aggregate_locations) <= 1024,
+          :aggregate_limit,
+          "Expanded metric SQL supports at most 1,024 aggregate locations."
+        )
+
         {sql <> fragment, used ++ inputs, if(child, do: [child | children], else: children),
-         cache, max(depth, child_depth + 1), locations}
+         cache, max(depth, child_depth + 1), locations, aggregate_locations}
       end)
 
     require!(
@@ -361,7 +370,12 @@ defmodule Favn.Semantic.Compiler do
       "Semantic build exceeded its five-minute deadline."
     )
 
-    validation = validate(context.validator, expanded, validation_inputs)
+    allowed_aggregates = if calls == [], do: nil, else: Enum.sort(Enum.uniq(aggregate_locations))
+
+    {validation, aggregate_locations} =
+      validate(context.validator, expanded, validation_inputs,
+        allowed_aggregate_locations: allowed_aggregates
+      )
 
     require!(
       System.monotonic_time(:millisecond) < context.deadline,
@@ -396,7 +410,10 @@ defmodule Favn.Semantic.Compiler do
       "validation" => validation
     }
 
-    result = Map.put(result, "_input_locations", locations)
+    result =
+      result
+      |> Map.put("_input_locations", locations)
+      |> Map.put("_aggregate_locations", aggregate_locations)
 
     {result, Map.put(cache, name, {result, depth}), depth}
   end
@@ -522,19 +539,19 @@ defmodule Favn.Semantic.Compiler do
     {rule, Enum.sort(Enum.uniq(inherited ++ declared))}
   end
 
-  defp validate(validator, sql, inputs) do
+  defp validate(validator, sql, inputs, options) do
     require!(
-      is_function(validator, 2) or
+      is_function(validator, 3) or
         (is_atom(validator) and Code.ensure_loaded?(validator) and
-           function_exported?(validator, :validate, 2)),
+           function_exported?(validator, :validate, 3)),
       :validator_unavailable,
       "A native semantic validation capability is required to build this artifact."
     )
 
     result =
-      if is_function(validator, 2),
-        do: validator.(sql, inputs),
-        else: validator.validate(sql, inputs)
+      if is_function(validator, 3),
+        do: validator.(sql, inputs, options),
+        else: validator.validate(sql, inputs, options)
 
     case result do
       {:ok, %{native_type: type} = validation} when is_binary(type) ->
@@ -547,13 +564,33 @@ defmodule Favn.Semantic.Compiler do
           "Native validation must record its runtime, compiler and complete input type profile."
         )
 
-        %{
+        aggregate_locations = Map.get(validation, :aggregate_locations)
+
+        require!(
+          is_list(aggregate_locations) and length(aggregate_locations) in 1..1024 and
+            Enum.all?(aggregate_locations, &(is_integer(&1) and &1 >= 0 and &1 < byte_size(sql))) and
+            aggregate_locations == Enum.sort(Enum.uniq(aggregate_locations)),
+          :invalid_validator,
+          "Native validation must return one to 1,024 distinct ordered aggregate token locations."
+        )
+
+        expected = Keyword.fetch!(options, :allowed_aggregate_locations)
+
+        require!(
+          is_nil(expected) or expected == aggregate_locations,
+          :mixed_composition,
+          "Composed metrics must preserve exactly their referenced metrics' aggregates."
+        )
+
+        evidence = %{
           "validation_result_type" => type,
           "nullable" => "unknown",
           "runtime_version" => validation.runtime_version,
           "compiler_version" => validation.compiler_version,
           "profile" => normalize_profile(validation.validation_profile)
         }
+
+        {evidence, aggregate_locations}
 
       {:error, reason} when reason in @native_errors ->
         fail(reason, "Native semantic validation failed: #{reason}.")
@@ -766,113 +803,6 @@ defmodule Favn.Semantic.Compiler do
 
   defp shift_locations(locations, offset),
     do: Map.new(locations, fn {name, values} -> {name, Enum.map(values, &(&1 + offset))} end)
-
-  defp raw_aggregate?(sql) do
-    sql
-    |> expression_tokens([])
-    |> Enum.reverse()
-    |> Enum.chunk_every(2, 1, :discard)
-    |> Enum.any?(fn
-      [{:identifier, name}, :open] -> name in ~w(sum min max avg count)
-      _ -> false
-    end)
-  end
-
-  defp expression_tokens("", tokens), do: tokens
-
-  defp expression_tokens("--" <> rest, tokens) do
-    rest =
-      case :binary.match(rest, ["\n", "\r"]) do
-        :nomatch -> ""
-        {offset, 1} -> binary_part(rest, offset + 1, byte_size(rest) - offset - 1)
-      end
-
-    expression_tokens(rest, tokens)
-  end
-
-  defp expression_tokens("/*" <> rest, tokens),
-    do: expression_tokens(skip_comment(rest, 1), tokens)
-
-  defp expression_tokens(<<e, ?\', rest::binary>>, tokens) when e in [?e, ?E] do
-    {_, rest} = quoted_token(rest, ?\', true, [])
-    expression_tokens(rest, [:literal | tokens])
-  end
-
-  defp expression_tokens(<<quote, rest::binary>>, tokens) when quote in [?\', ?\"] do
-    {value, rest} = quoted_token(rest, quote, false, [])
-
-    require!(
-      quote != ?\" or ascii?(value),
-      :unsupported_sql_token,
-      "SQL syntax and identifiers must use ASCII; Unicode is supported in strings and comments."
-    )
-
-    token = if quote == ?\", do: {:identifier, String.downcase(value)}, else: :literal
-    expression_tokens(rest, [token | tokens])
-  end
-
-  defp expression_tokens("$" <> _ = sql, tokens) do
-    case Regex.run(~r/\A\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$/, sql) do
-      [delimiter] ->
-        rest = binary_part(sql, byte_size(delimiter), byte_size(sql) - byte_size(delimiter))
-
-        rest =
-          case :binary.match(rest, delimiter) do
-            :nomatch -> ""
-            {offset, size} -> binary_part(rest, offset + size, byte_size(rest) - offset - size)
-          end
-
-        expression_tokens(rest, [:literal | tokens])
-
-      nil ->
-        expression_tokens(binary_part(sql, 1, byte_size(sql) - 1), [:other | tokens])
-    end
-  end
-
-  defp expression_tokens("(" <> rest, tokens), do: expression_tokens(rest, [:open | tokens])
-
-  defp expression_tokens(<<char, rest::binary>>, tokens) when char in [9, 10, 11, 12, 13, 32],
-    do: expression_tokens(rest, tokens)
-
-  defp expression_tokens(<<char, _rest::binary>>, _tokens) when char > 127,
-    do:
-      fail(
-        :unsupported_sql_token,
-        "SQL syntax and identifiers must use ASCII; Unicode is supported in strings and comments."
-      )
-
-  defp expression_tokens(sql, tokens) do
-    case Regex.run(~r/\A[A-Za-z_][A-Za-z_0-9$]*/, sql) do
-      [identifier] ->
-        rest = binary_part(sql, byte_size(identifier), byte_size(sql) - byte_size(identifier))
-        expression_tokens(rest, [{:identifier, String.downcase(identifier)} | tokens])
-
-      nil ->
-        expression_tokens(binary_part(sql, 1, byte_size(sql) - 1), [:other | tokens])
-    end
-  end
-
-  defp quoted_token(<<quote, quote, rest::binary>>, quote, escape, acc),
-    do: quoted_token(rest, quote, escape, [<<quote>> | acc])
-
-  defp quoted_token(<<quote, rest::binary>>, quote, _escape, acc),
-    do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
-
-  defp quoted_token(<<92, char, rest::binary>>, quote, true, acc),
-    do: quoted_token(rest, quote, true, [<<char>> | acc])
-
-  defp quoted_token(<<char, rest::binary>>, quote, escape, acc),
-    do: quoted_token(rest, quote, escape, [<<char>> | acc])
-
-  defp quoted_token("", _quote, _escape, acc),
-    do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), ""}
-
-  defp skip_comment("/*" <> rest, depth), do: skip_comment(rest, depth + 1)
-  defp skip_comment("*/" <> rest, 1), do: rest
-  defp skip_comment("*/" <> rest, depth), do: skip_comment(rest, depth - 1)
-  defp skip_comment(<<_, rest::binary>>, depth), do: skip_comment(rest, depth)
-  defp skip_comment("", _depth), do: ""
-  defp ascii?(binary), do: Enum.all?(:binary.bin_to_list(binary), &(&1 <= 127))
 
   defp quote_identifier(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
   defp require!(true, _, _), do: :ok

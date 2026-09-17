@@ -167,9 +167,10 @@ defmodule Mix.Tasks.Favn.SemanticTasksTest do
       line: 1
     }
 
-    validator = fn _sql, _inputs ->
+    validator = fn _sql, _inputs, _options ->
       {:ok,
        %{
+         aggregate_locations: [0],
          native_type: "HUGEINT",
          nullable: :unknown,
          runtime_version: "test",

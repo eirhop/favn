@@ -1048,15 +1048,15 @@ slice 6. This avoids counting a shared file more than once.
 
 | Slice | Production added/deleted | Supporting added/deleted |
 | --- | --- | --- |
-| 1: contracts, snapshots and closed codec | +771 / -0 | +724 / -0 |
+| 1: contracts, snapshots and closed codec | +771 / -0 | +757 / -0 |
 | 2: relationships and execution compatibility | +256 / -21 | +754 / -87 |
-| 3: authoring and formula composition | +1244 / -6 | +129 / -0 |
-| 4: native validation and supervision | +536 / -0 | +444 / -1 |
-| 5: build and local read tasks | +510 / -0 | +214 / -0 |
-| 6: guides, discovery and consumer integration | +19 / -0 | +501 / -4 |
-| Total | +3336 / -27 | +2766 / -92 |
+| 3: authoring and formula composition | +1180 / -6 | +129 / -0 |
+| 4: native validation and supervision | +583 / -0 | +505 / -1 |
+| 5: build and local read tasks | +510 / -0 | +215 / -0 |
+| 6: guides, discovery and consumer integration | +19 / -0 | +508 / -4 |
+| Total | +3319 / -27 | +2868 / -92 |
 
-Production exceeds the estimated 2,760-line upper bound by 576 lines. Slice 1's
+Production exceeds the estimated 2,760-line upper bound by 559 lines. Slice 1's
 closed decoder validates nested identities, input ordering, dependency closure,
 relationship mappings and consumed contract snapshots without atom creation or
 customer code. Slice 3 includes bounded expansion, exact input origins,
@@ -1076,11 +1076,11 @@ replaced. No old semantic implementation or compatibility path is retained.
 Local verification uses an isolated checkout, disposable PostgreSQL database,
 and installed pinned DuckDB library. It does not touch a deployed platform.
 
-- The final focused Core semantic suite passed 24 tests, including rejection of
+- The final focused Core semantic suite passed 25 tests, including rejection of
   relation syntax without loading customer code. The native compiler, lifecycle,
-  artifact and relationship suites passed 16 tests on both DuckDB 1.5.2 and 1.5.5.
-  Including existing adapter tests, the exact native CI command passed 24 tests
-  on 1.5.5. Core plus the affected shared Template suite passed 38 tests.
+  artifact and relationship suites passed 18 tests on both DuckDB 1.5.2 and 1.5.5.
+  Including existing adapter tests, the exact native CI command passed 26 tests
+  on 1.5.5. Core plus the affected shared Template suite passed 39 tests.
 - The native consumer fixture compares macro and inline SQL plans on a physical
   table and proves unused columns are pruned. Opening/closing values are 30/32;
   multiple buckets, missing dates, duplicate grain, null/empty/zero-denominator
@@ -1129,7 +1129,7 @@ comparison, nested presentation-aware diffs, validator availability checks, and
 bounded process identity diagnostics. The actual checked runner fixture covers
 all five pinned-generation/publication scenarios, using a fresh physical database
 per scenario to avoid external fixture resets against runner-owned sessions.
-The combined native suite passed both seeds 718 and 32559 (15 tests each);
+At that review stage, the combined native suite passed both seeds 718 and 32559 (15 tests each);
 public semantic tasks passed six tests and focused Authoring passed eight. The corrected source is ready
 for independent recheck; approval is recorded only after that recheck.
 
@@ -1143,3 +1143,17 @@ business text remains supported. Native-backed composed-selector regressions and
 a nested customer-metadata trap verify those boundaries. This is a deliberate
 fail-closed grammar restriction, documented in the canonical guide, rather than
 an attempt to duplicate DuckDB's evolving Unicode lexer.
+
+
+The third Astra recheck showed that ASCII-only text scanning still disagreed
+with DuckDB for newline-continued escape strings. That restriction and the custom
+aggregate scanner are removed in the final correction. The independently reviewed
+replacement uses the existing native parser as the sole SQL grammar authority:
+native validation returns exact aggregate-call byte offsets, Core shifts them
+when inserting validated child expressions, and native validation requires the
+actual aggregate positions to equal those inherited by a composition. Offsets
+are transient compiler evidence, never part of the published artifact. A bound
+of 1,024 aggregate calls keeps requests/results within the existing protocol
+budget. Validator adapters use the explicit three-argument boundary, with no
+fallback that could silently omit composition validation. This simplifies the
+implementation and closes the mismatch rather than adding more lexical exceptions.

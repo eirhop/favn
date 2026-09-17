@@ -21,7 +21,7 @@ defmodule FavnAuthoring.Semantic.Builder do
     end
   end
 
-  @doc "Compiles captured assets to a semantic artifact without writing it."
+  @doc "Compiles captured assets without writing, using a `Favn.Semantic.Validator` adapter or three-argument function."
   @spec compile([map()], module() | function()) :: {:ok, Artifact.t()} | {:error, term()}
   def compile(assets, validator) do
     models =

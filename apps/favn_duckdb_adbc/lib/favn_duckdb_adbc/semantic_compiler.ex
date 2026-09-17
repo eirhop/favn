@@ -7,6 +7,9 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
   `DUCKDB_ADBC_DRIVER`). It never downloads a driver or opens user databases.
   Only the closed semantic expression grammar is accepted. Native result types
   describe the synthetic validation profile, not arbitrary consumer columns.
+  At most 1,024 aggregate function locations are accepted. Composition supplies
+  exact native-validated child aggregate offsets; these are temporary compiler
+  evidence, not published metric metadata.
   """
 
   alias FavnDuckdbADBC.Runtime
@@ -41,7 +44,8 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
           nullable: :unknown,
           runtime_version: String.t(),
           compiler_version: String.t(),
-          validation_profile: map()
+          validation_profile: map(),
+          aggregate_locations: [non_neg_integer()]
         }
 
   @doc "Validates one expanded expression and waits for confirmed worker exit."
@@ -51,13 +55,16 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
           process_group: pos_integer() | nil
         }
   @type failure :: atom() | {:semantic_worker_cleanup_unconfirmed, process_identity()}
-  @spec validate(String.t(), [input()]) :: {:ok, result()} | {:error, failure()}
+  @spec validate(String.t(), [input()], keyword()) :: {:ok, result()} | {:error, failure()}
   @impl true
-  def validate(sql, inputs) when is_binary(sql) and is_list(inputs) do
+  def validate(sql, inputs, opts \\ [])
+
+  def validate(sql, inputs, opts) when is_binary(sql) and is_list(inputs) and is_list(opts) do
     driver = Keyword.get(Runtime.driver_opts(), :driver) || System.get_env("DUCKDB_ADBC_DRIVER")
 
     with :ok <- prerequisites(driver),
-         {:ok, request} <- request(sql, inputs, driver) do
+         :ok <- aggregate_budget(opts),
+         {:ok, request} <- request(sql, inputs, driver, opts) do
       port =
         Port.open({:spawn_executable, System.find_executable("python3")}, [
           :binary,
@@ -78,7 +85,17 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
     _ -> {:error, :semantic_worker_start_failed}
   end
 
-  def validate(_, _), do: {:error, :invalid_semantic_input}
+  def validate(_, _, _), do: {:error, :invalid_semantic_input}
+
+  defp aggregate_budget(opts) do
+    case Keyword.keyword?(opts) && Keyword.get(opts, :allowed_aggregate_locations) do
+      locations when is_list(locations) and length(locations) > 1024 ->
+        {:error, :aggregate_limit}
+
+      _ ->
+        :ok
+    end
+  end
 
   defp prerequisites(driver) do
     cond do
@@ -89,8 +106,9 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
     end
   end
 
-  defp request(sql, inputs, driver) do
-    if byte_size(sql) <= 65_536 and String.valid?(sql) and length(inputs) in 1..64 and
+  defp request(sql, inputs, driver, opts) do
+    if valid_options?(opts) and byte_size(sql) <= 65_536 and String.valid?(sql) and
+         length(inputs) in 1..64 and
          Enum.all?(inputs, fn
            %{name: name, type: type, nullable: nullable} = input
            when is_binary(name) and is_atom(type) and is_boolean(nullable) ->
@@ -103,11 +121,27 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
       Jason.encode(%{
         sql: sql,
         inputs: Enum.map(inputs, &Map.take(&1, [:name, :type, :nullable, :locations])),
-        driver: Path.expand(driver)
+        driver: Path.expand(driver),
+        allowed_aggregate_locations: Keyword.get(opts, :allowed_aggregate_locations)
       })
     else
       {:error, :invalid_semantic_input}
     end
+  end
+
+  defp valid_options?(opts) do
+    Keyword.keyword?(opts) and Keyword.keys(opts) in [[], [:allowed_aggregate_locations]] and
+      case Keyword.get(opts, :allowed_aggregate_locations) do
+        nil ->
+          true
+
+        locations when is_list(locations) ->
+          length(locations) <= 1024 and
+            Enum.all?(locations, &(is_integer(&1) and &1 in 0..65_535))
+
+        _ ->
+          false
+      end
   end
 
   defp valid_locations?(%{locations: locations}) when is_list(locations),
@@ -158,7 +192,8 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
          "ok" => true,
          "native_type" => type,
          "runtime_version" => version,
-         "validation_profile" => profile
+         "validation_profile" => profile,
+         "aggregate_locations" => aggregates
        }} ->
         {:ok,
          %{
@@ -166,7 +201,8 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
            nullable: :unknown,
            runtime_version: version,
            compiler_version: "duckdb-semantic-v1",
-           validation_profile: profile
+           validation_profile: profile,
+           aggregate_locations: aggregates
          }}
 
       {:ok, %{"error" => "cleanup_unconfirmed"}} ->
@@ -208,5 +244,6 @@ defmodule FavnDuckdbADBC.SemanticCompiler do
   defp error("invalid_expression"), do: :invalid_semantic_expression
   defp error("bind_failed"), do: :semantic_bind_failed
   defp error("timeout"), do: :semantic_validation_timeout
+  defp error("aggregate_limit"), do: :aggregate_limit
   defp error(_), do: :semantic_worker_failed
 end

@@ -94,9 +94,10 @@ Formulas support a bounded SQL expression grammar: aggregate `SUM`, `MIN`, `MAX`
 `AVG`, and `COUNT`, including `DISTINCT` and `FILTER`; arithmetic, comparisons,
 Boolean logic, `CASE`, casts, `COALESCE`, `NULLIF`, `ABS`, and `ROUND`.
 Subqueries, table reads/functions, windows, CTEs, volatile/context functions,
-user-defined functions, stars, and multiple statements fail closed. SQL syntax,
-including whitespace and quoted identifiers, must use ASCII characters. Text
-literals, comments, and business descriptions may contain Unicode.
+user-defined functions, stars, and multiple statements fail closed. Native parsing
+identifies every aggregate call. Composed expressions must contain exactly the
+aggregate calls inherited from their child metrics; hidden or added aggregates
+fail validation. Expanded formulas are limited to 1,024 aggregate calls.
 
 ## Select the right rows
 

@@ -113,7 +113,7 @@ def logical_type(value):
         require(1 <= info["width"] <= 38 and 0 <= info["scale"] <= info["width"])
 
 
-def expression(node, names, locations, depth=0, inside_aggregate=False):
+def expression(node, names, locations, aggregate_locations, depth=0, inside_aggregate=False):
     require(isinstance(node, dict) and depth <= 64 and node.get("alias") == "")
     kind, typ = node.get("class"), node.get("type")
     children, aggregate = [], False
@@ -139,6 +139,12 @@ def expression(node, names, locations, depth=0, inside_aggregate=False):
         require(node["order_bys"] == {"type": "ORDER_MODIFIER", "orders": []})
         require(node["is_operator"] == (name in OPERATORS))
         aggregate = name in AGGREGATES
+        if aggregate:
+            offset = node["query_location"] - 7
+            require(0 <= offset < 65_536)
+            aggregate_locations.add(offset)
+            if len(aggregate_locations) > 1024:
+                raise RuntimeError("aggregate_limit")
         require(not (aggregate and inside_aggregate))
         require(aggregate or (node["filter"] is None and node["distinct"] is False))
         children = node["children"] + ([] if node["filter"] is None else [node["filter"]])
@@ -171,12 +177,12 @@ def expression(node, names, locations, depth=0, inside_aggregate=False):
         raise Invalid()
     require(set(node) == BASE | extra)
     for child in children:
-        aggregate = expression(child, names, locations, depth + 1, inside_aggregate or kind == "FUNCTION"
+        aggregate = expression(child, names, locations, aggregate_locations, depth + 1, inside_aggregate or kind == "FUNCTION"
                                and node["function_name"] in AGGREGATES) or aggregate
     return aggregate
 
 
-def validate_tree(parsed, names, locations):
+def validate_tree(parsed, names, locations, allowed_aggregate_locations):
     require(set(parsed) == {"error", "statements"} and parsed["error"] is False)
     require(len(parsed["statements"]) == 1)
     statement = parsed["statements"][0]
@@ -192,7 +198,11 @@ def validate_tree(parsed, names, locations):
     require(set(table) == {"type", "alias", "sample", "query_location"})
     require(table["type"] == "EMPTY" and table["alias"] == "" and table["sample"] is None)
     require(len(node["select_list"]) == 1)
-    require(expression(node["select_list"][0], names, locations))
+    aggregate_locations = set()
+    require(expression(node["select_list"][0], names, locations, aggregate_locations))
+    if allowed_aggregate_locations is not None:
+        require(aggregate_locations == set(allowed_aggregate_locations))
+    return sorted(aggregate_locations)
 
 
 def child_ownership(parent):
@@ -214,12 +224,12 @@ def native(request, output):
         profile = {item["name"]: PROFILE[item["type"]] for item in request["inputs"]}
         sql = request["sql"]
         parsed = json.loads(db.query("SELECT json_serialize_sql('SELECT " + sql.replace("'", "''") + "')"))
-        validate_tree(parsed, names, locations)
+        aggregate_locations = validate_tree(parsed, names, locations, request.get("allowed_aggregate_locations"))
         columns = ", ".join("CAST(NULL AS " + typ + ') AS "' + name.replace('"', '""') + '"'
                             for name, typ in profile.items())
         native_type = db.query("DESCRIBE SELECT " + sql + " AS result FROM (SELECT " + columns + " WHERE FALSE) AS inputs", 1)
         result = {"ok": True, "native_type": native_type, "runtime_version": db.version,
-                  "validation_profile": profile}
+                  "validation_profile": profile, "aggregate_locations": aggregate_locations}
     finally:
         db.close()
     return result
@@ -270,7 +280,7 @@ def supervise(report=lambda _receipt: None):
         except Invalid:
             result = {"error": "invalid_expression"}
         except RuntimeError as error:
-            result = {"error": str(error) if str(error) in {"bind_failed", "unsupported_runtime"} else "worker_failed"}
+            result = {"error": str(error) if str(error) in {"bind_failed", "unsupported_runtime", "aggregate_limit"} else "worker_failed"}
         except BaseException:
             result = {"error": "worker_failed"}
         os.write(write_fd, json.dumps(result).encode() + b"\n")
