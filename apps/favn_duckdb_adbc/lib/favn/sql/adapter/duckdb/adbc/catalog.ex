@@ -1,9 +1,11 @@
 defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
   @moduledoc false
   @behaviour Favn.SQL.Catalog.Backend
-  alias Favn.Catalog.Projection
+  alias Favn.Catalog.{Artifact, Projection}
   alias Favn.Manifest.Serializer
+  alias Favn.Semantic.Artifact, as: SemanticArtifact
   alias Favn.Semantic.Catalog, as: Semantics
+  alias Favn.SQL.Catalog.Request
   alias Favn.SQL.{Client, Error}
 
   @impl true
@@ -39,6 +41,133 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
       deadline: deadline
     )
     |> classify_conflict()
+  end
+
+  @impl true
+  def rebuild(session, request, deadline) do
+    Client.transaction(
+      session,
+      fn tx ->
+        with :ok <- verify_schema(tx, request, deadline, bookkeeping()),
+             {:ok, selected} <- selections(tx, request, deadline),
+             :ok <- validate_selections(selected),
+             :ok <-
+               execute(
+                 tx,
+                 "UPDATE " <>
+                   table(request, "selection") <>
+                   " SET revision = revision",
+                 [],
+                 deadline
+               ),
+             {:ok, rows} <- retained_documents(tx, request, deadline),
+             :ok <- validate_releases(rows, selected),
+             :ok <-
+               each(Enum.sort(Projection.columns()), fn {name, fields} ->
+                 with :ok <-
+                        execute(tx, "DROP TABLE IF EXISTS " <> table(request, name), [], deadline),
+                      do: create_table(tx, request, name, fields, deadline)
+               end),
+             :ok <-
+               each(rows, fn row ->
+                 with {:ok, projection} <- retained_projection(row),
+                      do: install_rows(tx, request, projection, deadline)
+               end) do
+          {:ok,
+           %{
+             "outcome" => "rebuilt",
+             "operation_id" => request.operation_id,
+             "releases" => length(rows),
+             "selections" => selected
+           }}
+        end
+      end,
+      deadline: deadline
+    )
+    |> classify_conflict()
+  end
+
+  defp retained_documents(session, request, deadline) do
+    with {:ok, [%{"count" => count, "bytes" => bytes}]} <-
+           query(
+             session,
+             "SELECT COUNT(*) AS count, COALESCE(SUM(octet_length(encode(document))), 0)::BIGINT AS bytes FROM " <>
+               table(request, "release"),
+             [],
+             deadline
+           ) do
+      if count <= 10_000 and bytes <= 134_217_728 do
+        with {:ok, rows} <-
+               query(
+                 session,
+                 "SELECT context, version, identity, document FROM " <>
+                   table(request, "release") <> " ORDER BY context, version LIMIT 10001",
+                 [],
+                 deadline
+               ) do
+          if length(rows) == count, do: {:ok, rows}, else: error(:catalog_integrity_failure)
+        end
+      else
+        error(:catalog_rebuild_limit_exceeded)
+      end
+    end
+  end
+
+  defp validate_selections(selected) do
+    if Enum.all?(selected, fn {_context, value} ->
+         case value do
+           %{"version" => nil, "revision" => 0} ->
+             true
+
+           %{"version" => version, "revision" => revision}
+           when is_binary(version) and is_integer(revision) ->
+             match?(
+               {:ok, _},
+               Request.expectation(version <> ":" <> to_string(revision))
+             )
+
+           _ ->
+             false
+         end
+       end), do: :ok, else: error(:catalog_integrity_failure)
+  end
+
+  defp validate_releases(rows, selected) do
+    keys = Enum.map(rows, &{&1["context"], &1["version"]})
+
+    if length(rows) <= 10_000 and length(Enum.uniq(keys)) == length(keys) and
+         Enum.all?(selected, fn {context, value} ->
+           is_nil(value["version"]) or {context, value["version"]} in keys
+         end) do
+      each(rows, fn row ->
+        case retained_projection(row) do
+          {:ok, _} -> :ok
+          error -> error
+        end
+      end)
+    else
+      error(:catalog_integrity_failure)
+    end
+  end
+
+  defp retained_projection(row) do
+    decoder =
+      case row["context"] do
+        "manifest" -> Artifact
+        "semantic" -> SemanticArtifact
+        _ -> nil
+      end
+
+    with false <- is_nil(decoder),
+         {:ok, artifact} <- decoder.decode(row["document"]),
+         {:ok, projection} <- Projection.build(artifact),
+         true <-
+           projection.version == row["version"] and projection.identity == row["identity"] and
+             projection.document == row["document"] do
+      {:ok, projection}
+    else
+      _ -> error(:catalog_integrity_failure)
+    end
   end
 
   @impl true
@@ -104,7 +233,8 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
 
   @impl true
   def reconcile(session, request, deadline) do
-    with {:ok, receipt} <- receipt(session, request, deadline) do
+    with :ok <- verify_schema(session, request, deadline),
+         {:ok, receipt} <- receipt(session, request, deadline) do
       if receipt,
         do: {:ok, Map.put(receipt, "outcome", "replayed")},
         else: {:error, :publication_outcome_unknown}
@@ -170,17 +300,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
                  execute(session, "CREATE SCHEMA IF NOT EXISTS " <> scope(request), [], deadline),
                :ok <-
                  each(Enum.sort(columns()), fn {name, fields} ->
-                   definition =
-                     Enum.map_join(fields, ", ", fn {key, type} ->
-                       quote_id(key) <> " " <> type
-                     end)
-
-                   execute(
-                     session,
-                     "CREATE TABLE " <> table(request, name) <> " (" <> definition <> ")",
-                     [],
-                     deadline
-                   )
+                   create_table(session, request, name, fields, deadline)
                  end),
                :ok <-
                  execute(
@@ -204,7 +324,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
     end
   end
 
-  defp verify_schema(session, request, deadline) do
+  defp verify_schema(session, request, deadline, expected \\ columns()) do
     with {:ok, [%{"version" => 1}]} <-
            query(
              session,
@@ -221,17 +341,19 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
            ) do
       actual =
         fields
-        |> Enum.filter(&Map.has_key?(columns(), &1["table_name"]))
+        |> Enum.filter(&Map.has_key?(expected, &1["table_name"]))
         |> Enum.group_by(& &1["table_name"], &{&1["column_name"], &1["data_type"]})
 
-      if actual == columns(), do: :ok, else: error(:catalog_schema_conflict)
+      if actual == expected, do: :ok, else: error(:catalog_schema_conflict)
     else
       _ -> error(:catalog_schema_conflict)
     end
   end
 
-  defp columns do
-    Map.merge(Projection.columns(), %{
+  defp columns, do: Map.merge(Projection.columns(), bookkeeping())
+
+  defp bookkeeping do
+    %{
       "catalog_schema" => [{"version", "INTEGER"}],
       "selection" => [{"context", "VARCHAR"}, {"version", "VARCHAR"}, {"revision", "BIGINT"}],
       "release" => [
@@ -241,7 +363,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
         {"document", "VARCHAR"}
       ],
       "receipt" => [{"operation_id", "VARCHAR"}, {"document", "VARCHAR"}]
-    })
+    }
   end
 
   defp selections(session, request, deadline) do
@@ -309,14 +431,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
       case rows do
         [] ->
           with :ok <-
-                 each(Enum.sort(projection.tables), fn {name, rows} ->
-                   insert_batches(
-                     session,
-                     table(request, name),
-                     target_rows(name, rows, request.catalog),
-                     deadline
-                   )
-                 end) do
+                 install_rows(session, request, projection, deadline) do
             execute(
               session,
               "INSERT INTO " <> table(request, "release") <> " VALUES (?, ?, ?, ?)",
@@ -333,6 +448,28 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
           error(:catalog_integrity_failure)
       end
     end
+  end
+
+  defp create_table(session, request, name, fields, deadline) do
+    definition = Enum.map_join(fields, ", ", fn {key, type} -> quote_id(key) <> " " <> type end)
+
+    execute(
+      session,
+      "CREATE TABLE " <> table(request, name) <> " (" <> definition <> ")",
+      [],
+      deadline
+    )
+  end
+
+  defp install_rows(session, request, projection, deadline) do
+    each(Enum.sort(projection.tables), fn {name, rows} ->
+      insert_batches(
+        session,
+        table(request, name),
+        target_rows(name, rows, request.catalog),
+        deadline
+      )
+    end)
   end
 
   defp target_rows("metric", rows, catalog), do: Enum.map(rows, &List.replace_at(&1, 5, catalog))
@@ -498,7 +635,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
   end
 
   defp error(type),
-    do: {:error, %Error{type: type, message: "Catalog publication rejected", retryable?: false}}
+    do: {:error, %Error{type: type, message: "Catalog operation rejected", retryable?: false}}
 
   defp table(request, name), do: scope(request) <> "." <> quote_id(name)
   defp scope(request), do: quote_id(request.catalog) <> "." <> quote_id(request.schema)

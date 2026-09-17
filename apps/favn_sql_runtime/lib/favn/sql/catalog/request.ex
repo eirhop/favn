@@ -1,9 +1,11 @@
 defmodule Favn.SQL.Catalog.Request do
   @moduledoc """
-  Validated one-target catalog publication and its deterministic operation identity.
+  Validated one-target catalog publication or explicit projection rebuild.
 
   Expected version/revision pairs prevent stale CI writes and ABA during rollback.
-  An identity binds physical scope, exact artifacts and expectations, not credentials.
+  A publication identity binds scope, exact artifacts and expectations, not credentials.
+  Rebuild requests carry no artifacts or expectations; their random diagnostic ID
+  is not a publication receipt identity and cannot be used for reconciliation.
   """
   alias Favn.Catalog.Projection
   alias Favn.Semantic.{Artifact, Snapshot}
@@ -74,6 +76,28 @@ defmodule Favn.SQL.Catalog.Request do
        }}
     else
       _ -> {:error, :invalid_publication_request}
+    end
+  end
+
+  @doc "Builds an explicit maintenance request; no artifacts or selection changes are supplied."
+  @spec rebuild(String.t(), keyword()) :: {:ok, t()} | {:error, atom()}
+  def rebuild(target, config) do
+    if is_binary(target) and is_list(config) and Keyword.keyword?(config) and
+         Enum.sort(Keyword.keys(config)) == [:catalog, :connection, :schema] and
+         is_atom(config[:connection]) and not is_nil(config[:connection]) and
+         identifier?(config[:catalog]) and identifier?(config[:schema]) do
+      {:ok,
+       %__MODULE__{
+         target: target,
+         connection: config[:connection],
+         catalog: config[:catalog],
+         schema: config[:schema],
+         projections: [],
+         expectations: %{},
+         operation_id: "cr_" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+       }}
+    else
+      {:error, :invalid_rebuild_request}
     end
   end
 

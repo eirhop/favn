@@ -55,6 +55,7 @@ defmodule Favn.MixProject do
         "guides/sql-semantic-models.md",
         "guides/sql-catalog-publication.md",
         "guides/sql-runtime-catalog.md",
+        "guides/sql-catalog-reference.md",
         "guides/sql-asset-checks.md",
         "guides/local-development.md",
         "guides/secure-production-deployment.md",

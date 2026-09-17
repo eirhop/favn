@@ -149,7 +149,10 @@ JOIN mart.meta.metric_input i
 ORDER BY m.ref, i.ordinal;
 ```
 
-The generated tables are:
+For typed discovery fields, dimensions, relationships and ordered grouping keys,
+see the [SQL Catalog Reference](sql-catalog-reference.md).
+
+The base tables are:
 
 | Table | Content |
 | --- | --- |
@@ -231,3 +234,46 @@ served-contract evidence belong to #721; MCP discovery belongs to #719.
 Runtime freshness, checks and coverage are published automatically with managed
 table writes, independently of this CI command. See
 [query runtime metadata](sql-runtime-catalog.md).
+
+## Rebuild derived metadata
+
+After upgrading Favn to a changed projection layout, rebuild the existing target:
+
+```bash
+mix favn.catalog.rebuild --target analytics
+```
+
+This reads all retained canonical documents from `release` and recreates the
+known projection tables in the **same configured catalog and schema**. No new
+artifact files, runner, orchestrator API call, or versioned metadata namespace is
+needed. Fresh targets still use `favn.catalog.publish`.
+
+The rebuild preserves release documents, selected versions and revisions,
+publication receipts, immutable semantic macros, and unrelated tables. It uses
+one transaction: invalid artifacts or failed table writes leave the previous
+state intact. It never drops an entire schema or uses `CASCADE`. Existing
+publication commands can still reconcile their original receipts afterward.
+
+Stop catalog publishers while rebuilding, then resume them with their existing
+selection expectations. Overlapping writes can fail with `catalog_conflict`;
+there is no automatic write retry or online upgrade guarantee. Dependent views
+may prevent replacement and must be managed by their owner.
+
+The command validates the bookkeeping tables, their marker, release identities,
+and selections; it does not repair corrupted source artifacts or bookkeeping.
+Ordinary publication rejects incompatible projection columns with
+`catalog_schema_conflict` until rebuilt. This is a breaking pre-v1 projection
+change, with no decoder for old projection layouts and no new schema version.
+
+`--config` defaults to `config/catalog_publish.exs`. `--timeout-ms` defaults to
+300000 and is capped at 900000. Rebuild accepts at most 10,000 retained releases
+and 128 MiB of canonical document text; larger inputs return
+`catalog_rebuild_limit_exceeded` before replacing tables. Normal query-result
+limits also apply. Do not delete history automatically to get below the limit.
+
+Success prints JSON containing `outcome: "rebuilt"`, a diagnostic operation ID,
+the release count and unchanged selections. It does not create a publication
+receipt. If commit acknowledgement or the overall deadline is lost, the result
+is `rebuild_outcome_unknown`. Once writers are stopped and the connection is
+healthy, explicitly rerun the rebuild to establish a known result. Do not use
+publication `--reconcile` with a rebuild operation ID.

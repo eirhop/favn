@@ -190,17 +190,145 @@ with unspecified decimals. No implementation changes preceded approval.
 
 ## Implementation outcome
 
-To be recorded after the reviewed planning baseline is committed.
+Implemented typed metric/model fields and eight ordered child tables in the
+existing schema, with no new DSL or artifact format. Semantic rows come from
+their retained snapshot. Four canonical SQL examples are executed by native tests.
+
+The user-requested rebuild command restores all retained projection versions from
+validated canonical release documents in one transaction. Stable bookkeeping,
+macros and unrelated tables are preserved. Publication continues to reject
+incompatible layouts until explicitly rebuilt. No customer database was changed.
+
+```mermaid
+flowchart TD
+    A[Explicit rebuild CLI and configured target] --> B[Transaction validates bookkeeping and touches selections]
+    B --> C[Validate bounded retained documents]
+    C --> D[Replace known projection tables from canonical documents]
+    D --> E{Commit result}
+    E -->|Success| F[Same releases selections receipts and macros]
+    E -->|Rejected| G[Rollback leaves previous state]
+    E -->|Uncertain| H[Report unknown outcome without retry]
+```
+
+The rebuild deviation below supersedes the earlier reset guidance. The original
+planning baseline is intentionally retained for review.
 
 ## Deviations from the approved plan
 
-None at planning time.
+The user explicitly rejected backwards compatibility and the proposed `meta_v2`
+upgrade after planning approval. This instruction supersedes the upgrade sections
+of the preserved baseline above.
+
+| Planned | Revised implementation | Reason | Review |
+| --- | --- | --- | --- |
+| SQL schema 2 in a new metadata namespace with retained schema-1 history | Clean breaking layout in the existing configured metadata schema; retain the current schema marker and artifact formats; no parallel namespace, migration framework or legacy support | User instruction: "We do not need backwards compatibility so no new schema_v2 here" | Accepted by independent reviewer after user correction |
+
+Fresh publication creates the new layout in the configured schema. Strict column
+layout verification rejects an old or corrupt layout before writes or replay.
+Existing installations need an operator-managed rebuild of publisher-owned
+metadata before publication; history, receipts and selections are reset by that
+explicit rebuild. No automatic destructive reset is added. Business relations
+and catalog-scoped immutable macros are outside the metadata rebuild. Quiesce
+publishers and readers before rebuilding; no compatibility or online-upgrade
+promise is made.
+
+The upgrade fixture and parallel-schema adoption tests are removed. Keep tests
+for wrong/missing columns and unknown schema markers rejecting without mutation,
+and keep all metadata, ordering, snapshot, atomicity and replay criteria.
+No consumer-facing versioned schema name is introduced.
 
 ## Verification evidence
 
-Source inspection confirms the projection gap. Automated implementation and live
-qualification have not been performed. No customer database has been modified.
+Local verification on the rebased `97ac8657` baseline:
+
+- Warnings-as-errors compilation and repository formatting pass.
+- Core fast suite: 530 passed; SQL runtime fast suite: 126 passed; public Favn
+  fast suite: 193 passed (4 excluded by tier).
+- Public catalog tests including fresh-process acceptance: 4 passed. An initial
+  run under concurrent whole-repository analysis exceeded an existing 500 ms
+  fresh-process startup deadline; the isolated rerun passed without changing it.
+- Native DuckDB 1.5.5 and pinned DuckLake catalog/semantic qualification: 26 passed.
+  The final retained-macro assertion is qualified on both backends separately.
+- CI-equivalent warning-only strict Credo: no issues. Full all-category strict
+  Credo also ran but reports repository-wide existing style suggestions; it is
+  not the project's configured warning gate.
+- Test-tag tier guard, local guide links and `git diff --check` pass.
+- The initial reviewed plan's two diagrams rendered on GitHub before code edits.
+  Final outcome diagram render and final-head CI are delivery gates.
+
+These are synthetic local/native checks, not customer environment proof. No
+customer database was changed. Remote/cloud DuckLake, grants and workload-scale
+qualification remain outside this issue. CI results belong to the PR checks.
 
 ## Final review
 
 Independent implementation review and final-head CI are required before readiness.
+
+### User-requested rebuild command (superseding reset guidance)
+
+The user requested a rebuild CLI and then authorized continuing. Add
+`mix favn.catalog.rebuild --target analytics`, using the same dedicated config,
+connection resolution, isolated runtime and deadline as publication. It requires
+no artifact files and rebuilds **all retained versions** from the canonical
+`release.document` values already stored in that target. This supersedes the
+reset/history-loss paragraph above: preserve release documents, selections and
+revisions, receipts, the schema marker, macros and unrelated/business tables.
+Only the named `Projection.columns/0` tables are replaced, without CASCADE.
+There is no new schema version or old-layout decoder.
+
+Introduce an explicit rebuild request constructor and backend callback. Validate
+the stable bookkeeping table layouts and marker, bound retained inputs to 10,000
+releases / 128 MiB, validate each artifact and its stored context/version/identity,
+reject duplicates or selected versions missing from releases, then recreate the
+projection tables in one native transaction. A failed decode, DDL or insertion
+rolls back everything. Touch selection rows without changing revisions so a
+concurrent writer conflicts rather than silently losing derived rows. Operators
+must quiesce publishers during this maintenance action; no online upgrade claim.
+
+Rebuild is not publication: it never advances selections, installs macros or
+replays a publication receipt. An uncertain commit returns an explicit unknown
+rebuild outcome, never an automatic write retry. An operator may explicitly rerun
+the deterministic rebuild after stopping writers. Rebuild returns counts and the
+unchanged selections, not a durable publication receipt.
+
+Additional budget: 160–260 production lines added / 10–35 deleted and 160–260
+supporting lines added / 0–15 deleted. Native tests on DuckDB and DuckLake cover
+missing/outdated projections, retained versions, unchanged bookkeeping/macros,
+corrupt release rollback and unrelated table preservation. CLI fresh-process tests
+prove dedicated config and no customer runtime boot; fault tests prove unknown
+commit is surfaced without retry. Independent plan re-review precedes this slice.
+
+
+### Rebuild plan review
+
+Independent `review_728_plan` approved the rebuild deviation before implementation
+on 2026-09-17. It required bounds before loading, validated selection values,
+rollback after actual table replacement, native overlapping-write tests, and a
+rebuild-specific unknown result on the outer timeout. These checks are included.
+DuckDB rejects the overlapping publication immediately; DuckLake can commit the
+publication and reject the rebuild at commit. The test accepts either winner,
+requires one conflict, and verifies retained metadata and selected revisions.
+
+
+### Actual complexity comparison
+
+Counts below exclude this change record and compare implementation files with the
+rebased main baseline. Supporting means tests, fixtures and canonical guides;
+AI routing and HexDocs registration count as production. Shared native tests are
+assigned by hunk: 70 added lines exercise discovery/examples; remaining additions
+exercise rebuild/CLI/failure paths.
+
+| Slice | Production added/deleted | Supporting added/deleted | Compared with baseline |
+| --- | --- | --- | --- |
+| 1: Typed projections | 131 / 5 | 288 / 1 | Appending fields needs fewer deletions; complete contract fixture adds modestly beyond supporting estimate |
+| 2: Schema boundary/native discovery | 1 / 0 | 70 / 0 | User removed schema-2/parallel-upgrade implementation and fixtures; only reconciliation guard remains |
+| 3: Consumer reference and routing | 5 / 1 | 166 / 2 | Within additions budget; existing guide remains the workflow so fewer deletions |
+| Added rebuild slice | 312 / 54 | 322 / 7 | Explicit public/CLI timeout handling, retained-input validation, concurrent-writer and actual DDL rollback tests extend the estimate; extracting shared table creation/insertion accounts for extra deletions |
+| Total | 449 / 60 | 846 / 10 | Original plus user-requested rebuild; no compatibility framework or new authoring DSL |
+
+The rebuild additions exceed their estimates by 52 production / 62 supporting
+lines, below the material-variance threshold of 65 for each category. Rebuild
+deletions exceed the estimate by 19 because existing insertion/table creation is
+shared rather than duplicated. This is a justified implementation deviation,
+not removal of existing publication behavior. Review must assess these actual
+counts and the preservation/unknown-outcome tests before readiness.

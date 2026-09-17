@@ -58,7 +58,10 @@ defmodule Favn.AI do
 
   Build semantics with a
   dedicated `MIX_BUILD_PATH` established before Mix starts; never use active runner
-  output. Publish either immutable artifact with `mix favn.catalog.publish`; read
+  output. Rebuild derived SQL metadata with `mix favn.catalog.rebuild --target NAME`;
+  this preserves retained artifacts, selections and receipts. Publish either immutable artifact with `mix favn.catalog.publish`; read
+  [SQL Catalog Reference](sql-catalog-reference.html) for typed metric metadata,
+  dimensions, ordered hierarchy/grouping keys and version-scoped joins. Read
   [SQL Catalog Publication](sql-catalog-publication.html) and `Favn.Catalog` for
   dedicated CI configuration, named targets and required version/revision
   expectations. Selection is a definition choice, not verified served compatibility.

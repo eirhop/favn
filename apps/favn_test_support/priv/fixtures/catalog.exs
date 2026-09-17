@@ -205,8 +205,164 @@ defmodule FavnTestSupport.CatalogFixture do
       line: 1
     }
 
+    compile([model], [source()])
+  end
+
+  def rich_manifest do
+    pairs =
+      Enum.map(rich_sources(), fn source ->
+        sql = "SELECT 1 AS fixture"
+
+        template =
+          Template.compile!(sql,
+            file: "fixture.sql",
+            line: 1,
+            module: source.module,
+            scope: :query,
+            enforce_query_root: true
+          )
+
+        {:ok, package} =
+          ExecutionPackage.new(source.ref, %SQLExecution{
+            sql: sql,
+            template: template,
+            contract: source.contract,
+            checks: checks(source.contract)
+          })
+
+        asset = %Asset{
+          ref: source.ref,
+          module: source.module,
+          name: :asset,
+          type: :sql,
+          depends_on: source.depends_on,
+          relation: source.relation,
+          execution_package_hash: package.content_hash
+        }
+
+        {asset, package}
+      end)
+
+    {assets, packages} = Enum.unzip(pairs)
+    {:ok, graph} = Graph.build(assets)
+
+    attrs =
+      FavnTestSupport.with_manifest_contract(%{
+        assets: assets,
+        pipelines: [],
+        schedules: [],
+        graph: graph
+      })
+
+    {:ok, version} = Version.new(struct!(Favn.Manifest, attrs))
+    {:ok, publication} = Publication.from_parts(version, packages)
+    {:ok, artifact} = Favn.Catalog.Artifact.new(publication)
+    artifact
+  end
+
+  def rich_semantic(description \\ "Net sales revenue") do
+    [sales, store] = rich_sources()
+
+    metric = fn name, args, sql, opts ->
+      %{
+        name: name,
+        args: args,
+        sql: sql,
+        file: "/private/build/sales.ex",
+        line: 1,
+        opts:
+          Keyword.merge(
+            [unit: :count, description: Atom.to_string(name), time_aggregate: :aggregate],
+            opts
+          )
+      }
+    end
+
+    model = %{
+      name: :sales,
+      module: Example.Sales,
+      dimension: nil,
+      hierarchies: [],
+      time: %{column: :sale_date, grain: :day, timezone: "Europe/Oslo"},
+      file: "/private/build/sales.ex",
+      line: 1,
+      metrics: [
+        metric.(:revenue, [:net], "SUM(@net)",
+          unit: {:currency, "NOK"},
+          description: description,
+          format: [style: :currency, decimals: 2],
+          minimum_grain: [:store, :billing_store]
+        ),
+        metric.(:doubled, [:net], "revenue(@net) * 2", unit: {:currency, "NOK"}),
+        metric.(:closing, [:units], "SUM(@units)",
+          time_aggregate: :last,
+          format: [style: :number]
+        )
+      ]
+    }
+
+    dimension = %{
+      model
+      | name: :stores,
+        module: Example.Store,
+        time: nil,
+        metrics: [],
+        dimension: %{name: :store, label: :store_label},
+        hierarchies: [%{name: :geography, columns: [:country, :tenant_id, :store_id]}]
+    }
+
+    compile([model, dimension], [sales, store])
+  end
+
+  def rich_sources do
+    store = %{
+      source()
+      | ref: {Example.Store, :asset},
+        module: Example.Store,
+        relation: %{connection: :warehouse, catalog: "mart", schema: "sales", name: "stores"},
+        contract:
+          Contract.new!(
+            grain: [by: [:tenant_id, :store_id]],
+            columns: [
+              %{name: :store_id, type: :integer, null: false},
+              %{name: :tenant_id, type: :string, null: false},
+              %{name: :store_label, type: :string, null: false},
+              %{name: :country, type: :string, null: false}
+            ]
+          )
+    }
+
+    roles =
+      for name <- [:store, :billing_store],
+          do:
+            Favn.SQL.Contract.Relationship.new!(
+              name: name,
+              target: store.ref,
+              on: [tenant_id: :tenant_id, store_id: :store_id],
+              cardinality: :many_to_one,
+              on_violation: if(name == :store, do: :fail, else: :warn)
+            )
+
+    contract =
+      Contract.new!(
+        grain: [by: [:sale_date, :tenant_id, :sale_id]],
+        columns: [
+          %{name: :sale_id, type: :integer, null: false},
+          %{name: :sale_date, type: :date, null: false},
+          %{name: :tenant_id, type: :string, null: false},
+          %{name: :store_id, type: :integer, null: false},
+          %{name: :net, type: :decimal, null: false},
+          %{name: :units, type: :integer, null: false}
+        ]
+      )
+
+    sales = %{source() | depends_on: [store.ref], contract: %{contract | relationships: roles}}
+    [sales, store]
+  end
+
+  defp compile(models, assets) do
     {:ok, artifact} =
-      Compiler.compile([model], [source()], fn sql, inputs, _opts ->
+      Compiler.compile(models, assets, fn sql, inputs, _opts ->
         locations =
           Regex.scan(~r/\bSUM\s*\(/, sql, return: :index) |> Enum.map(fn [{at, _}] -> at end)
 
