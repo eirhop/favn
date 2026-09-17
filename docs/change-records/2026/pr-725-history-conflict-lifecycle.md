@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented; final PR qualification in progress |
 | Type | Bug fix |
 | Primary issue | None; the maintainer supplied the incident and authorized this repair without a separate issue. |
 | Pull request | [#725](https://github.com/eirhop/favn/pull/725) |
@@ -283,7 +283,7 @@ all unrelated storage errors have the same recovery semantics.
 | `logs/store.ex:append_batch`; runner log/input writes | Canonical owner-before-child ordering. Diagnostic append returns a retryable error to its caller; best-effort log callers can drop diagnostics, without changing asset outcome. | Real log-batch lock-order test and missing-run diagnostic test; runner log tests. |
 | `maintenance/history.ex`, submission retention and operation cancellation | Exclusive retirement and retained references remain mandatory. Operator mutations retain their existing command receipts and cancellation authority. | Existing retention/cancellation suites plus shared-writer exclusion tests. |
 
-### Verification evidence so far
+### Verification evidence
 
 - The composed real PostgreSQL pipeline injects exclusive history contention at
   resource outcomes and subsequent queue persistence, observes the specific
@@ -303,7 +303,21 @@ all unrelated storage errors have the same recovery semantics.
   and cancellation deferral while completed bookkeeping remains pending.
 - PostgreSQL core authority, concurrency authority and resource circuits passed
   together: **195 tests** before the final unknown-enqueue ownership correction.
-  Final-head requalification and independent final review remain in progress.
+  The subsequent complete PostgreSQL fast suite passed **479 tests** on a fresh
+  disposable database. The final domain-wait regression file passed **15 tests**,
+  including actual target-write contention after a history rejection in both
+  sequential and pipeline modes.
+- The umbrella fast run passed all other applications except one 100ms-sensitive
+  manifest-slot test; that unchanged file passed all five tests on rerun. Earlier
+  session-history failures were caused by accumulated disposable database data
+  exceeding the fixture's 200-row page and global reconciliation count; a fresh
+  test database passed the complete storage suite. No session behavior changed.
+- Astra xhigh independently passed **76 focused tests** and approved the final
+  source correction, accepting the documented scope increase and deviations.
+  Initial and replayed writer contention now follow domain waiting rather than
+  the history retry budget. The added real PostgreSQL test needed a complete
+  physical-relation pin in its fixture; it passed after that fixture correction.
+- Final pushed-head CI remains the merge-readiness gate.
 
 ### Deviations and scope accounting
 
@@ -320,8 +334,8 @@ all unrelated storage errors have the same recovery semantics.
    siblings required retaining all saved entries and draining already-completed
    outcomes before claim cleanup; the fix includes these paths and tests.
 4. Production additions exceeded the reviewed 525–905-line estimate: the current
-   formatted diff is approximately **1,490 added / 530 removed production lines**,
-   plus approximately **1,290 added / 60 removed test lines** (final counts follow
+   formatted diff is approximately **1,520 added / 530 removed production lines**,
+   plus approximately **1,400 added / 60 removed test lines** (final counts follow
    qualification). The added phases, acquired-result adoption, bounded recheck,
    sequential reconciliation, and cancellation-safe tracking account for the
    overrun. This is one existing retry scheduler and a closed command union,
@@ -330,11 +344,11 @@ all unrelated storage errors have the same recovery semantics.
    The wider suite also exposed a domain distinction: target-write contention
    must retain its existing durable admission timer, even when preceded by a
    history conflict. Both initial and replayed sequential claim replies now
-   preserve that path; PostgreSQL tests exercise owner completion and deadline
+   preserve that path in sequential and pipeline modes; PostgreSQL tests exercise owner completion and deadline
    expiry without consuming another asset attempt.
 5. The repository PostgreSQL setup found an existing bootstrap-ownership mismatch
    on its reused local volume. Verification uses a separate disposable
-   `favn_test_history_lifecycle` database under the bootstrap role; no user
+   `favn_test_history_lifecycle` and fresh `favn_test_history_final` databases under the bootstrap role; no user
    development database, running pipeline or old failed run was reset/replayed.
 
 ### Operational and recovery limits

@@ -667,6 +667,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       {:ok, result} ->
         resume_operation(pause, result)
 
+      {:error, %{details: %{reason_code: "target_write_in_progress"}} = reason}
+      when pause.phase == :materialization_claim ->
+        reject_operation(pause, reason)
+
       {:error, reason} ->
         if PersistenceRetry.replayable?(reason),
           do: {:persist_retry, retry, reason, pause},
@@ -684,6 +688,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @doc false
   def reject_operation(%{phase: :admission, ctx: ctx}, reason),
     do: handle_capacity_result(ctx, {:error, reason})
+
+  def reject_operation(
+        %{phase: :materialization_claim, ctx: ctx},
+        %{details: %{reason_code: "target_write_in_progress"}}
+      ) do
+    :ok = MaterializationClaims.release_prepared_claim(ctx.prepared_claim)
+    handle_claim_result(ctx, {:already_claimed, %{claim_key: ctx.prepared_claim.claim_key}})
+  end
 
   def reject_operation(%{phase: :materialization_claim, ctx: ctx}, reason) do
     :ok = MaterializationClaims.release_prepared_claim(ctx.prepared_claim)

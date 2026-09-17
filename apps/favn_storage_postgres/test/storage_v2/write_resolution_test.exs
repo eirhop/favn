@@ -254,6 +254,60 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
              timer.payload.admission_deadline_ms
   end
 
+  test "pipeline claim history retry becomes a normal wait for the live target writer", f do
+    alias FavnOrchestrator.RunServer.Execution
+    alias FavnOrchestrator.RunServer.Execution.RunExecutionState
+    alias FavnOrchestrator.RunServer.Execution.FreshnessContext
+    state = sequential_state(f, 5_000)
+    task = start(f)
+    {:ok, context} = FreshnessContext.initialize(state.run, state.manifest_index)
+
+    state = %{
+      state
+      | mode: :pipeline,
+        stage_groups: [{0, state.run.plan.target_node_keys}],
+        freshness_context: context
+    }
+
+    install_history_conflict_store()
+    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
+
+    assert {:persist_retry, paused, retry,
+            %{details: %{reason_code: "execution_history_owner_busy"}}} =
+             Execution.handle_event(state, :continue)
+
+    assert retry.event_type == :materialization_claim
+    assert {:cont, waiting} = Execution.retry_persistence(paused, retry)
+    assert waiting.paused_admission == nil
+    assert waiting.terminal_failure == nil
+    assert waiting.stage_state.deferred_node_keys == state.run.plan.target_node_keys
+    deadline = waiting.stage_admission_deadline_ms
+    assert is_integer(deadline)
+    RunExecutionState.cancel_timers(waiting)
+
+    assert {:ok, _} =
+             Store.complete(%C.CompleteRunnerTask{
+               workspace_context: f.workspace_context,
+               command_id: "pipeline-safe-end",
+               task_id: task.task_id,
+               runner_instance_id: task.assigned_runner_instance_id,
+               runner_session_generation: 1,
+               assignment_generation: 1,
+               result_version: 1,
+               outcome: :failed,
+               result: nil,
+               retry_class: :terminal,
+               error: Favn.Contracts.RunnerError.new(outcome: :safe_failure),
+               issued_at: f.now,
+               occurred_at: f.now
+             })
+
+    assert {:cont, admitted} = Execution.handle_event(waiting, :continue)
+    assert admitted.stage_admission_deadline_ms == deadline
+    assert [%{attempt: 1}] = Map.values(admitted.work_set.entries)
+    RunExecutionState.cancel_timers(admitted)
+  end
+
   test "a valid context from another task cannot change the immutable claim binding", f do
     other_work = %{f.work | run_id: f.work.run_id <> "-context"}
     other_claim = TaskManifest.ownership_claim(f, f.version, other_work)
@@ -683,9 +737,22 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   end
 
   defp continue_after_history_conflict(state) do
-    alias FavnOrchestrator.Persistence.Runtime
     alias FavnOrchestrator.RunServer.Execution
     alias FavnOrchestrator.RunServer.Execution.Sequential
+
+    install_history_conflict_store()
+    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
+
+    assert {:persist_retry, paused, retry,
+            %{details: %{reason_code: "execution_history_owner_busy"}}} =
+             Sequential.continue(state)
+
+    assert retry.event_type == :materialization_claim
+    Execution.retry_persistence(paused, retry)
+  end
+
+  defp install_history_conflict_store do
+    alias FavnOrchestrator.Persistence.Runtime
     alias FavnStoragePostgres.Backend
 
     start_supervised!(
@@ -696,15 +763,6 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
          stores: %{Backend.stores() | materialization: HistoryConflictMaterializationStore}
        }}
     )
-
-    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
-
-    assert {:persist_retry, paused, retry,
-            %{details: %{reason_code: "execution_history_owner_busy"}}} =
-             Sequential.continue(state)
-
-    assert retry.event_type == :materialization_claim
-    Execution.retry_persistence(paused, retry)
   end
 
   defp sequential_state(f, timeout_ms) do
@@ -724,7 +782,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
       target_id: f.work.logical_target_id,
       target_generation_id: f.work.target_generation_id,
       evidence_generation_id: f.work.target_generation_id,
-      physical_relation: nil,
+      physical_relation: f.work.write_relation,
       input_generations: [],
       retry_policy: Favn.Retry.Policy.default(),
       retry_policy_source: :asset

@@ -516,6 +516,43 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     end
   end
 
+  for history_first <- [false, true] do
+    test "target writer contention queues without failure after history retry=#{history_first}",
+         %{fixture: fixture} do
+      busy =
+        Error.new(:conflict, "target writer busy",
+          retryable?: true,
+          details: %{reason_code: "target_write_in_progress"}
+        )
+
+      history =
+        Error.new(:conflict, "history busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      Process.put({FakeStore, :claim_error}, if(unquote(history_first), do: history, else: busy))
+      directive = Execution.handle_event(fixture.state, :continue)
+
+      directive =
+        if unquote(history_first) do
+          assert {:persist_retry, paused, retry, ^history} = directive
+          Process.put({FakeStore, :claim_error}, busy)
+          Execution.retry_persistence(paused, retry)
+        else
+          directive
+        end
+
+      assert {:cont, awaiting} = directive
+      assert_receive {:commit_transition, %{event: %{event_type: :step_queued}}}
+      assert_receive {:release_execution_lease, %{lease_id: released}}
+      refute released == "lease-step-a"
+      refute_received {:commit_transition, %{event: %{event_type: :step_failed}}}
+      refute_received {:runner_task_cancellation_requested, _}
+      assert @held_task_id in ActiveTaskSet.task_ids(awaiting.work_set)
+    end
+  end
+
   test "a node-specific claim conflict fails only its node and leaves the sibling running", %{
     fixture: fixture
   } do

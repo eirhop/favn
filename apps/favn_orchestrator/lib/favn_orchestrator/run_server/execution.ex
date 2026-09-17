@@ -444,6 +444,22 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp handle_persistence_retry_failure(
          state,
+         %PersistenceRetry{resume: {:stage_operation, %{phase: :materialization_claim} = pause}},
+         %{details: %{reason_code: "target_write_in_progress"}} = reason
+       ) do
+    result = StageAdmission.reject_operation(pause, reason)
+    state = %{state | paused_admission: nil}
+
+    handle_resumed_stage_admission(
+      state,
+      pause.ctx.attempt,
+      result,
+      pause.ctx.completed_node_statuses
+    )
+  end
+
+  defp handle_persistence_retry_failure(
+         state,
          %PersistenceRetry{resume: {:sequential_operation, %{phase: :claim} = pause}},
          %{details: %{reason_code: "target_write_in_progress"}} = reason
        ) do
