@@ -4177,7 +4177,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
         Repo.transaction(fn ->
           SQL.query!(
             Repo,
-            "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text)::text,0))",
+            "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array('execution_history',$1::text,$2::text)::text,0))",
             [workspace_id, root_run_id]
           )
 

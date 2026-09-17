@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Contract simplification and regression repair plan |
 | Primary issue | None; the maintainer authorized this regression work without a separate issue. |
 | Pull request | [#726](https://github.com/eirhop/favn/pull/726) |
@@ -322,3 +322,141 @@ accepts the page, and both Mermaid diagrams render in Chrome. The planning diff
 passes whitespace checks. No implementation, automated product tests or live
 runtime validation were performed for this proposal. The record stays
 `Plan reviewed` when its draft PR opens because implementation has not started.
+
+
+## Implementation decisions (after the approved baseline)
+
+The maintainer authorized implementation on 2026-09-17. PR #726 is the
+implementation PR; #725 remains open at its compared commit. The planning text
+above remains the baseline, including its historical documentation-only status.
+
+### Field inventory before production edits
+
+| Producer / fields | Consumers | Owner and implementation destination |
+| --- | --- | --- |
+| Elixir callback result map, including arbitrary nested keys | Result codec, stored asset/attempt output, operator output | Application: `meta`, normalized once by existing `OpenData`; never inspected to select SQL or Source handling. |
+| SQL runtime: command, connection, materialized relation, rows affected, check results, quality, transaction/write outcome, contract validation, group replacement, runtime inputs, manifest identity, message/reason/metrics | MaterializationClaims, stored asset/node/attempt output, Catalogue.Assurance | Runner/Core: explicit `RunnerAssetEvidence`, selected from the manifest asset type, carried separately from `meta`. Existing top-level generation/write fields remain authoritative. |
+| Source execution: observed flag and relation | Stored result and operator output | Runner/Core: the same evidence contract with Source kind. |
+| RunnerAssetResult evidence | ResultBuilder → NodeResult; Projector → AssetResult; JsonSafe, snapshot codec, DTO, Catalogue.Assurance | Carry evidence through every projection; assurance reads evidence rather than application keys. Freshness uses materialization records populated from that evidence. |
+| Pipeline policy/schedule, planned window, identity, params, deadlines, runtime pin, generations | ContextBuilder and SQL runtime | Existing explicit RunnerWork fields; preserve types and populated fresh-process tests. |
+| BackfillDispatcher identity and operator_metadata | Runner lifecycle logs/result trace context; not exposed by ContextBuilder to asset callbacks | Copy only explicit backfill identity fields. Normalize the explicitly supplied operator metadata map; unrelated run keys never enter work. |
+| Runtime-input lineage produced during run planning | MaterializationClaims before enqueue | Explicitly selected control-plane preparation metadata, removed before task persistence as today. |
+| Rebuild runtime-input-resolution mode | RunnerWork.runtime_input_resolution_only? | Existing framework control, explicitly constructed by the rebuild path; do not derive it from application metadata. |
+| runner_task_id | Task/log correlation | Construct at enqueue. Existing node identity remains authoritative; no new fallback to run metadata. |
+| dispatch_id / ownership_id / runtime_input_event | Old exclusions; dispatch_id read by SQL cancellation but stripped before durable dispatch | Do not copy them from run metadata; use the actual task/execution identity for SQL cancellation. |
+| Cancellation, retry, recovery, admission, active task IDs and other internal run keys | Control-plane lifecycle only | Keep on RunState. Remove the growing exclusion list from work construction. |
+
+Slice 2 will reuse the existing codec and normalization, add one evidence
+contract, and update these producers/readers together. No general serializer or
+new metadata registration system is needed. The initial production budget still
+applies; the inventory also identifies existing tests that must move their SQL
+assertions from metadata to evidence.
+
+
+### History comparison result and proposed budget deviation
+
+The lock/order-only candidate adds 48 and deletes 30 production lines against
+main. On disposable PostgreSQL 18, the shared-writer/exclusive-retirement test
+passes. The composed regression was then run with each exclusive-lock injection
+independently. Both fail at the required pause assertion: `resource_outcomes`
+and `step_queued`. The commands receive the real retryable history-owner error;
+main does not retain the required remaining work. The initial 180-line estimate
+therefore does not cover a complete repair.
+
+In plain terms: changing the lock stops healthy writers fighting each other,
+but a real maintenance lock can still interrupt bookkeeping. Favn must remember
+which database write remains, without repeating the asset or cancelling siblings.
+That state cannot safely be removed merely to reduce the patch size.
+
+**Proposed deviation, requiring independent review before import:** use #725 at
+`f8fde8af` as the behavior baseline, retaining its tested operation identities,
+ownership adoption, deadlines, sibling draining and uncertain-outcome rules.
+Delete unused acquisition/decision wrappers; interpret a successful acquisition
+once; use the same admission continuation for attempt-start persistence. No new
+durable state, generic callback retry system or expanded crash-recovery promise.
+
+| Budget comparison | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| Consolidation against #725 | At most 120 | At least 150 | At most 120 | Report actual; retain behavioral coverage |
+| Revised slice 3 against main, including imported #725 code | At most 1,650 | Target 700–900 | At most 1,530 | At least the existing 64 |
+
+These are replacements for slice 3's estimate, not additions hidden outside it.
+Slice 2's metadata budget remains unchanged. Imported tests and production code
+count in full. This is a smaller lifecycle implementation than #725, not a claim
+that all its safety machinery was unnecessary. The record will show both the
+main-based totals and the direct consolidation diff. If the deletion target or
+added-line cap cannot be met, re-review before expanding further.
+
+The existing composed, cancellation-at-ownership-gate, same-batch exhaustion,
+lost-reply and domain-wait tests remain required behavioral gates. Changes to
+internal continuation assertions must preserve their original fault injection
+and external outcome assertions.
+
+Astra xhigh approved this deviation before lifecycle import on 2026-09-17,
+with no blocking findings. Approval retains all five conditions above, including
+separate measurement against main and #725 and re-review before exceeding bounds.
+
+
+### Implemented outcome and review evidence
+
+Application metadata now uses the existing bounded open-data codec uniformly.
+For example, `%{pages_written: 3, write_outcome: :custom}` becomes
+`%{"pages_written" => 3, "write_outcome" => "custom"}`; it does not become SQL
+evidence or change whether a write is safe to replay. SQL and Source execution
+produce a separate typed `RunnerAssetEvidence`. That evidence is carried through
+results, attempts, stored snapshots, materialization records and operator views.
+Only explicit backfill identity and operator metadata enter task metadata;
+cancellation and future control-plane keys stay on the run.
+
+This is a clean protocol-14 change. There is no protocol-13 compatibility decoder
+or migration of old tasks. The maintainer's no-production-installations decision
+is the basis for that choice; replace runners and orchestrator together and
+recreate disposable old task state when adopting it.
+
+The lock-only comparison was insufficient. The implementation therefore retains
+#725's exact-command retries, completion bookkeeping, ownership checks, diagnostics,
+sibling draining and unknown-outcome handling. It removes unused acquisition and
+decision wrappers, resolves acquisition replies once, and folds attempt-start into
+the existing stage-operation continuation. No callback retry framework or new
+durable recovery phase was introduced. #725 remains untouched; this PR incorporates
+its behavior baseline and can replace it after qualification.
+
+Interim Astra xhigh implementation review found two cleanup edges introduced by
+that consolidation. Both were corrected and received regressions:
+
+- A non-owned materialization decision releases its prepared target lock. The
+  adopted continuation now forgets that released lock before renewal. The
+  PostgreSQL regression proves the old lock is fenced while paused renewal
+  succeeds, for both competing and materialized decisions.
+- A waiting admission reply arriving after its deadline registers a local waiter.
+  Expiry now cancels that subscription. Tests cover initial and replayed replies.
+
+The reviewer approved raising supporting consolidation additions to 150 to cover
+these tests. Final main-based accounting is recorded separately below rather than
+counting deletions from #725 as deletions from main.
+
+Verification so far: core 527, runner 272, orchestrator 909, focused admission 37,
+write-resolution PostgreSQL 16, and both composed PostgreSQL lifecycle tests pass.
+The composed tests exercise real exclusive history locks during completion and
+queue persistence, admission, committed-but-lost replies and cancellation. They
+retain assertions against duplicate execution, unintended cancellation, blocked
+descendants and orphaned claims. Full umbrella, slow, acceptance and final review
+qualification are still pending. This does not claim live connector validation,
+transparent recovery after arbitrary process crashes, or a guarantee of no bugs.
+
+Astra independently reproduced and approved these accounting corrections:
+#725 itself is +1,517/-555 production and +1,451/-71 supporting lines against
+main, excluding its record. The earlier support estimate omitted 43 guide lines.
+The main-based lifecycle target is therefore 650–750 deletions and at most 1,600
+supporting additions; its 1,650 production-addition cap is unchanged. Direct
+consolidation remains at most 120 production additions, at least 150 production
+deletions, and at most 150 supporting additions. Removing code newly added by
+#725 reduces additions against main; it is not counted as a main deletion.
+
+Current corresponding lifecycle files are +1,506/-681 production and
++1,580/-73 supporting against main (including small metadata edits in overlapping
+files). The five consolidated lifecycle modules are +63/-212 directly against
+#725, including three metadata projection lines in MaterializationClaims. The
+remaining changes implement the metadata boundary, its tests and this record.
+The total PR is larger than the metadata change because it incorporates #725;
+it is not a 4,000-line serializer replacement.

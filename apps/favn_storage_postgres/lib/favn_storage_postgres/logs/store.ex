@@ -140,13 +140,9 @@ defmodule FavnStoragePostgres.Logs.Store do
   defp utc(%DateTime{} = at), do: at
 
   defp append_or_replay!(command, normalized, batch_hash) do
-    normalized
-    |> Enum.map(& &1.run_id)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-    |> Enum.sort()
-    |> Enum.each(
-      &FavnStoragePostgres.RunIdentity.lock!(command.workspace_context.workspace_id, &1)
+    FavnStoragePostgres.CancellationOwnership.lock_new_many!(
+      command.workspace_context.workspace_id,
+      Enum.map(normalized, & &1.run_id)
     )
 
     workspace_id = command.workspace_context.workspace_id

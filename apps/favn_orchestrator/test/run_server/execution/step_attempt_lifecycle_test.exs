@@ -214,12 +214,16 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycleTest do
     assert {:ok, %{work: work}} = StepAttemptLifecycle.build_work(lifecycle, index)
     assert work.run_started_at == run.inserted_at
     assert work.required_runner_release_id == run.runner_releases["default"]
-    assert work.metadata["request_id"] == "request-1"
+    refute Map.has_key?(work.metadata, "request_id")
 
     Enum.each(control_plane_keys, fn key ->
       refute Map.has_key?(work.metadata, key)
       refute Map.has_key?(work.metadata, Atom.to_string(key))
     end)
+
+    changed_run = %{run | metadata: Map.put(run.metadata, "future_internal_key", self())}
+    changed = StepAttemptLifecycle.new(changed_run, version, node_key, 0, 2)
+    assert {:ok, %{work: ^work}} = StepAttemptLifecycle.build_work(changed, index)
 
     assert work.metadata.backfill_id == "backfill-1"
     assert work.metadata.backfill_window_id == "window-1"

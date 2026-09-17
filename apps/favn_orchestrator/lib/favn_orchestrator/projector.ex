@@ -318,6 +318,7 @@ defmodule FavnOrchestrator.Projector do
       finished_at: finished_at,
       duration_ms: duration_ms,
       meta: if(is_map(meta), do: meta, else: %{}),
+      evidence: Map.get(result, :evidence),
       error: error,
       attempt_count: attempt_count,
       max_attempts: max_attempts,
@@ -352,6 +353,7 @@ defmodule FavnOrchestrator.Projector do
       max_attempts: Map.get(result, :max_attempts, 1),
       runner_task_id: Map.get(result, :runner_task_id),
       meta: Map.get(result, :meta, %{}),
+      evidence: Map.get(result, :evidence),
       error: Map.get(result, :error),
       attempts: Map.get(result, :attempts, []),
       asset_step_id:

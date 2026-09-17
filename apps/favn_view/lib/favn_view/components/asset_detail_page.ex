@@ -1792,7 +1792,7 @@ defmodule FavnView.Components.AssetDetailPage do
 
   def run_detail_panel(assigns) do
     result = assigns.run[:asset_result]
-    meta = (result && result[:meta]) || %{}
+    meta = (result && (result[:output_metadata] || result[:meta])) || %{}
 
     assigns =
       assigns

@@ -537,6 +537,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       "runner_task_id" => JsonSafe.data(result.runner_task_id),
       "asset_step_id" => result.asset_step_id,
       "meta" => JsonSafe.output_metadata(result.meta),
+      "evidence" => JsonSafe.execution_evidence(result.evidence),
       "error" => JsonSafe.error(result.error),
       "attempts" => JsonSafe.data(result.attempts)
     }
@@ -1156,6 +1157,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, duration_ms} <-
            result_non_negative(field(result, :duration_ms, 0), :asset_results, :duration_ms),
          {:ok, meta} <- result_map(field(result, :meta, %{}), :asset_results, :meta),
+         {:ok, evidence} <-
+           result_optional_map(field(result, :evidence), :asset_results, :evidence),
          {:ok, attempt_count} <-
            result_non_negative(
              field(result, :attempt_count, 0),
@@ -1179,6 +1182,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          finished_at: finished_at,
          duration_ms: duration_ms,
          meta: meta,
+         evidence: evidence,
          error: field(result, :error),
          attempt_count: attempt_count,
          max_attempts: max_attempts,
@@ -1231,6 +1235,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, max_attempts} <-
            result_positive(field(result, :max_attempts, 1), :node_results, :max_attempts),
          {:ok, meta} <- result_map(field(result, :meta, %{}), :node_results, :meta),
+         {:ok, evidence} <-
+           result_optional_map(field(result, :evidence), :node_results, :evidence),
          {:ok, attempts} <-
            result_map_list(field(result, :attempts, []), :node_results, :attempts),
          {:ok, asset_step_id} <-
@@ -1254,9 +1260,18 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          max_attempts: max_attempts,
          runner_task_id: data_from_dto(field(result, :runner_task_id), allowed_atom_strings),
          asset_step_id: asset_step_id,
-         meta: data_from_dto(meta, allowed_atom_strings),
+         meta: json_from_dto(meta),
+         evidence: evidence,
          error: field(result, :error),
-         attempts: data_from_dto(attempts, allowed_atom_strings)
+         attempts:
+           Enum.map(attempts, fn attempt ->
+             Enum.reduce([:meta, :evidence], data_from_dto(attempt, allowed_atom_strings), fn key,
+                                                                                              restored ->
+               if Map.has_key?(attempt, key) or Map.has_key?(attempt, Atom.to_string(key)),
+                 do: Map.put(restored, key, json_from_dto(field(attempt, key))),
+                 else: restored
+             end)
+           end)
        }}
     end
   end

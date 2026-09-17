@@ -2,11 +2,16 @@ defmodule Favn.Contracts.RunnerAssetResult do
   @moduledoc """
   Runner-owned per-asset result envelope.
 
+  `meta` contains bounded application data with string keys after persistence.
+  SQL/Source controls live in `evidence`, selected by the runner execution path.
+  The same separation applies to every attempt.
+
   Persisted SQL results echo the target operation, generation, and write
   relation from runner work. `write_outcome` separates a failure known not to
   have committed from one that requires reconciliation before retry.
   """
 
+  alias Favn.Contracts.RunnerAssetEvidence
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
   alias Favn.Ref
@@ -22,6 +27,7 @@ defmodule Favn.Contracts.RunnerAssetResult do
           duration_ms: non_neg_integer(),
           status: status(),
           meta: map(),
+          evidence: RunnerAssetEvidence.t() | nil,
           error: RunnerError.t() | nil
         }
 
@@ -32,6 +38,7 @@ defmodule Favn.Contracts.RunnerAssetResult do
           finished_at: DateTime.t() | nil,
           duration_ms: non_neg_integer() | nil,
           meta: map(),
+          evidence: RunnerAssetEvidence.t() | nil,
           error: RunnerError.t() | nil,
           attempt_count: non_neg_integer(),
           max_attempts: pos_integer(),
@@ -57,6 +64,7 @@ defmodule Favn.Contracts.RunnerAssetResult do
     :target_generation_id,
     :write_relation,
     :write_outcome,
+    evidence: nil,
     meta: %{},
     attempt_count: 0,
     max_attempts: 1,
@@ -98,12 +106,25 @@ defmodule Favn.Contracts.RunnerAssetResult do
              work.target_generation_id
            ),
          :ok <- match_field(:write_relation, result.write_relation, work.write_relation) do
-      validate_write_outcome(result.status, result.write_outcome)
+      with :ok <- validate_write_outcome(result.status, result.write_outcome),
+           do: validate_evidence_outcome(result.write_outcome, result.evidence)
     end
   end
 
   def validate_generation_result(result, work),
     do: {:error, {:invalid_runner_generation_result, result, work}}
+
+  defp validate_evidence_outcome(_outcome, nil), do: :ok
+  defp validate_evidence_outcome(:outcome_unknown, _evidence), do: :ok
+
+  defp validate_evidence_outcome(:succeeded, %RunnerAssetEvidence{write_outcome: outcome})
+       when outcome in [nil, :written, :no_op], do: :ok
+
+  defp validate_evidence_outcome(:safe_failure, %RunnerAssetEvidence{write_outcome: outcome})
+       when outcome in [nil, :rolled_back, :not_started], do: :ok
+
+  defp validate_evidence_outcome(_outcome, _evidence),
+    do: {:error, :inconsistent_runner_write_evidence}
 
   defp validate_write_outcome(:ok, :succeeded), do: :ok
 

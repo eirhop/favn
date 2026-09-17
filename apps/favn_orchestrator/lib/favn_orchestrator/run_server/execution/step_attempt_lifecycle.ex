@@ -511,32 +511,20 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
   defp planned_asset_refs(%RunState{}), do: []
 
   defp work_metadata(metadata) when is_map(metadata) do
-    control_plane_keys = [
-      :runner_metadata,
-      :pipeline_context,
-      :execution_pool_policy,
-      :connection_circuit_policy,
-      :active_runner_task_ids,
-      :cancel_outcomes,
-      :cancellation_needs_attention,
-      :cancel_requested,
-      :cancel_reason,
-      :cancel_requested_at,
-      :cancelled,
-      :retrying,
-      :next_attempt,
-      :retry_state,
-      :next_retry_at,
-      :pipeline_active_stage_outcome,
-      :stage_draining_after_failure,
-      :terminal_event_type
+    keys = [
+      :backfill_id,
+      :backfill_window_id,
+      :backfill_window_key,
+      :backfill_execution_group_id,
+      :backfill_root_run_id,
+      :operator_metadata,
+      :runtime_input_lineage
     ]
 
-    Enum.reduce(control_plane_keys, metadata, fn key, acc ->
-      acc
-      |> Map.delete(key)
-      |> Map.delete(Atom.to_string(key))
-    end)
+    for key <- keys,
+        Map.has_key?(metadata, key) or Map.has_key?(metadata, Atom.to_string(key)),
+        into: %{},
+        do: {key, Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))}
   end
 
   defp work_started_at(%RunState{metadata: metadata, inserted_at: inserted_at}) do

@@ -67,6 +67,7 @@ defmodule Favn.Run.NodeResult do
           max_attempts: pos_integer(),
           runner_task_id: term() | nil,
           meta: map(),
+          evidence: Favn.Contracts.RunnerAssetEvidence.t() | map() | nil,
           error: term() | nil,
           attempts: [attempt_result()],
           asset_step_id: String.t() | nil
@@ -90,6 +91,7 @@ defmodule Favn.Run.NodeResult do
     input_versions: %{},
     attempt_count: 0,
     max_attempts: 1,
+    evidence: nil,
     meta: %{},
     attempts: [],
     asset_step_id: nil

@@ -116,22 +116,28 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
       }
     }
 
-    result = %{result | asset_results: [%{asset_result | meta: metadata}]}
+    result = %{
+      result
+      | asset_results: [
+          %{asset_result | evidence: Favn.Contracts.RunnerAssetEvidence.new!(:sql, metadata)}
+        ]
+    }
 
     assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, result)
     assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :succeeded, encoded, version)
     [persisted_asset] = persisted.asset_results
 
-    assert persisted_asset.meta.materialized == metadata.materialized
-    assert persisted_asset.meta.check_results == [check]
-    assert persisted_asset.meta.quality_status == :passed
-    assert persisted_asset.meta.runtime_inputs.input_metadata == %{"source_snapshot" => "ready"}
+    assert persisted_asset.evidence.materialized == metadata.materialized
+    assert persisted_asset.evidence.check_results == [check]
+    assert persisted_asset.evidence.quality_status == :passed
 
-    duplicate = %{asset_result | meta: Map.put(metadata, "command", "UPDATE")}
-    duplicate_result = %{result | asset_results: [duplicate]}
+    assert persisted_asset.evidence.runtime_inputs.input_metadata == %{
+             "source_snapshot" => "ready"
+           }
 
-    assert {:error, {:invalid_runner_task_open_data, :asset_metadata, :duplicate_key}} =
-             Codec.encode_result(:asset_attempt, :succeeded, duplicate_result)
+    assert_raise KeyError, fn ->
+      Favn.Contracts.RunnerAssetEvidence.new!(:sql, Map.put(metadata, "command", "UPDATE"))
+    end
   end
 
   test "typed SQL failure controls survive even without check results" do
@@ -150,13 +156,20 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
     result = %{
       result
       | status: :error,
-        asset_results: [%{asset_result | status: :error, meta: metadata}]
+        asset_results: [
+          %{
+            asset_result
+            | status: :error,
+              evidence: Favn.Contracts.RunnerAssetEvidence.new!(:sql, metadata)
+          }
+        ]
     }
 
     assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :failed, result)
     assert {:ok, persisted} = Codec.decode_result(:asset_attempt, :failed, encoded, version)
 
-    assert hd(persisted.asset_results).meta == metadata
+    assert hd(persisted.asset_results).evidence ==
+             Favn.Contracts.RunnerAssetEvidence.new!(:sql, metadata)
   end
 
   test "application metadata remains open when a key overlaps the SQL envelope" do
@@ -174,6 +187,79 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
              "check_results" => "application_value",
              "reason" => "application_reason"
            }
+  end
+
+  test "application control-like keys never become execution evidence" do
+    version = Fixture.version()
+    {:asset_attempt, _work, result} = hd(Fixture.tasks(version))
+    [asset] = result.asset_results
+
+    meta = %{
+      observed: true,
+      relation: "app-relation",
+      status: :error,
+      write_outcome: :written,
+      quality_status: :passed,
+      retryable?: true
+    }
+
+    result = %{result | asset_results: [%{asset | meta: meta, evidence: nil}]}
+
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    assert {:ok, decoded} = Codec.decode_result(:asset_attempt, :succeeded, encoded, version)
+    assert [%{status: :ok, evidence: nil, meta: normalized}] = decoded.asset_results
+
+    assert normalized ==
+             Map.new(meta, fn {key, value} ->
+               {Atom.to_string(key),
+                if(is_atom(value) and not is_boolean(value),
+                  do: Atom.to_string(value),
+                  else: value
+                )}
+             end)
+  end
+
+  test "malformed execution evidence is rejected on encode and decode" do
+    version = Fixture.version()
+    {:asset_attempt, _work, result} = hd(Fixture.tasks(version))
+    [asset] = result.asset_results
+    invalid = %{result | asset_results: [%{asset | evidence: %{asset.evidence | kind: :ok}}]}
+
+    assert {:error, :invalid_runner_asset_evidence} =
+             Codec.encode_result(:asset_attempt, :succeeded, invalid)
+
+    assert {:ok, envelope} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    assert {:ok, bad_data} = Data.encode(invalid, 1_048_576)
+
+    assert {:error, _} =
+             Codec.decode_result(
+               :asset_attempt,
+               :succeeded,
+               Map.put(envelope, "payload", bad_data),
+               version
+             )
+  end
+
+  test "operator metadata is bounded open data inside an explicit work field" do
+    version = Fixture.version()
+    {:asset_attempt, work, _result} = hd(Fixture.tasks(version))
+
+    work = %{
+      work
+      | metadata: %{operator_metadata: %{new_application_key: :new_application_value}}
+    }
+
+    assert {:ok, encoded, _hash} = Codec.encode_payload(:asset_attempt, work)
+    assert {:ok, decoded} = Codec.decode_payload(:asset_attempt, encoded, version)
+
+    assert decoded.metadata.operator_metadata == %{
+             "new_application_key" => "new_application_value"
+           }
+
+    work = %{work | metadata: %{operator_metadata: %{"id" => 2, id: 1}}}
+
+    assert {:error, {:invalid_runner_task_open_data, :operator_metadata, :duplicate_key}} =
+             Codec.encode_payload(:asset_attempt, work)
   end
 
   test "runner error and inspection adapter extensions normalize without weakening controls" do

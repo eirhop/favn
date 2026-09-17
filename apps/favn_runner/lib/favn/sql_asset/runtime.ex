@@ -2224,7 +2224,7 @@ defmodule Favn.SQLAsset.Runtime do
     Keyword.take(opts, [:timeout_ms, :deadline, :cancel_token])
   end
 
-  defp runner_runtime_opts(%RunnerWork{metadata: metadata} = work) when is_map(metadata) do
+  defp runner_runtime_opts(%RunnerWork{} = work) do
     deadline_at = work.deadline_at
 
     []
@@ -2236,13 +2236,11 @@ defmodule Favn.SQLAsset.Runtime do
     |> Keyword.put(
       :cancel_token,
       CancelToken.new(
-        operation_id: Map.get(metadata, :dispatch_id) || Map.get(metadata, "dispatch_id"),
+        operation_id: Map.get(work.metadata, :runner_task_id),
         deadline_at: deadline_at
       )
     )
   end
-
-  defp runner_runtime_opts(%RunnerWork{}), do: []
 
   defp maybe_put_runtime_input_pin(opts, %Pin{} = pin),
     do: Keyword.put(opts, :runtime_input_pin, pin)

@@ -177,6 +177,40 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     refute Map.has_key?(exception, "details")
   end
 
+  test "arbitrary adapter details and blank error codes stay safely projectable" do
+    for details <- ["adapter detail", [:opaque], 42, nil] do
+      atom_error = %{
+        kind: :error,
+        message: "failed",
+        reason: "opaque",
+        type: "  ",
+        details: details
+      }
+
+      string_error = Map.new(atom_error, fn {key, value} -> {Atom.to_string(key), value} end)
+
+      for error <- [atom_error, string_error] do
+        normalized = JsonSafe.error(error)
+        assert normalized["type"] not in [nil, "", "  ", "nil"]
+        assert_json_compatible!(normalized)
+      end
+    end
+
+    assert JsonSafe.error(%{kind: :conflict, type: "nil", details: %{reason_code: "  "}})["type"] ==
+             "conflict"
+  end
+
+  test "history conflicts expose the reason code even without an explicit type" do
+    error =
+      FavnOrchestrator.Persistence.Error.new(:conflict, "execution history owner is busy",
+        retryable?: true,
+        details: %{reason_code: "execution_history_owner_busy"}
+      )
+
+    assert JsonSafe.error(error)["type"] == "execution_history_owner_busy"
+    assert JsonSafe.error(%{kind: :conflict, type: nil})["type"] == "conflict"
+  end
+
   test "normalizes explicit error terms as structured sanitized maps" do
     normalized =
       JsonSafe.error(%{

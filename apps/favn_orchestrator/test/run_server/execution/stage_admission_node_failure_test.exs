@@ -57,6 +57,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     def get_run(_query), do: {:error, :forced_missing}
 
     def commit_transition(command) do
+      case Process.get({__MODULE__, :commit_error_by_event}, %{})
+           |> Map.get(command.event.event_type) do
+        nil -> do_commit_transition(command)
+        reason -> {:error, reason}
+      end
+    end
+
+    defp do_commit_transition(command) do
       send(self(), {:commit_transition, command})
 
       case Process.get({__MODULE__, :commit_results}, []) do
@@ -92,6 +100,23 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     end
 
     def admit(command) do
+      case Map.get(
+             Process.get({__MODULE__, :admit_error_steps}, %{}),
+             command.step_id,
+             Process.get({__MODULE__, :admit_error})
+           ) do
+        nil -> do_admit(command)
+        reason -> {:error, reason}
+      end
+    end
+
+    defp do_admit(command) do
+      if result = Process.get({__MODULE__, :admission_result}),
+        do: result,
+        else: admitted(command)
+    end
+
+    defp admitted(command) do
       send(self(), {:admit_execution, command})
 
       {:ok,
@@ -109,6 +134,23 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
            scope_ids: Enum.map(command.requests, & &1.scope_id)
          }
        }}
+    end
+
+    def acquire(_command) do
+      {:ok,
+       %FavnOrchestrator.Persistence.Results.ResourceCircuitAdmission{
+         status: :blocked,
+         blockers: [Process.get({__MODULE__, :blocker})]
+       }}
+    end
+
+    def record_recovery_candidate(command) do
+      send(self(), {:recovery_candidate, command})
+
+      case Process.get({__MODULE__, :candidate_error}) do
+        nil -> :ok
+        error -> {:error, error}
+      end
     end
 
     def release_lease(command) do
@@ -215,6 +257,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     alias FavnOrchestrator.Persistence.Results.RunnerTask
 
     def enqueue(command) do
+      case Process.get({__MODULE__, :enqueue_error}) do
+        nil -> do_enqueue(command)
+        reason -> {:error, reason}
+      end
+    end
+
+    defp do_enqueue(command) do
       task = %RunnerTask{
         workspace_id: command.workspace_context.workspace_id,
         task_id: command.task_id,
@@ -231,7 +280,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
 
       Process.put({__MODULE__, command.task_id}, task)
       send(self(), {:accepted_enqueue, command})
-      {:ok, task}
+
+      case Map.get(Process.get({__MODULE__, :lost_replies}, %{}), command.asset_step_id) do
+        nil -> {:ok, task}
+        reason -> {:error, reason}
+      end
     end
 
     def get(query) do
@@ -241,8 +294,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
       end
     end
 
-    def request_cancellation(_command),
-      do: {:error, Error.new(:unavailable, "cancellation unavailable")}
+    def request_cancellation(command) do
+      if owner = :persistent_term.get({__MODULE__, :test_pid}, nil),
+        do: send(owner, {:accepted_store_cancellation, command})
+
+      {:error, Error.new(:unavailable, "cancellation unavailable")}
+    end
   end
 
   setup context do
@@ -286,6 +343,113 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     end)
 
     {:ok, fixture: fixture()}
+  end
+
+  test "blocked candidate retry keeps the already-committed decision sequence", %{
+    fixture: fixture
+  } do
+    conflict =
+      Error.new(:conflict, "history busy",
+        retryable?: true,
+        details: %{reason_code: "execution_history_owner_busy"}
+      )
+
+    blocker = %FavnOrchestrator.Persistence.Results.ResourceCircuitBlocker{
+      resource: Favn.Resource.Ref.new!(:execution_pool, :default),
+      state: :open,
+      failure_threshold: 1,
+      consecutive_failures: 1
+    }
+
+    Process.put({FakeStore, :blocker}, blocker)
+    Process.put({FakeStore, :candidate_error}, conflict)
+
+    {:ok, policy} =
+      Favn.ExecutionPool.Policy.new(
+        max_concurrency: 4,
+        circuit_breaker: [failure_threshold: 1, probe_after_ms: 60_000]
+      )
+
+    run =
+      put_in(
+        fixture.run,
+        [Access.key(:plan), Access.key(:nodes), fixture.b_key, :execution_pool],
+        :default
+      )
+
+    run = %{
+      run
+      | metadata:
+          Map.merge(run.metadata, %{
+            execution_pool_policy: %{"default" => policy},
+            pipeline_execution_policy: %{
+              max_concurrency: 4,
+              resource_recovery: Favn.ResourceRecovery.Policy.new!(:retry_remaining)
+            }
+          })
+    }
+
+    state = %{fixture.state | run: run, stage_state: %{fixture.state.stage_state | run: run}}
+
+    assert {:persist_retry, paused,
+            %PersistenceRetry{event_type: :resource_recovery_candidate} = retry, ^conflict} =
+             Execution.handle_event(state, :continue)
+
+    assert_receive {:commit_transition, %{event: %{event_type: :step_blocked}} = decision}
+    assert paused.run.event_seq == decision.event.sequence
+    assert_receive {:recovery_candidate, candidate}
+    Process.delete({FakeStore, :candidate_error})
+    assert {:ownership_gate, gated, replay} = Execution.retry_persistence(paused, retry)
+    assert_receive {:recovery_candidate, ^candidate}
+    assert {:cont, resumed} = Execution.resume_persisted_retry(gated, replay)
+    assert resumed.run.event_seq >= decision.event.sequence
+    assert ResultBuilder.latest_node_status(resumed.run, fixture.b_key) == :blocked
+    refute_received {:commit_transition, %{event: %{event_type: :step_blocked}}}
+    assert @held_task_id in ActiveTaskSet.task_ids(resumed.work_set)
+  end
+
+  test "classification retry preserves its committed decision and remaining nodes", %{
+    fixture: fixture
+  } do
+    alias FavnOrchestrator.RunServer.Execution.StageClassifier
+
+    conflict =
+      Error.new(:conflict, "history busy",
+        retryable?: true,
+        details: %{reason_code: "execution_history_owner_busy"}
+      )
+
+    Process.put({FakeStore, :commit_results}, [{:error, conflict}])
+
+    context = %{
+      fixture.state.freshness_context
+      | upstream_statuses: %{fixture.a_key => :error, fixture.b_key => :ok}
+    }
+
+    assert {:persist_retry, retry, ^conflict} =
+             StageClassifier.classify(
+               fixture.run,
+               fixture.version,
+               1,
+               [fixture.d_key, fixture.e_key],
+               context,
+               nil
+             )
+
+    assert retry.event_type == :step_blocked
+    assert_receive {:commit_transition, original}
+    assert :ok = PersistenceRetry.persist(retry)
+    assert_receive {:commit_transition, ^original}
+    {:stage_classification, continuation} = retry.resume
+
+    assert {:ok, run, [], _, context, _, [remaining]} =
+             StageClassifier.resume_persisted(continuation, continuation.persisted_run)
+
+    assert remaining == fixture.e_key
+    assert run.event_seq == original.event.sequence
+    assert context.upstream_statuses[fixture.d_key] == :blocked
+    assert ResultBuilder.latest_node_status(run, fixture.d_key) == :blocked
+    refute_received {:commit_transition, _duplicate}
   end
 
   @tag runner_task_store: RejectedTaskStore
@@ -363,6 +527,43 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
       assert command.task_id in ActiveTaskSet.active_runner_task_ids(awaiting.run)
       refute_received {:materialization_finish, _finish}
       refute_received {:release_execution_lease, _release}
+    end
+  end
+
+  for history_first <- [false, true] do
+    test "target writer contention queues without failure after history retry=#{history_first}",
+         %{fixture: fixture} do
+      busy =
+        Error.new(:conflict, "target writer busy",
+          retryable?: true,
+          details: %{reason_code: "target_write_in_progress"}
+        )
+
+      history =
+        Error.new(:conflict, "history busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      Process.put({FakeStore, :claim_error}, if(unquote(history_first), do: history, else: busy))
+      directive = Execution.handle_event(fixture.state, :continue)
+
+      directive =
+        if unquote(history_first) do
+          assert {:persist_retry, paused, retry, ^history} = directive
+          Process.put({FakeStore, :claim_error}, busy)
+          Execution.retry_persistence(paused, retry)
+        else
+          directive
+        end
+
+      assert {:cont, awaiting} = directive
+      assert_receive {:commit_transition, %{event: %{event_type: :step_queued}}}
+      assert_receive {:release_execution_lease, %{lease_id: released}}
+      refute released == "lease-step-a"
+      refute_received {:commit_transition, %{event: %{event_type: :step_failed}}}
+      refute_received {:runner_task_cancellation_requested, _}
+      assert @held_task_id in ActiveTaskSet.task_ids(awaiting.work_set)
     end
   end
 
@@ -485,26 +686,26 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
              }}} = Recovery.disposition(command.run)
   end
 
-  test "a run-wide claim failure still stops the stage and cancels the sibling", %{
+  @tag runner_task_store: AcceptingTaskStore
+  test "a retryable claim failure retains the sibling and replays the exact claim", %{
     fixture: fixture
   } do
     Process.put({FakeStore, :claim_error}, @unavailable)
 
-    assert {:cont, draining} = Execution.handle_event(fixture.state, :continue)
+    assert {:persist_retry, paused, %PersistenceRetry{event_type: :materialization_claim} = retry,
+            @unavailable} = Execution.handle_event(fixture.state, :continue)
 
-    assert_receive {:runner_task_cancellation_requested, %{task_id: @held_task_id}}
+    assert_receive {:materialization_claim, command}
+    refute_received {:runner_task_cancellation_requested, _command}
+    assert @held_task_id in ActiveTaskSet.task_ids(paused.work_set)
 
-    assert commits(drain_commits(), :step_failed) == [],
-           "a run-wide failure writes no per-node failure"
-
-    assert {:terminal, failed} =
-             Execution.handle_event(
-               draining,
-               {:runner_result, @held_task_id, {:ok, ok_result(fixture)}}
-             )
-
-    assert failed.status == :error
-    assert failed.error == @unavailable
+    Process.put({FakeStore, :claimable_target_ids}, [command.target_id])
+    assert {:ownership_gate, gated, replay} = Execution.retry_persistence(paused, retry)
+    assert_receive {:materialization_claim, ^command}
+    assert {:cont, awaiting} = Execution.resume_persisted_retry(gated, replay)
+    assert @held_task_id in ActiveTaskSet.task_ids(awaiting.work_set)
+    refute_received {:runner_task_cancellation_requested, _command}
+    refute_received {:materialization_finish, _command}
   end
 
   test "a failed failure write resumes and keeps submitting the rest of the stage", %{
@@ -546,6 +747,213 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
 
     refute_received {:runner_task_cancellation_requested, _command}
     assert RunExecutionState.in_flight_count(awaiting) == 1
+  end
+
+  for external_cancel <- [false, true] do
+    @tag runner_task_store: AcceptingTaskStore, external_cancel: external_cancel
+    test "ambiguous enqueue retains same-batch tasks with external cancellation=#{external_cancel}",
+         %{
+           fixture: fixture,
+           external_cancel: external_cancel
+         } do
+      conflict =
+        Error.new(:conflict, "history busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      Process.put(
+        {FakeStore, :claimable_target_ids},
+        Enum.map([fixture.b_key, fixture.c_key], &TargetIdentity.for_asset(elem(&1, 0)))
+      )
+
+      step =
+        FavnOrchestrator.AssetStepIdentity.asset_step_id(
+          fixture.run.id,
+          fixture.c_key,
+          elem(fixture.c_key, 0)
+        )
+
+      Process.put({AcceptingTaskStore, :lost_replies}, %{
+        step => Error.new(:unavailable, "reply lost", retryable?: true)
+      })
+
+      Process.put({FakeStore, :commit_results}, [{:error, conflict}])
+
+      state = %{
+        fixture.state
+        | stage_state: %{
+            fixture.state.stage_state
+            | deferred_node_keys: [fixture.b_key, fixture.c_key]
+          }
+      }
+
+      assert {:persist_retry, paused, retry, ^conflict} = Execution.handle_event(state, :continue)
+      {:stage_operation, continuation} = retry.resume
+
+      continuation =
+        put_in(continuation.ctx.batch_started_ms, System.monotonic_time(:millisecond) + 10_000)
+
+      retry = %{retry | resume: {:stage_operation, continuation}}
+
+      if external_cancel do
+        Process.put({FakeStore, :commit_error_by_event}, %{step_failed: :external_cancel})
+      end
+
+      assert {:ownership_gate, gated, ^retry} = Execution.retry_persistence(paused, retry)
+      assert {:cont, draining} = Execution.resume_persisted_retry(gated, retry)
+      assert_receive {:accepted_enqueue, first}
+      assert_receive {:accepted_enqueue, second}
+      assert_receive {:accepted_store_cancellation, %{task_id: task_id}}
+      assert task_id == second.task_id
+      first_id = first.task_id
+
+      if external_cancel,
+        do: assert_received({:accepted_store_cancellation, %{task_id: ^first_id}}),
+        else: refute_received({:accepted_store_cancellation, %{task_id: ^first_id}})
+
+      assert first.task_id in ActiveTaskSet.task_ids(draining.work_set)
+      assert second.task_id in ActiveTaskSet.task_ids(draining.work_set)
+      assert Map.has_key?(draining.awaits, first.task_id)
+      assert Map.has_key?(draining.awaits, second.task_id)
+      refute_received {:materialization_finish, _}
+      refute_received {:release_execution_lease, _}
+    end
+  end
+
+  for phase <- [:admission, :materialization_claim], action <- [:cancel, :exhaust] do
+    @tag runner_task_store: AcceptingTaskStore, phase: phase, action: action
+    test "same-batch #{phase} #{action} retains the preceding task ownership", %{
+      fixture: fixture,
+      phase: phase,
+      action: action
+    } do
+      conflict =
+        Error.new(:conflict, "history busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      b_target = TargetIdentity.for_asset(elem(fixture.b_key, 0))
+      c_target = TargetIdentity.for_asset(elem(fixture.c_key, 0))
+      Process.put({FakeStore, :claimable_target_ids}, [b_target])
+      Process.put({FakeStore, :claim_error_by_target}, %{c_target => conflict})
+
+      if phase == :admission do
+        step =
+          FavnOrchestrator.AssetStepIdentity.asset_step_id(
+            fixture.run.id,
+            fixture.c_key,
+            elem(fixture.c_key, 0)
+          )
+
+        Process.put({FakeStore, :admit_error_steps}, %{step => conflict})
+      end
+
+      state = %{
+        fixture.state
+        | stage_state: %{
+            fixture.state.stage_state
+            | deferred_node_keys: [fixture.b_key, fixture.c_key]
+          }
+      }
+
+      Process.put({FakeStore, :commit_results}, [{:error, conflict}])
+
+      assert {:persist_retry, first_pause, first_retry, ^conflict} =
+               Execution.handle_event(state, :continue)
+
+      {:stage_operation, continuation} = first_retry.resume
+      # Keep this test on the same-batch path independent of machine speed.
+      continuation =
+        put_in(continuation.ctx.batch_started_ms, System.monotonic_time(:millisecond) + 10_000)
+
+      first_retry = %{first_retry | resume: {:stage_operation, continuation}}
+
+      assert {:ownership_gate, gated, ^first_retry} =
+               Execution.retry_persistence(first_pause, first_retry)
+
+      assert {:persist_retry, paused, retry, ^conflict} =
+               Execution.resume_persisted_retry(gated, first_retry)
+
+      assert retry.event_type == phase
+      assert_receive {:accepted_enqueue, command}
+      previous = Enum.find(paused.paused_admission.entries, &(&1.task_id == command.task_id))
+      assert previous.materialization_claim
+      refute Map.get(paused.paused_admission.ctx, :materialization_claim)
+
+      result =
+        case action do
+          :cancel ->
+            Execution.cancel(paused, :operator)
+
+          :exhaust ->
+            retry = PersistenceRetry.rejected(retry, conflict)
+            retry = %{retry | started_ms: System.monotonic_time(:millisecond) - 30_001}
+            Execution.retry_persistence(paused, retry)
+        end
+
+      assert {:cont, resumed} = result
+      assert command.task_id in ActiveTaskSet.task_ids(resumed.work_set)
+      lease_id = previous.lease.lease_id
+      claim_key = previous.materialization_claim.claim_key
+      refute_received {:release_execution_lease, %{lease_id: ^lease_id}}
+      refute_received {:materialization_finish, %{claim_key: ^claim_key}}
+    end
+  end
+
+  for phase <- [:admission, :materialization_claim, :runner_enqueue] do
+    @tag runner_task_store: AcceptingTaskStore, phase: phase
+    test "cancellation after #{phase} replay owns the newly persisted resources", %{
+      fixture: fixture,
+      phase: phase
+    } do
+      conflict =
+        Error.new(:conflict, "execution history owner is busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      target = TargetIdentity.for_asset(elem(fixture.b_key, 0))
+      Process.put({FakeStore, :claimable_target_ids}, [target])
+
+      case phase do
+        :admission ->
+          Process.put({FakeStore, :admit_error}, conflict)
+
+        :materialization_claim ->
+          Process.put({FakeStore, :claimable_target_ids}, [])
+          Process.put({FakeStore, :claim_error}, conflict)
+
+        :runner_enqueue ->
+          Process.put({AcceptingTaskStore, :enqueue_error}, conflict)
+      end
+
+      assert {:persist_retry, paused, %PersistenceRetry{event_type: ^phase} = retry, ^conflict} =
+               Execution.handle_event(fixture.state, :continue)
+
+      Process.delete({FakeStore, :admit_error})
+      Process.delete({AcceptingTaskStore, :enqueue_error})
+      Process.put({FakeStore, :claimable_target_ids}, [target])
+      assert {:ownership_gate, gated, _retry} = Execution.retry_persistence(paused, retry)
+      assert {:cont, cancelled} = Execution.cancel(gated, :operator)
+      assert cancelled.paused_admission == nil
+
+      case phase do
+        :admission ->
+          assert_receive {:release_execution_lease, _}
+
+        :materialization_claim ->
+          assert_receive {:release_execution_lease, _}
+          assert_receive {:materialization_finish, %{status: :failed}}
+
+        :runner_enqueue ->
+          assert_receive {:accepted_enqueue, command}
+          assert command.task_id in ActiveTaskSet.task_ids(cancelled.work_set)
+          refute_received {:release_execution_lease, _}
+          refute_received {:materialization_finish, _}
+      end
+    end
   end
 
   @tag runner_task_store: AcceptingTaskStore
@@ -694,6 +1102,56 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   end
 
   @tag runner_task_store: AcceptingTaskStore
+  for path <- [:initial, :replay] do
+    test "expired #{path} admission removes its waiter subscription", %{fixture: fixture} do
+      alias FavnOrchestrator.ExecutionAdmission.Coordinator
+      alias FavnOrchestrator.Persistence.Results.{Admission, AdmissionWaiter}
+      alias FavnOrchestrator.RunServer.Execution.StageAdmission
+      start_supervised!(Coordinator)
+      Process.put({FakeStore, :admit_error}, @unavailable)
+
+      assert {:persist_retry, state, retry, @unavailable} =
+               Execution.handle_event(fixture.state, :continue)
+
+      {:stage_operation, pause} = retry.resume
+      pause = put_in(pause.ctx.work.deadline_at, ~U[2020-01-01 00:00:00Z])
+      command = retry.command
+
+      result = %Admission{
+        status: :waiting,
+        waiter:
+          struct!(AdmissionWaiter, %{
+            workspace_id: command.workspace_context.workspace_id,
+            waiter_id: "expired-waiter",
+            run_id: command.run_id,
+            step_id: command.step_id,
+            status: :waiting,
+            priority: 0,
+            blocking_scope_id: hd(command.requests).scope_id,
+            requests: command.requests,
+            expires_at: DateTime.add(DateTime.utc_now(), 60),
+            claim_generation: 0
+          })
+      }
+
+      Process.delete({FakeStore, :admit_error})
+      Process.put({FakeStore, :admission_result}, {:ok, result})
+
+      if unquote(path) == :initial do
+        pause = StageAdmission.adopt_operation(pause, result)
+        assert Map.has_key?(:sys.get_state(Coordinator).subscribers, "expired-waiter")
+        StageAdmission.resume_operation(pause, result)
+      else
+        retry = %{retry | resume: {:stage_operation, pause}, ambiguous?: true}
+        assert {:ownership_gate, gated, replay} = Execution.retry_persistence(state, retry)
+        assert Map.has_key?(:sys.get_state(Coordinator).subscribers, "expired-waiter")
+        Execution.resume_persisted_retry(gated, replay)
+      end
+
+      refute Map.has_key?(:sys.get_state(Coordinator).subscribers, "expired-waiter")
+    end
+  end
+
   test "an expired paused deadline never enqueues the task and preserves the sibling", %{
     fixture: fixture
   } do
@@ -713,7 +1171,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
              Execution.handle_event(fixture.state, :continue)
 
     expired_pause = put_in(paused.paused_admission.ctx.work.deadline_at, ~U[2020-01-01 00:00:00Z])
-    expired_retry = %{retry | resume: {:stage_attempt_start, expired_pause.paused_admission}}
+    expired_retry = %{retry | resume: {:stage_operation, expired_pause.paused_admission}}
 
     assert {:ownership_gate, gated, ^expired_retry} =
              Execution.retry_persistence(expired_pause, expired_retry)

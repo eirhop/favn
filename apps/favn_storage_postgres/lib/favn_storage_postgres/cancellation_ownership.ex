@@ -76,6 +76,36 @@ defmodule FavnStoragePostgres.CancellationOwnership do
     owner
   end
 
+  def lock_many!(workspace_id, run_ids),
+    do: lock_members!(workspace_id, run_ids, &owner!/2)
+
+  def lock_new_many!(workspace_id, run_ids),
+    do: lock_members!(workspace_id, run_ids, &new_owner!/2)
+
+  defp lock_members!(workspace_id, run_ids, owner) do
+    run_ids
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> Enum.map(&{owner.(workspace_id, &1), &1})
+    |> Enum.sort()
+    |> Enum.each(fn {root, run_id} ->
+      RunIdentity.lock!(workspace_id, root)
+      if root != run_id, do: RunIdentity.lock!(workspace_id, run_id)
+
+      if owner.(workspace_id, run_id) != root do
+        Repo.rollback(
+          Error.new(:conflict, "execution history ownership changed during locking",
+            retryable?: true,
+            details: %{
+              reason_code: "execution_history_owner_busy",
+              operation: :history_owner_resolution
+            }
+          )
+        )
+      end
+    end)
+  end
+
   def try_lock!(workspace_id, run_id) do
     owner = owner!(workspace_id, run_id)
 

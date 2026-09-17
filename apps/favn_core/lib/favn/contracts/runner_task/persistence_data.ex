@@ -15,6 +15,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     Decimal,
     Favn.Contracts.RunnerWork,
     Favn.Contracts.RunnerResult,
+    Favn.Contracts.RunnerAssetEvidence,
     Favn.Contracts.RunnerAssetResult,
     Favn.Contracts.RunnerError,
     Favn.Resource.Ref,

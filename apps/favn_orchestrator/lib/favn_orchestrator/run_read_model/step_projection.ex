@@ -431,7 +431,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   defp step_summary(result, context) when is_map(result) do
     {step_id, node_key, canonical_asset_ref} = step_identity(result, context.run)
     status = value(result, :status)
-    output_metadata = result |> value(:meta, %{}) |> output_metadata()
+    output_metadata = output_metadata(value(result, :evidence) || value(result, :meta, %{}))
 
     %{
       id: step_id,
@@ -547,7 +547,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
     latest = List.last(events)
     data = latest.data || %{}
     result = event_result(latest, data)
-    output_metadata = result |> value(:meta, %{}) |> output_metadata()
+    output_metadata = output_metadata(value(result, :evidence) || value(result, :meta, %{}))
 
     %{
       id: event_step_id(run_id, latest),

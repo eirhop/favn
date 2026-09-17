@@ -51,22 +51,37 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     end
   end
 
-  @spec acquire_or_wait(RunState.t(), entry(), keyword()) ::
-          {:ok, lease() | nil} | {:waiting, Waiter.t()} | {:error, term()}
-  def acquire_or_wait(%RunState{} = run, entry, opts \\ [])
-      when is_map(entry) and is_list(opts) do
+  @doc false
+  @spec prepare_acquire(RunState.t(), entry(), keyword()) ::
+          {:ok, AdmitExecution.t() | nil} | {:error, term()}
+  def prepare_acquire(run, entry, opts) do
     entry = Map.merge(entry, Map.new(Keyword.take(opts, [:stage, :attempt])))
 
+    with {:ok, entry} <- normalize_entry(entry),
+         :ok <- validate_run_admissible(run),
+         :ok <- validate_execution_pool(run, entry),
+         :ok <- validate_v2_authority(run) do
+      case v2_admission_scopes(run, entry) do
+        [] -> {:ok, nil}
+        scopes -> {:ok, admit_command(run, entry, scopes)}
+      end
+    end
+  end
+
+  @doc false
+  @spec resolve_admission(RunState.t(), entry(), Admission.t()) ::
+          {:ok, lease()} | {:waiting, Waiter.t()} | {:error, term()}
+  def resolve_admission(run, entry, %Admission{} = admission) do
     with {:ok, entry} <- normalize_entry(entry) do
-      case acquire_result(run, entry) do
-        {:ok, lease} ->
-          {:ok, lease}
+      scopes = v2_admission_scopes(run, entry)
 
-        {:waiting, %Waiter{} = waiter} ->
-          register_waiter(run, entry, waiter)
+      case admission do
+        %Admission{status: :admitted, lease: lease} ->
+          {:ok, lease_map(lease, scopes)}
 
-        {:error, reason} ->
-          {:error, reason}
+        %Admission{status: :waiting, waiter: waiter} ->
+          waiter = waiter_struct(waiter, scopes, entry)
+          with :ok <- Coordinator.register(waiter, self()), do: {:waiting, waiter}
       end
     end
   end
@@ -99,16 +114,6 @@ defmodule FavnOrchestrator.ExecutionAdmission do
           {:ok, lease_map(lease, scopes)}
         end
       end
-    end
-  end
-
-  defp register_waiter(run, entry, waiter) do
-    case Coordinator.register(waiter, self()) do
-      :ok ->
-        acquire_after_waiter_registration(run, entry, waiter)
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
@@ -182,21 +187,6 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   @spec release_run(RunState.t()) :: :ok | {:error, term()}
   def release_run(%RunState{workspace_id: workspace_id} = run) when is_binary(workspace_id) do
     release_run_v2(run, [])
-  end
-
-  defp acquire_after_waiter_registration(%RunState{} = run, entry, %Waiter{} = waiter) do
-    case acquire_result(run, entry) do
-      {:ok, lease} ->
-        :ok = cancel_wait(waiter)
-        {:ok, lease}
-
-      {:waiting, %Waiter{}} ->
-        {:waiting, waiter}
-
-      {:error, reason} ->
-        :ok = cancel_wait(waiter)
-        {:error, reason}
-    end
   end
 
   @spec admission_scopes(RunState.t(), entry()) :: [map()]

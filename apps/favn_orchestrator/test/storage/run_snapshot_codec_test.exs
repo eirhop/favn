@@ -989,7 +989,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       attempt_count: 1,
       max_attempts: 1,
       attempts: [],
-      meta: %{
+      evidence: %{
         quality_status: :passed,
         write_outcome: :written,
         check_results: check_results,
@@ -1019,7 +1019,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
                manifest_record
              )
 
-    assert [%AssetResult{meta: meta}] = restored.result.asset_results
+    assert [%AssetResult{evidence: meta}] = restored.result.asset_results
     assert length(meta["check_results"]) == 53
     assert List.last(meta["check_results"])["metrics"]["evaluated_rows"] == 53
     assert length(meta["contract_validation"]["expected_columns"]) == 60
@@ -1049,7 +1049,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
       attempt_count: 0,
       max_attempts: 1,
       runner_task_id: "runner-1",
-      meta: %{cache: "hit"},
+      meta: %{cache: "hit", status: :custom, evidence: %{write_outcome: :application}},
       attempts: []
     }
 
@@ -1087,6 +1087,14 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored_skipped.reason == %{"fresh" => true}
     assert restored_skipped.started_at == now
     assert restored_skipped.execution_pool == :warehouse
+
+    assert restored_skipped.meta == %{
+             "cache" => "hit",
+             "status" => "custom",
+             "evidence" => %{"write_outcome" => "application"}
+           }
+
+    assert restored_skipped.evidence == nil
 
     assert %NodeResult{status: :blocked} = restored_blocked
     assert restored_blocked.reason == "upstream_error"

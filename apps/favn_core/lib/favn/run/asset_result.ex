@@ -23,6 +23,7 @@ defmodule Favn.Run.AssetResult do
           duration_ms: non_neg_integer(),
           status: :ok | :error | :cancelled | :timed_out,
           meta: map(),
+          evidence: Favn.Contracts.RunnerAssetEvidence.t() | map() | nil,
           error: error_details() | nil
         }
 
@@ -34,6 +35,7 @@ defmodule Favn.Run.AssetResult do
           finished_at: DateTime.t(),
           duration_ms: non_neg_integer(),
           meta: map(),
+          evidence: Favn.Contracts.RunnerAssetEvidence.t() | map() | nil,
           error: error_details() | nil,
           attempt_count: non_neg_integer(),
           max_attempts: pos_integer(),
@@ -49,6 +51,7 @@ defmodule Favn.Run.AssetResult do
     :started_at,
     :finished_at,
     :duration_ms,
+    evidence: nil,
     meta: %{},
     error: nil,
     attempt_count: 0,

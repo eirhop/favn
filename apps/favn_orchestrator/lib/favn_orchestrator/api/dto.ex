@@ -288,7 +288,8 @@ defmodule FavnOrchestrator.API.DTO do
       finished_at: datetime(result.finished_at),
       duration_ms: result.duration_ms,
       meta: normalize(result.meta),
-      output_metadata: normalize(result.meta),
+      evidence: normalize(result.evidence),
+      output_metadata: normalize(result.evidence || result.meta),
       error: error_payload(result.error),
       attempt_count: result.attempt_count,
       max_attempts: result.max_attempts,
@@ -334,7 +335,7 @@ defmodule FavnOrchestrator.API.DTO do
 
   defp map_output_metadata(result) when is_map(result) do
     result
-    |> field(:output_metadata, field(result, :meta, %{}))
+    |> field(:output_metadata, field(result, :evidence) || field(result, :meta, %{}))
     |> normalize()
   end
 

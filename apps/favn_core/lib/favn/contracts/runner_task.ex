@@ -6,7 +6,7 @@ defmodule Favn.Contracts.RunnerTask do
   wire input into new atoms.
   """
 
-  @version 13
+  @version 14
   @task_kinds [
     :asset_attempt,
     :relation_inspection,
@@ -26,7 +26,7 @@ defmodule Favn.Contracts.RunnerTask do
     :generation_discard
   ]
 
-  @spec version() :: 13
+  @spec version() :: 14
   def version, do: @version
 
   @spec task_kinds() :: [atom()]
@@ -276,7 +276,7 @@ defmodule Favn.Contracts.RunnerTask.Contract do
     |> redact_value()
   end
 
-  defp exact_version(%{version: 13}), do: :ok
+  defp exact_version(%{version: 14}), do: :ok
 
   defp exact_version(fields),
     do: {:error, {:unsupported_runner_task_version, Map.get(fields, :version)}}
@@ -509,12 +509,12 @@ defmodule Favn.Contracts.RunnerTask.Codec do
       limit = Limits.wire_bytes(struct.__struct__)
 
       if byte_size(payload) <= limit,
-        do: {:ok, %{"type" => tag, "version" => 13, "payload" => payload}},
+        do: {:ok, %{"type" => tag, "version" => 14, "payload" => payload}},
         else: {:error, {:runner_task_encoded_payload_too_large, byte_size(payload), limit}}
     end
   end
 
-  def decode_for(module, tag, %{"type" => tag, "version" => 13, "payload" => payload})
+  def decode_for(module, tag, %{"type" => tag, "version" => 14, "payload" => payload})
       when is_binary(payload) do
     with true <- byte_size(payload) <= Limits.wire_bytes(module),
          {:ok, binary} <- Base.decode64(payload),
@@ -567,7 +567,7 @@ defmodule Favn.Contracts.RunnerTask.Message do
       @runner_task_session_fenced session_fenced?
       @runner_task_tag tag
       @enforce_keys required
-      defstruct [version: 13] ++ fields
+      defstruct [version: 14] ++ fields
       @type t :: %__MODULE__{}
 
       @doc false
@@ -612,7 +612,7 @@ defmodule Favn.Contracts.RunnerTask.Registration do
       beam_node: nil,
       runner_pool: nil,
       required_runner_release_id: nil,
-      protocol_version: 13,
+      protocol_version: 14,
       slots: 1,
       lifecycle_mode: :elastic,
       supported_task_kinds: [],
@@ -628,7 +628,7 @@ defmodule Favn.Contracts.RunnerTask.Registration do
       :lifecycle_mode,
       :supported_task_kinds
     ],
-    enums: [protocol_version: [13], lifecycle_mode: [:elastic, :resident]]
+    enums: [protocol_version: [14], lifecycle_mode: [:elastic, :resident]]
 
   def validate(%__MODULE__{} = registration) do
     with :ok <- super(registration),

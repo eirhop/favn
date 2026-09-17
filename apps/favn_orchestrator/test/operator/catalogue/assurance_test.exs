@@ -6,6 +6,22 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssuranceTest do
   alias FavnOrchestrator.Projector
   alias FavnOrchestrator.RunState
 
+  test "application check keys cannot supply SQL assurance evidence" do
+    ref = {MyApp.Orders, :asset}
+
+    contract =
+      Contract.new!(columns: [%{name: :id, type: :integer, null: false}], row_counts: [[min: 1]])
+
+    run = %{
+      id: "app-run",
+      asset_results: %{ref => %{meta: %{quality_status: :passed, write_outcome: :written}}}
+    }
+
+    detail = Assurance.detail(%{ref: ref, assurance: %{contract: contract, checks: []}}, run)
+    assert detail.quality_status == nil
+    assert detail.write_outcome == nil
+  end
+
   test "associates ordered row-count claims with canonical ids and latest results" do
     asset_ref = {MyApp.Orders, :asset}
 
@@ -28,7 +44,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssuranceTest do
       id: "run-123",
       asset_results: %{
         asset_ref => %{
-          meta: %{
+          evidence: %{
             check_results: [
               %{name: Enum.at(specs, 0).name, outcome: :passed, metrics: %{actual: 5}},
               %{name: Enum.at(specs, 1).name, outcome: :warned, metrics: %{actual: 5}}
@@ -88,7 +104,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.AssuranceTest do
           %{
             ref: asset_ref,
             status: :ok,
-            meta: %{
+            evidence: %{
               quality_status: :passed,
               write_outcome: :written,
               check_results: [
