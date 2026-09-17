@@ -1,6 +1,13 @@
 defmodule FavnRunner.ResultCompactor do
-  @moduledoc false
+  @moduledoc """
+  Trims optional result detail without discarding completion identity or write safety.
 
+  The size target is best effort: essential fields remain even below their size
+  floor, and the task codec still enforces its absolute transport limit.
+  """
+
+  alias Favn.Contracts.RunnerAssetEvidence
+  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerResult
 
@@ -20,13 +27,6 @@ defmodule FavnRunner.ResultCompactor do
           metadata: retention_metadata(result.metadata, bytes)
       }
 
-      compacted =
-        if :erlang.external_size(compacted) <= max_bytes do
-          compacted
-        else
-          minimal_result(compacted, bytes)
-        end
-
       {compacted, :erlang.external_size(compacted), true}
     end
   end
@@ -35,58 +35,41 @@ defmodule FavnRunner.ResultCompactor do
     %{
       result
       | meta: %{retention_truncated: true},
+        evidence: compact_evidence(result.evidence),
         error: bounded_error(result.error),
         attempts: []
     }
   end
 
-  defp compact_asset_result(result) when is_map(result) do
-    result
-    |> Map.take([
-      :ref,
-      "ref",
-      :status,
-      "status",
-      :started_at,
-      "started_at",
-      :finished_at,
-      "finished_at",
-      :duration_ms,
-      "duration_ms",
-      :error,
-      "error",
-      :attempt_count,
-      "attempt_count",
-      :max_attempts,
-      "max_attempts",
-      :asset_step_id,
-      "asset_step_id"
-    ])
-    |> Map.put(:retention_truncated, true)
-  end
+  defp compact_evidence(nil), do: nil
 
-  defp compact_asset_result(_result), do: %{retention_truncated: true}
+  defp compact_evidence(%RunnerAssetEvidence{} = evidence) do
+    %{
+      evidence
+      | check_results: [],
+        metrics: %{},
+        runtime_inputs: nil,
+        contract_validation: nil,
+        group_replacement: nil,
+        command: nil,
+        message: nil,
+        reason: nil
+    }
+  end
 
   defp retention_metadata(_metadata, original_bytes) do
     %{
       retention: %{
         truncated: true,
         original_bytes: original_bytes,
-        omitted: [:asset_meta, :asset_attempts, :runner_metadata]
+        omitted: [:asset_meta, :asset_attempts, :runner_metadata, "asset_evidence_details"]
       }
     }
   end
 
-  defp minimal_result(%RunnerResult{} = result, original_bytes) do
-    %{
-      result
-      | asset_results: [],
-        error: bounded_error(result.error),
-        metadata: retention_metadata(%{}, original_bytes)
-    }
-  end
-
   defp bounded_error(nil), do: nil
+
+  defp bounded_error(%RunnerError{} = error), do: %{error | details: %{}}
 
   defp bounded_error(error) do
     if :erlang.external_size(error) <= 16 * 1_024 do

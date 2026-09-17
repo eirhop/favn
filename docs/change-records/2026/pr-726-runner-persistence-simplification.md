@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Contract simplification and regression repair plan |
 | Primary issue | None; the maintainer authorized this regression work without a separate issue. |
 | Pull request | [#726](https://github.com/eirhop/favn/pull/726) |
@@ -460,3 +460,78 @@ files). The five consolidated lifecycle modules are +63/-212 directly against
 remaining changes implement the metadata boundary, its tests and this record.
 The total PR is larger than the metadata change because it incorporates #725;
 it is not a 4,000-line serializer replacement.
+
+
+Final-review integration findings expanded the field inventory in two existing
+consumers, without changing the design:
+
+- `ResultCompactor` also consumes result detail. It now trims optional evidence
+  and preserves asset identity, generation identity and unknown-write/error
+  classification. Retention is best effort below the essential envelope size;
+  transport limits remain enforced by the codec. Regression tests cover large
+  successful SQL output and unknown writes.
+- RebuildDispatcher produces `runtime_input_expectation` for an approved rebuild.
+  RuntimeInputPins consumes it after task persistence to reject changed resolver
+  output. It is now explicitly copied as framework metadata. The regression goes
+  through work construction, stored task readback and pin validation, checking
+  changed resolver, input identity and payload fingerprint independently.
+
+These findings explain why testing only metadata encoding is insufficient: a
+valid value must also survive producer selection, compaction and every consumer.
+The first broad run also exposed an incorrect new test assumption that every
+backfill asset has a window. The assertion now checks the exact planned node
+window, including legitimately unwindowed assets; pipeline selection is checked
+separately.
+
+
+The final UI review also required preserving evidence provenance through asset,
+attempt and log views. Their summary components now receive evidence separately;
+application keys are displayed generically. The existing attempt-projection JSON
+column stores a framework-built `{meta, evidence}` envelope, unpacked by the public
+read facade. No column or legacy decoder is added; adoption requires rebuilding
+old disposable projections along with old task state. Storage-backed and rendered
+regressions cover application keys named `kind`, `evidence`, `write_outcome` and
+`check_results` without granting them SQL/write authority.
+
+Astra approved a narrow increase of slice 2 supporting additions from 400 to 500
+for the compaction, rebuild pin and UI/projection regressions discovered in final
+review. Production limits remain unchanged; these are required consumers of the
+approved evidence contract, not additional features.
+
+### Final implementation accounting and qualification
+
+Against main (`ba3fa194`), production code is **+1,788/-915**. Against the qualified
+#725 behavior baseline it is **+359/-448: 89 fewer production lines overall**,
+including the new metadata boundary. Of that comparison, lifecycle consolidation
+is +60/-209 and metadata changes are +299/-239. The three MaterializationClaims
+projection substitutions belong to metadata. This is a modest production
+simplification with broader regression coverage, not a claim that thousands of
+lines of necessary recovery behavior can disappear.
+
+The PR also includes 1,940 added and 128 deleted test/fixture lines against main,
+mostly reused #725 coverage. The reviewed planning record is counted in the PR's
+documentation total, not hidden as production savings. Metadata supporting changes
+are +425/-74, within the revised 500-line cap; lifecycle supporting consolidation remains 130 added
+lines, below its revised 150-line cap. Actual metadata support deletions are below
+the initial 80-line estimate because the review added consumer regressions rather
+than replacing whole existing suites.
+
+| Verification | Evidence and limit |
+| --- | --- |
+| Core and runner | 527 core tests and 274 runner tests pass, including fresh-process persistence, generation safeguards and compaction. |
+| Orchestrator | Full run passes all semantic tests; two unchanged 100 ms heartbeat tests fail under load and pass in a focused five-test rerun. Earlier full run passed 909 tests before the two new expiry cases were added. |
+| View | All 840 tests pass; explicit evidence preserves SQL rendering, and SQL-looking callback keys remain generic. |
+| PostgreSQL composition | Both real history-contention pipeline tests pass; backfill enqueue/completion passes; the final projection/write-resolution group passes all 18 tests, including changed rebuild inputs. |
+| Static checks | Formatting, warnings-as-errors compilation, whitespace and CI test-tier guard pass. Security route catalog covers 31 browser and 66 API routes. |
+| Local wider qualification | Attempted umbrella, slow, acceptance and full HTTP security harness. Local restore uses PostgreSQL 16 tools against server 18; acceptance lacks the consumer asset binary/runtime-role setup; BuildKit prints double-quoted config where the existing guard expects single quotes. Local performance probes also exceed timing limits under load. These environment/tooling issues are not changed in this patch. |
+| CI | Initial implementation CI passes acceptance, slow tests, Dialyzer, static checks, image qualification and HTTP security. Its only fast-suite failures are the two corrected window fixture assertions. Merge readiness requires the same checks on the final pushed head; current results are available on PR #726. |
+
+No live connector run or automatic repair/replay of historical unknown writes was
+performed. The adoption boundary remains a coordinated protocol-14 deployment
+with fresh disposable task/projection state.
+
+
+**Final Astra xhigh verdict:** approved the implementation on 2026-09-17 with no
+remaining actionable findings, against the original baseline and all documented
+deviations. The reviewer independently passed 193 focused checks and accepted
+the stated PostgreSQL proof boundaries. Final-head CI remains the merge gate.

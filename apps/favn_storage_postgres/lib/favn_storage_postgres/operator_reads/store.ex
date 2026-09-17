@@ -1779,7 +1779,9 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
       queue_reason: attempt.queue_reason,
       window: restore_window(attempt.window),
       error: attempt.error,
-      output_metadata: attempt.output_metadata
+      output_metadata:
+        (attempt.output_metadata || %{})["evidence"] || (attempt.output_metadata || %{})["meta"],
+      evidence: (attempt.output_metadata || %{})["evidence"]
     }
   end
 

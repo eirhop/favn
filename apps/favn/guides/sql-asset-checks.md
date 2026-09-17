@@ -343,7 +343,7 @@ These are invalid regardless of `on_violation` and cause rollback:
 
 ## Understand Persisted Outcomes
 
-Run detail metadata exposes `check_results`, `quality_status`, and
+Run detail execution evidence exposes `check_results`, `quality_status`, and
 `write_outcome`. Each check result follows `Favn.SQL.CheckResult`. Its `origin`
 is `:contract` for a generated contract claim and `:authored` for a custom
 check; contract results also expose a stable `claim_id`.

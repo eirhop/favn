@@ -205,7 +205,8 @@ defmodule FavnOrchestrator.Persistence.Results.RunAssetAttempt do
     :queue_reason,
     :window,
     :error,
-    :output_metadata
+    :output_metadata,
+    :evidence
   ]
 
   @type t :: %__MODULE__{}

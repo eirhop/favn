@@ -299,7 +299,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
           %{
             id: "output-metadata-sql-quality-warning",
             status: :ok,
-            metadata: %{
+            evidence: %{
               quality_status: :warning,
               write_outcome: :written,
               check_results: [
@@ -321,7 +321,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Components do
           %{
             id: "output-metadata-sql-no-op",
             status: :ok,
-            metadata: %{
+            evidence: %{
               quality_status: :passed,
               write_outcome: :no_op,
               reason: :has_rows_to_publish,

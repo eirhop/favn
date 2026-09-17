@@ -5149,6 +5149,24 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           {other.workspace_id, other_run.id, "other-workspace"},
           {fixture.workspace_id, sibling_run.id, "other-run"}
         ] do
+      assert {:ok, projection} =
+               FavnOrchestrator.RunReadModel.AssetAttemptProjection.from_event(%{
+                 event_type: "step_finished",
+                 data: %{
+                   asset_step_id: asset_step_id,
+                   asset_ref: {MyApp.Asset, :asset},
+                   node_result: %{
+                     meta: %{
+                       "marker" => marker,
+                       "kind" => "sql",
+                       "evidence" => %{"write_outcome" => "written"},
+                       "write_outcome" => "no_op",
+                       "check_results" => ["application-check"]
+                     }
+                   }
+                 }
+               })
+
       SQL.query!(
         Repo,
         """
@@ -5157,7 +5175,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
            status, output_metadata, source_publication_id, updated_at)
         VALUES ($1, $2, $2, $3, 'Elixir.MyApp.Asset:asset', 'none', 'ok', $4, 1, now())
         """,
-        [workspace_id, exact_run_id, asset_step_id, %{"marker" => marker}]
+        [workspace_id, exact_run_id, asset_step_id, projection.output_metadata]
       )
     end
 
@@ -5168,7 +5186,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                asset_step_id: asset_step_id
              })
 
-    assert detail.output_metadata == %{"marker" => "selected"}
+    assert detail.output_metadata["marker"] == "selected"
+    assert detail.output_metadata["evidence"] == %{"write_outcome" => "written"}
+    assert detail.output_metadata["check_results"] == ["application-check"]
+    assert detail.evidence == nil
   end
 
   test "asset detail names what it reads and what reads it", fixture do
@@ -14944,7 +14965,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert Map.take(task.payload.metadata, Map.keys(metadata)) == metadata
     refute Map.has_key?(task.payload.metadata, :cancel_outcomes)
     refute Map.has_key?(task.payload.metadata, "cancel_outcomes")
-    assert Favn.Contracts.RunnerWork.window(task.payload) != nil
+    node = Map.fetch!(run.plan.nodes, task.payload.node_identity.node_key)
+    assert Favn.Contracts.RunnerWork.window(task.payload) == node.window
     if kind == :pipeline, do: assert(task.payload.pipeline.window_selection.intent == :backfill)
     assert {:ok, claimed} = claim_asset_task(fixture, "backfill-first-task")
     assert claimed.task_id == task_id

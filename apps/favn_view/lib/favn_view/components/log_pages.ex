@@ -102,6 +102,7 @@ defmodule FavnView.Components.LogPages do
   attr :back_href, :string, default: nil
   attr :back_label, :string, default: nil
   attr :output_metadata, :any, default: nil
+  attr :evidence, :any, default: nil
   attr :output_status, :any, default: nil
   attr :visible_logs, :list, default: []
   attr :scope, :atom, default: :asset
@@ -135,6 +136,7 @@ defmodule FavnView.Components.LogPages do
         id="asset-log-output-metadata"
         class="mx-auto mb-3 w-full max-w-[120rem]"
         metadata={@output_metadata}
+        evidence={@evidence}
         status={@output_status}
       /> <.viewer assigns={assigns} />
     </AppShell.app_shell>

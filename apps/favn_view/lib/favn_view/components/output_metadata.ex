@@ -43,7 +43,7 @@ defmodule FavnView.Components.OutputMetadata do
   @active_statuses [:pending, :running, :retrying, "pending", "running", "retrying"]
 
   @doc """
-  The one line worth reading about what an attempt wrote.
+  Summarizes trusted execution evidence supplied separately from application metadata.
 
   Output metadata is a bag of twenty-odd fields, and rendering all of them gives
   every field equal weight. Three facts answer "did the data come out right?":
@@ -99,11 +99,14 @@ defmodule FavnView.Components.OutputMetadata do
 
   attr :id, :string, default: "output-metadata"
   attr :metadata, :any, default: nil
+  attr :evidence, :any, default: nil
   attr :status, :any, default: nil
   attr :title, :string, default: "Output metadata"
   attr :class, :string, default: nil
 
   def output_metadata(assigns) do
+    assigns = assign(assigns, :metadata, assigns.metadata || assigns.evidence)
+
     assigns =
       assigns
       |> assign(:rows, metadata_rows(assigns.metadata))
@@ -111,7 +114,7 @@ defmodule FavnView.Components.OutputMetadata do
       |> assign(:empty?, empty_metadata?(assigns.metadata))
       |> assign(:failed?, failed_status?(assigns.status))
       |> assign(:active?, active_status?(assigns.status))
-      |> assign(:check_summary, check_summary(assigns.metadata, assigns.status))
+      |> assign(:check_summary, check_summary(assigns.evidence, assigns.status))
 
     ~H"""
     <section
@@ -255,7 +258,6 @@ defmodule FavnView.Components.OutputMetadata do
 
   defp metadata_rows(metadata) when is_map(metadata) do
     metadata
-    |> Map.drop([:check_results, "check_results"])
     |> flatten_map()
     |> Enum.map(fn {key, value} ->
       %{key: key, label: label(key), value: value_label(value), mono?: structured?(value)}

@@ -547,7 +547,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             status_tone: :success,
             live?: false,
             output_status: :ok,
-            output_metadata: Fixtures.Logs.output_metadata()
+            output_metadata: Fixtures.Logs.output_metadata(),
+            evidence: Fixtures.Logs.output_metadata()
           }),
           "A finished step shows what it wrote alongside its logs."
         )
@@ -915,6 +916,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             status_label: "Succeeded",
             status_tone: :success,
             error_summary: nil,
+            evidence: %{"rows_affected" => 82_101, "write_outcome" => "written"},
             output_metadata: %{
               "rows_written" => 82_101,
               "relation" => "warehouse.crm_orders",

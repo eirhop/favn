@@ -376,6 +376,54 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     end
   end
 
+  test "rebuild input expectation survives work construction and rejects changed resolution", f do
+    alias Favn.RuntimeInput.Resolution
+    alias FavnOrchestrator.RunServer.Execution.{Sequential, RunExecutionState}
+    alias FavnOrchestrator.RuntimeInputPins
+    state = sequential_state(f, 5_000)
+
+    assert {:ok, planned} =
+             Resolution.new(%{
+               resolver: __MODULE__,
+               params: %{version: 1},
+               input_identity: "planned"
+             })
+
+    expectation = %{
+      resolver: Atom.to_string(planned.resolver),
+      input_identity: planned.input_identity,
+      payload_fingerprint: planned.payload_fingerprint
+    }
+
+    state = put_in(state.run.metadata[:runtime_input_expectation], expectation)
+    install_history_conflict_store()
+    assert {:await, queued, entry} = Sequential.continue(state)
+
+    assert {:ok, task} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: f.workspace_context,
+               task_id: entry.task_id
+             })
+
+    assert task.payload.metadata.runtime_input_expectation == expectation
+
+    assert {:ok, _pin} =
+             RuntimeInputPins.pin_for_resolution(f.workspace_id, entry.task_id, planned)
+
+    for attrs <- [
+          %{input_identity: "changed"},
+          %{params: %{version: 2}, payload_fingerprint: nil},
+          %{resolver: OtherResolver}
+        ] do
+      assert {:ok, changed} = Resolution.new(Map.merge(Map.from_struct(planned), attrs))
+
+      assert {:error, :rebuild_runtime_input_pin_changed} =
+               RuntimeInputPins.pin_for_resolution(f.workspace_id, entry.task_id, changed)
+    end
+
+    RunExecutionState.cancel_timers(queued)
+  end
+
   test "a valid context from another task cannot change the immutable claim binding", f do
     other_work = %{f.work | run_id: f.work.run_id <> "-context"}
     other_claim = TaskManifest.ownership_claim(f, f.version, other_work)

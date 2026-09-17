@@ -518,7 +518,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle do
       :backfill_execution_group_id,
       :backfill_root_run_id,
       :operator_metadata,
-      :runtime_input_lineage
+      :runtime_input_lineage,
+      :runtime_input_expectation
     ]
 
     for key <- keys,

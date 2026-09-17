@@ -233,7 +233,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
          attempt_count: 1,
          max_attempts: 3,
          error: nil,
-         meta: %{
+         evidence: %{
            "rows_written" => 1_284,
            "relation" => "mart.customer_orders_daily",
            "write_outcome" => "written",
@@ -630,7 +630,7 @@ defmodule FavnView.Dev.DesignSystem.Fixtures.AssetDetail do
            asset_result: %{
              run.asset_result
              | status: :error,
-               meta: %{"write_outcome" => "rolled_back", "quality_status" => "failed"}
+               evidence: %{"write_outcome" => "rolled_back", "quality_status" => "failed"}
            }
        }}
 
