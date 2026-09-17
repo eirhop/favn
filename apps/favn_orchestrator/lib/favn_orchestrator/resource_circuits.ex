@@ -67,11 +67,21 @@ defmodule FavnOrchestrator.ResourceCircuits do
   @spec record_blocked(RunState.t(), RunnerWork.t(), [ResourceCircuitBlocker.t()]) ::
           :ok | {:error, term()}
   def record_blocked(%RunState{} = run, %RunnerWork{} = work, blockers) when is_list(blockers) do
+    case prepare_blocked(run, work, blockers) do
+      nil -> :ok
+      command -> Persistence.stores().resource_circuits.record_recovery_candidate(command)
+    end
+  end
+
+  @doc false
+  @spec prepare_blocked(RunState.t(), RunnerWork.t(), [ResourceCircuitBlocker.t()]) ::
+          RecordResourceRecoveryCandidate.t() | nil
+  def prepare_blocked(run, work, blockers) do
     with %RecoveryPolicy{} = policy <- recovery_policy(run),
          %ResourceCircuitBlocker{resource: %Ref{} = resource} <- first_blocker(blockers) do
-      record_recovery_candidate(run, work, resource, :blocked, policy)
+      recovery_candidate(run, RunnerWork.node_key(work), resource, :blocked, policy)
     else
-      nil -> :ok
+      nil -> nil
     end
   end
 
@@ -100,22 +110,50 @@ defmodule FavnOrchestrator.ResourceCircuits do
           RunnerResult.t() | RunnerError.t() | term()
         ) :: :ok | {:error, term()}
   def settle(%RunState{} = run, entry, status, value) when status in [:ok, :error] do
-    permits = Map.get(entry, :resource_circuit_permits, [])
+    run |> prepare_settlement(entry, status, value) |> persist_settlement()
+  end
 
-    if permits == [] do
-      :ok
-    else
-      outcomes = terminal_outcomes(permits, status, value)
-      unreported_permits = unreported_permits(permits, outcomes)
-
-      with {:ok, %ResourceCircuitUpdate{} = update} <-
-             record_terminal_outcomes(run, entry, permits, outcomes),
-           :ok <- release(run, unreported_permits) do
-        Enum.each(update.closed_resources, &ResourceRecovery.enqueue(run.workspace_id, &1))
-        :ok
-      end
+  @doc false
+  @spec prepare_settlement(RunState.t(), map(), :ok | :error, term()) ::
+          RecordResourceOutcomes.t() | nil
+  def prepare_settlement(run, entry, status, value) do
+    case Map.get(entry, :resource_circuit_permits, []) do
+      [] -> nil
+      permits -> outcome_command(run, entry, permits, terminal_outcomes(permits, status, value))
     end
   end
+
+  @doc false
+  @spec persist_settlement(RecordResourceOutcomes.t() | nil) :: :ok | {:error, term()}
+  def persist_settlement(nil), do: :ok
+
+  def persist_settlement(%RecordResourceOutcomes{} = command) do
+    result =
+      if command.outcomes == [],
+        do: {:ok, %ResourceCircuitUpdate{closed_resources: []}},
+        else: Persistence.stores().resource_circuits.record_outcomes(command)
+
+    with {:ok, %ResourceCircuitUpdate{} = update} <- result,
+         :ok <- release_unreported(command, unreported_permits(command.permits, command.outcomes)) do
+      Enum.each(
+        update.closed_resources,
+        &ResourceRecovery.enqueue(command.workspace_context.workspace_id, &1)
+      )
+
+      :ok
+    end
+  end
+
+  defp release_unreported(_command, []), do: :ok
+
+  defp release_unreported(command, permits),
+    do:
+      Persistence.stores().resource_circuits.release_permits(%ReleaseResourceCircuitPermits{
+        workspace_context: command.workspace_context,
+        owner_id: command.owner_id,
+        permits: permits,
+        occurred_at: command.occurred_at
+      })
 
   defp requests(run, work, index) do
     with {:ok, policies} <- resource_policies(run) do
@@ -245,15 +283,6 @@ defmodule FavnOrchestrator.ResourceCircuits do
     |> Enum.sort_by(&{&1.resource.kind, &1.resource.name})
   end
 
-  defp record_terminal_outcomes(_run, _entry, _permits, []),
-    do: {:ok, %ResourceCircuitUpdate{closed_resources: []}}
-
-  defp record_terminal_outcomes(run, entry, permits, outcomes) do
-    Persistence.stores().resource_circuits.record_outcomes(
-      outcome_command(run, entry, permits, outcomes)
-    )
-  end
-
   defp unreported_permits(permits, outcomes) do
     reported = MapSet.new(outcomes, &{&1.resource.kind, &1.resource.name})
 
@@ -274,13 +303,6 @@ defmodule FavnOrchestrator.ResourceCircuits do
       nil ->
         []
     end
-  end
-
-  defp record_recovery_candidate(run, work, resource, reason, policy) do
-    node_key = RunnerWork.node_key(work)
-    candidate = recovery_candidate(run, node_key, resource, reason, policy)
-
-    Persistence.stores().resource_circuits.record_recovery_candidate(candidate)
   end
 
   defp recovery_candidate(run, node_key, resource, reason, policy) do

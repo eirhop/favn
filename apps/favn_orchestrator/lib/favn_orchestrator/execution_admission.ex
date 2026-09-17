@@ -72,6 +72,41 @@ defmodule FavnOrchestrator.ExecutionAdmission do
   end
 
   @doc false
+  @spec prepare_acquire(RunState.t(), entry(), keyword()) ::
+          {:ok, AdmitExecution.t() | nil} | {:error, term()}
+  def prepare_acquire(run, entry, opts) do
+    entry = Map.merge(entry, Map.new(Keyword.take(opts, [:stage, :attempt])))
+
+    with {:ok, entry} <- normalize_entry(entry),
+         :ok <- validate_run_admissible(run),
+         :ok <- validate_execution_pool(run, entry),
+         :ok <- validate_v2_authority(run) do
+      case v2_admission_scopes(run, entry) do
+        [] -> {:ok, nil}
+        scopes -> {:ok, admit_command(run, entry, scopes)}
+      end
+    end
+  end
+
+  @doc false
+  @spec resolve_admission(RunState.t(), entry(), Admission.t()) ::
+          {:ok, lease()} | {:waiting, Waiter.t()} | {:error, term()}
+  def resolve_admission(run, entry, %Admission{} = admission) do
+    with {:ok, entry} <- normalize_entry(entry) do
+      scopes = v2_admission_scopes(run, entry)
+
+      case admission do
+        %Admission{status: :admitted, lease: lease} ->
+          {:ok, lease_map(lease, scopes)}
+
+        %Admission{status: :waiting, waiter: waiter} ->
+          waiter = waiter_struct(waiter, scopes, entry)
+          with :ok <- Coordinator.register(waiter, self()), do: {:waiting, waiter}
+      end
+    end
+  end
+
+  @doc false
   @spec adopt(RunState.t(), entry()) :: {:ok, lease() | nil} | {:error, term()}
   def adopt(%RunState{} = run, entry) when is_map(entry) do
     with {:ok, entry} <- normalize_entry(entry),

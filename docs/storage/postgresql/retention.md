@@ -192,3 +192,17 @@ report aggregate referenced/unsettled counts; they do not classify every blockin
 reference separately. The first version has no preview continuation or byte
 estimate. Failures are reported through rate-limited warnings and telemetry;
 failed transactions leave durable progress unchanged.
+
+### Live execution history locks
+
+History writers take a shared transaction advisory lock for the root execution
+group in the `execution_history` namespace. Retirement takes the exclusive lock
+for that same root before checking eligibility or deleting history. Separate
+exclusive per-run and cancellation-owner locks still serialize their mutations.
+Independent child runs therefore do not contend merely because they share history.
+A retirement conflict returns retryable `execution_history_owner_busy`.
+
+Upgrading from the earlier exclusive history-guard protocol requires a coordinated
+control-plane restart: stop all old control-plane workers and maintenance before
+starting the new version. Mixed lock protocols are unsupported. No schema change
+or database reset is needed.

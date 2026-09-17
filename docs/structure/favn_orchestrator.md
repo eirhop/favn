@@ -56,13 +56,35 @@ runner await, and every terminal transition terminates pending workers. A write
 rejected by the run-ownership fence stops the process with `run_ownership_lost`
 instead of being retried, because a newer owner already exists.
 
-Stage admission persists `step_started` before runner enqueue. A structured
-retryable store conflict replays that exact fenced transition without consuming
-an asset attempt or cancelling independent siblings. While it is paused, the
-run server retains the admission lease, materialization claim, and resource
-permits under their existing finite lifetimes, while renewing run ownership and
-the paused claim's target-operation lock. Successful replay still requires a
-fresh ownership renewal and a live original work deadline before enqueue. Runner work
+Run execution retains immutable persistence operations across transient store
+failures: capacity admission and its post-registration recheck, materialization
+claim acquisition, queue/blocked/fresh/attempt-start events, runner enqueue,
+resource outcomes, and resource-recovery candidates. A retry resumes after the
+rejected operation without consuming an asset attempt or repeating external work.
+Already-persisted success stays successful while resource bookkeeping is pending.
+Independent siblings drain normally after a node failure; a failure alone is not
+a request to cancel them.
+
+The existing RunServer timer owns these retries. Each pending operation has a
+30-second budget from its first rejection, preserving command identity, fencing,
+and the original dispatch deadline. Each new stage receives a new admission
+budget. Successful replay adopts acquired ownership before requesting the fresh
+run-ownership gate needed for further dispatch. Cancellation cleans only known
+unsubmitted ownership; a possibly committed enqueue is reconciled from its saved
+task identity. Completed bookkeeping remains pending under cancellation until it
+finishes or its budget expires. Exhausted bookkeeping fails the run with its
+original cause and operation while preserving the successful asset result.
+
+These continuations are process-owned. Crash or ownership-loss recovery remains
+fail-closed for incomplete settlement; it never blindly replays completed asset
+writes. The run server renews run ownership and paused target-operation locks;
+admission leases and permits retain their original finite lifetimes. Structured
+retry diagnostics identify the operation, phase, node/step, original error,
+attempt count, elapsed time, and budget. See the
+[history-lock protocol](../storage/postgresql/retention.md#live-execution-history-locks)
+for shared writer guards and the coordinated upgrade requirement.
+
+Runner work
 contains execution and correlation metadata only; cancellation, retry, drain,
 active-task, recovery-position, and terminal bookkeeping stay in the control
 plane snapshot.

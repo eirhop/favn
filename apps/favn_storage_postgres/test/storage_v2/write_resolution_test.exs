@@ -13,6 +13,31 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   alias FavnStoragePostgres.Materialization.Store, as: Materialization
   alias FavnStoragePostgres.TestSupport.TaskManifest
 
+  defmodule HistoryConflictMaterializationStore do
+    @behaviour FavnOrchestrator.Persistence.MaterializationStore
+    for {operation, arity} <-
+          FavnOrchestrator.Persistence.MaterializationStore.behaviour_info(:callbacks) --
+            [claim: 1] do
+      args = Macro.generate_arguments(arity, __MODULE__)
+      @impl true
+      def unquote(operation)(unquote_splicing(args)),
+        do: apply(FavnStoragePostgres.Materialization.Store, unquote(operation), unquote(args))
+    end
+
+    @impl true
+    def claim(command) do
+      if Process.delete({__MODULE__, :reject_once}) do
+        {:error,
+         FavnOrchestrator.Persistence.Error.new(:conflict, "history owner busy",
+           retryable?: true,
+           details: %{reason_code: "execution_history_owner_busy"}
+         )}
+      else
+        FavnStoragePostgres.Materialization.Store.claim(command)
+      end
+    end
+  end
+
   setup_all do
     {:ok, options} =
       Config.repo_options(
@@ -135,7 +160,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     alias FavnOrchestrator.RunServer.Execution.RunExecutionState
     state = sequential_state(f, 5_000)
     task = start(f)
-    assert {:cont, waiting} = Sequential.continue(state)
+    assert {:cont, waiting} = continue_after_history_conflict(state)
     [timer] = Map.values(waiting.retry_timers)
     retry = timer.payload
     assert retry.next_attempt == 1
@@ -192,7 +217,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     alias FavnOrchestrator.RunServer.Execution.RunExecutionState
     state = sequential_state(f, 5_000)
     task = start(f)
-    assert {:cont, waiting} = Sequential.continue(state)
+    assert {:cont, waiting} = continue_after_history_conflict(state)
     [timer] = Map.values(waiting.retry_timers)
     RunExecutionState.cancel_timers(waiting)
 
@@ -655,6 +680,31 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
                "SELECT count(*) FROM favn_control.materializations WHERE workspace_id=$1",
                [f.workspace_id]
              )
+  end
+
+  defp continue_after_history_conflict(state) do
+    alias FavnOrchestrator.Persistence.Runtime
+    alias FavnOrchestrator.RunServer.Execution
+    alias FavnOrchestrator.RunServer.Execution.Sequential
+    alias FavnStoragePostgres.Backend
+
+    start_supervised!(
+      {Runtime,
+       %Runtime{
+         backend: Backend,
+         options: [],
+         stores: %{Backend.stores() | materialization: HistoryConflictMaterializationStore}
+       }}
+    )
+
+    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
+
+    assert {:persist_retry, paused, retry,
+            %{details: %{reason_code: "execution_history_owner_busy"}}} =
+             Sequential.continue(state)
+
+    assert retry.event_type == :materialization_claim
+    Execution.retry_persistence(paused, retry)
   end
 
   defp sequential_state(f, timeout_ms) do

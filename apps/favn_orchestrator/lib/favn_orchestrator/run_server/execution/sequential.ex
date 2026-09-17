@@ -24,6 +24,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.PersistenceRetry
   alias FavnOrchestrator.RunServer.Snapshots
+  alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.RunState
 
   @type directive ::
@@ -369,7 +370,28 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   defp acquire_attempt(state, lifecycle, work) do
-    case MaterializationClaims.acquire_sequential(state.run, work) do
+    with {:ok, command} <- MaterializationClaims.prepare_sequential(state.run, work) do
+      if command do
+        pause = sequential_pause(state.run, lifecycle, work, nil, :claim)
+
+        retry =
+          PersistenceRetry.command(
+            state.run,
+            :materialization_claim,
+            command,
+            %{asset_ref: work.asset_ref, asset_step_id: work.asset_step_id},
+            {:sequential_operation, pause}
+          )
+
+        persist_operation(state, retry, pause)
+      else
+        handle_acquired_claim(state, lifecycle, work, {:ok, nil})
+      end
+    end
+  end
+
+  defp handle_acquired_claim(state, lifecycle, work, result) do
+    case result do
       {:ok, claim} ->
         work = %{work | metadata: clear_retry_state(work.metadata)}
 
@@ -439,54 +461,195 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       max_attempts: lifecycle.max_attempts
     }
 
-    case Persistence.persist_run_step(running, attempt_start_event(lifecycle.attempt), intent) do
-      :ok -> enqueue_persisted_attempt(%{state | run: running}, lifecycle, work, claim)
-      {:error, reason} -> fail_enqueue(state, lifecycle, work, claim, reason)
+    pause = sequential_pause(running, lifecycle, work, claim, :started)
+
+    retry =
+      PersistenceRetry.new(
+        running,
+        attempt_start_event(lifecycle.attempt),
+        intent,
+        {:sequential_operation, pause}
+      )
+
+    persist_operation(state, retry, pause)
+  end
+
+  defp sequential_pause(run, lifecycle, work, claim, phase),
+    do: %{
+      kind: :sequential,
+      phase: phase,
+      lifecycle: lifecycle,
+      work: work,
+      claim: claim,
+      ctx: %{current_run: run, materialization_claim: claim},
+      entries: []
+    }
+
+  defp persist_operation(state, retry, pause) do
+    case PersistenceRetry.persist(retry) do
+      :ok ->
+        resume_operation(state, pause, :ok)
+
+      {:ok, result} ->
+        resume_operation(state, pause, result)
+
+      {:error, %{details: %{reason_code: "target_write_in_progress"}}} = result
+      when pause.phase == :claim ->
+        handle_acquired_claim(state, pause.lifecycle, pause.work, result)
+
+      {:error, reason} ->
+        if PersistenceRetry.replayable?(reason) and
+             (pause.phase != :enqueue or
+                match?(%{details: %{reason_code: "execution_history_owner_busy"}}, reason)) do
+          {:persist_retry, %{state | run: pause.ctx.current_run, paused_admission: pause}, retry,
+           reason}
+        else
+          if pause.phase == :enqueue,
+            do: fail_enqueue(state, pause.lifecycle, pause.work, pause.claim, reason),
+            else: fail_before_enqueue(state, pause.lifecycle, pause.work, pause.claim, reason)
+        end
     end
   end
 
-  defp enqueue_persisted_attempt(state, lifecycle, work, claim) do
-    case AssetRunnerTasks.enqueue(
-           state.run,
-           work,
-           lifecycle.node_key,
-           lifecycle.stage,
-           lifecycle.attempt,
-           %{kind: :sequential, materialization_claim: claim}
-         ) do
-      {:ok, task, work} ->
-        entry =
-          sequential_entry(state, lifecycle, work, task) |> Map.put(:materialization_claim, claim)
+  @doc false
+  def reject_operation(state, %{phase: :claim} = pause, reason) do
+    state = %{state | run: pause.ctx.current_run, paused_admission: nil}
+    handle_acquired_claim(state, pause.lifecycle, pause.work, {:error, reason})
+  end
 
-        {:await, RunExecutionState.add_work(state, entry), entry}
+  @doc false
+  @spec adopt_operation(RunExecutionState.t(), map(), term()) :: RunExecutionState.t()
+  def adopt_operation(state, %{phase: :claim} = pause, %{status: :claimed} = result) do
+    {:ok, claim} = MaterializationClaims.resolve_sequential(result)
+    pause = %{pause | claim: claim, ctx: Map.put(pause.ctx, :materialization_claim, claim)}
+    %{state | paused_admission: pause}
+  end
+
+  def adopt_operation(state, %{phase: :enqueue} = pause, task) do
+    entry =
+      sequential_entry(state, pause.lifecycle, pause.work, task)
+      |> Map.put(:materialization_claim, pause.claim)
+
+    %{state | paused_admission: Map.put(pause, :submitted_entry, entry)}
+    |> RunExecutionState.add_work(entry)
+  end
+
+  def adopt_operation(state, _pause, _result), do: state
+
+  @doc false
+  @spec resume_operation(RunExecutionState.t(), map(), term()) :: directive()
+  def resume_operation(state, pause, result) do
+    state = %{state | run: pause.ctx.current_run, paused_admission: nil}
+
+    cond do
+      pause.phase == :enqueue ->
+        accept_enqueued_attempt(state, pause.lifecycle, pause.work, pause.claim, result)
+
+      pause.work.deadline_at &&
+          DateTime.compare(pause.work.deadline_at, DateTime.utc_now()) != :gt ->
+        claim =
+          if pause.phase == :claim do
+            case MaterializationClaims.resolve_sequential(result) do
+              {:ok, claim} -> claim
+              _ -> pause.claim
+            end
+          else
+            pause.claim
+          end
+
+        fail_before_enqueue(
+          state,
+          pause.lifecycle,
+          pause.work,
+          claim,
+          :target_write_admission_timeout
+        )
+
+      pause.phase == :claim ->
+        handle_acquired_claim(
+          state,
+          pause.lifecycle,
+          pause.work,
+          MaterializationClaims.resolve_sequential(result)
+        )
+
+      true ->
+        enqueue_persisted_attempt(state, pause.lifecycle, pause.work, pause.claim)
+    end
+  end
+
+  @doc false
+  @spec cleanup_paused(RunExecutionState.t()) :: RunExecutionState.t()
+  def cleanup_paused(%{paused_admission: %{kind: :sequential, submitted_entry: _}} = state),
+    do: %{state | paused_admission: nil}
+
+  def cleanup_paused(%{paused_admission: %{kind: :sequential} = pause} = state) do
+    :ok = MaterializationClaims.abandon_sequential(pause.claim)
+
+    task_id =
+      AssetRunnerTasks.task_id(
+        state.run,
+        pause.work,
+        pause.lifecycle.node_key,
+        pause.lifecycle.attempt
+      )
+
+    run =
+      Snapshots.snapshot_update(state.run,
+        metadata:
+          Map.update(state.run.metadata, :active_runner_task_ids, [], &List.delete(&1, task_id))
+      )
+
+    %{state | run: run, paused_admission: nil}
+  end
+
+  defp enqueue_persisted_attempt(state, lifecycle, work, claim) do
+    case AssetRunnerTasks.prepare(state.run, work, lifecycle.node_key, lifecycle.attempt, %{
+           kind: :sequential,
+           materialization_claim: claim
+         }) do
+      {:ok, command, work} ->
+        pause = sequential_pause(state.run, lifecycle, work, claim, :enqueue)
+
+        retry =
+          PersistenceRetry.command(
+            state.run,
+            :runner_enqueue,
+            command,
+            %{asset_ref: work.asset_ref, asset_step_id: work.asset_step_id},
+            {:sequential_operation, pause}
+          )
+
+        persist_operation(state, retry, pause)
 
       {:error, reason} ->
         fail_enqueue(state, lifecycle, work, claim, reason)
     end
   end
 
+  defp accept_enqueued_attempt(state, lifecycle, work, claim, task) do
+    entry =
+      sequential_entry(state, lifecycle, work, task) |> Map.put(:materialization_claim, claim)
+
+    {:await, RunExecutionState.add_work(state, entry), entry}
+  end
+
   defp fail_enqueue(state, lifecycle, work, claim, reason) do
     task_id = AssetRunnerTasks.task_id(state.run, work, lifecycle.node_key, lifecycle.attempt)
 
-    abandoned = MaterializationClaims.abandon_sequential(claim)
-
-    state =
-      if abandoned == :ok and AssetRunnerTasks.rejected_without_task?(state.run, task_id, reason) do
-        run =
-          Snapshots.snapshot_update(state.run,
-            metadata:
-              Map.update(
-                state.run.metadata,
-                :active_runner_task_ids,
-                [],
-                &Enum.reject(&1, fn id -> id == task_id end)
-              )
-          )
-
-        %{state | run: run}
-      else
-        state
+    if AssetRunnerTasks.rejected_without_task?(state.run, task_id, reason) do
+      fail_before_enqueue(state, lifecycle, work, claim, reason)
+    else
+      case RunnerTasks.fetch(state.run.workspace_id, task_id) do
+        {:ok, task} -> accept_enqueued_attempt(state, lifecycle, work, claim, task)
+        {:error, _} -> {:recovery_required, state, {:runner_enqueue_uncertain, reason}}
       end
+    end
+  end
+
+  defp fail_before_enqueue(%RunExecutionState{} = state, lifecycle, work, claim, reason) do
+    pause = sequential_pause(state.run, lifecycle, work, claim, :started)
+    state = cleanup_paused(struct(state, paused_admission: pause))
 
     persist_pre_submit_failure(
       state,

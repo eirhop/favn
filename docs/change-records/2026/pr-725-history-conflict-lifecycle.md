@@ -237,4 +237,111 @@ the composed PostgreSQL proof require a separate final review.
 
 ## Implementation outcome
 
-Pending implementation and verification.
+### Implemented behavior
+
+The history guard now takes a shared lock in a separate namespace, while
+retirement retains exclusive ownership. Multi-run writers acquire cancellation
+owners before children. The log writer still accepts pre-creation diagnostic
+identities; it revalidates their owner under the identity lock and rolls back if
+creation changed the owner while the writer waited.
+
+The existing `PersistenceRetry` carries a closed union of prepared commands,
+original cause, first rejection time, attempts, and ambiguity. Admission retains
+capacity/claim/queue/decision/enqueue phases; classification retains its remaining
+nodes; sequential dispatch retains claim/start/enqueue phases. Completion retains
+only resource bookkeeping after the successful result/materialization. No asset
+callback, connector, schema, task codec, or runner protocol was added or changed.
+
+Successful replay adopts acquired resources before the ownership-renewal gate.
+Every new node clears per-node ownership scratch state. Every admission exit
+retains already-saved same-batch tasks; uncertain enqueue retains a complete
+stage entry and consumes its durable outcome before claim cleanup. A cancellation
+reply saying the task already completed is not evidence that its write failed.
+New stages reset admission budgets; retries within the same stage retain them.
+Waiter registration has one immediate, separately frozen capacity recheck.
+
+### Completed guard inventory
+
+Paths below are relative to the owning application's `lib` directory. This is
+an inventory of the specific history-conflict lifecycle, not a guarantee that
+all unrelated storage errors have the same recovery semantics.
+
+| Operation and source | Conflict/recovery disposition | Evidence |
+| --- | --- | --- |
+| `favn_storage_postgres/run_identity.ex:lock!/2, try_lock!/2`; `maintenance/history.ex:guard!/2, try_guard!/2` | Shared root guard plus exclusive per-run authority. Try-lock callers skip busy candidates; retirement still excludes all writers. | Real shared/exclusive PostgreSQL test; existing retention and claim tests. |
+| `run_ownership/store.ex:claim_run, renew_run, release_run, claim_recovery_batch` | Existing recovery polling and bounded exact-ID renewal. No new asset execution is authorized by a successful old receipt. | Existing real history-conflict renewal/fencing tests and RunServer gate tests. |
+| `runs/store.ex:create_run, commit_transition, request_cancellation` | Creation returns the explicit retryable reason to submission reconciliation. Execution events retain the exact intended transition; cancellation remains authoritative and idempotent. Terminal persistence retains its separate existing retry path. | Composed queue test; attempt-start, replay-loss, cancellation and error-projection tests. |
+| `admission/store.ex:admit` through cancellation ownership | Frozen admit and registration-recheck commands. Saved leases/waiters are tracked before renewal; known rejected unsubmitted work is cleaned on exhaustion. | Admission gate-held cancellation and same-batch cancellation/exhaustion tests. |
+| `materialization/store.ex:claim` through cancellation ownership | Frozen claim; retain target-operation lock and newly acquired claim. Completed materialization/claim finish and execution checkpoints do not directly call the history guard and are not replayed as resource bookkeeping. | Claim gate-held cancellation and same-batch cleanup tests; composed persisted materializations. |
+| `resource_circuits/store.ex:record_outcomes, record_recovery_candidate` | Exact prepared command, with successful result and advanced event sequence retained. Async post-step reconciliation runs only once. Exhaustion fails bookkeeping, preserving asset success. | Composed resource conflict; async recovery/exhaustion tests. |
+| `resource_circuits/store.ex:claim_recovery, complete_recovery` | `ResourceRecovery` returns `:retry`; durable candidates and periodic sweep retain work. Root-first locking avoids inversion against admission/cancellation. | Existing resource recovery suite and real recovery-finalization lock-order test. |
+| `runner_tasks/store.ex` enqueue and guarded assignment/start/renew/complete/cancel/log/input mutations | Enqueue retries only a known history rejection. Ambiguous enqueue reconciles saved identity or stops for recovery. Protocol errors retain retryability; claim skips a busy owner instead of wedging the queue. | Existing runner task suite; sequential committed-reply-loss completion/cancellation; sibling-drain and composed completion tests. |
+| `run_submissions/store.ex` enqueue/claim/transition and `RunSubmission.Processor` | Claims skip busy identities; processor reconciles the deterministic run/submission identity and uses its bounded retry policy. Unknown admission remains recovery work. | Existing submission and core authority tests; source audit of `reconcile_run` and `retry_or_fail`. |
+| `scheduler/store.ex` dispatch and `Scheduler.PersistenceRuntime` | Retryable dispatch errors preserve the occurrence; later poll reconciles it. | Existing scheduler authority tests and `preserve_occurrence_on_dispatch_error?/2`. |
+| `backfills/store.ex` window claim/transition and `BackfillDispatcher` | Busy claims retain durable windows; dispatcher preserves retryable submission failures and reconciles reserved identities. | Existing backfill authority tests and source audit. |
+| `rebuilds/store.ex:transition_item, transition_action` | Guarded child transitions return errors to the worker; durable item/operation leases allow poll/reclaim. A new child submission is reserved before run creation. | Existing rebuild authority tests and source trace through `process_items`/`RebuildExecutionWorker`. No dispatcher rewrite. |
+| `logs/store.ex:append_batch`; runner log/input writes | Canonical owner-before-child ordering. Diagnostic append returns a retryable error to its caller; best-effort log callers can drop diagnostics, without changing asset outcome. | Real log-batch lock-order test and missing-run diagnostic test; runner log tests. |
+| `maintenance/history.ex`, submission retention and operation cancellation | Exclusive retirement and retained references remain mandatory. Operator mutations retain their existing command receipts and cancellation authority. | Existing retention/cancellation suites plus shared-writer exclusion tests. |
+
+### Verification evidence so far
+
+- The composed real PostgreSQL pipeline injects exclusive history contention at
+  resource outcomes and subsequent queue persistence, observes the specific
+  rejection, verifies exact command replay, and completes five nodes including
+  descendants. It checks five materializations/outcomes, successful tasks and no
+  remaining claims/leases or unintended cancellation metadata. It also checks a
+  later stage receives a fresh admission budget.
+- The fixture completes durable runner tasks with Landing-style metadata. This
+  proves the orchestrator/storage composition; it does not execute a deployed
+  connector or validate external Landing writes in the reported environment.
+- Three real concurrent lock-order tests wait for the writer in `pg_locks`, then
+  prove its child remains lockable while its cancellation root is held. They
+  cover log batches, resource outcomes and resource-recovery completion.
+- Focused tests cover successful-replay cancellation, same-batch pre-dispatch
+  ownership, immutable claim/event commands, completed-bookkeeping recovery and
+  exhaustion, sequential committed-enqueue reply loss, structured error fallback,
+  and cancellation deferral while completed bookkeeping remains pending.
+- PostgreSQL core authority, concurrency authority and resource circuits passed
+  together: **195 tests** before the final unknown-enqueue ownership correction.
+  Final-head requalification and independent final review remain in progress.
+
+### Deviations and scope accounting
+
+1. The first valid red composed test used the new lock namespace with the old
+   completion behavior still present. It proved terminalization at the rejected
+   resource write, but was not a run against wholly unmodified main. This is
+   narrower evidence than verification-plan item 1; no contrary claim is made.
+2. Shared guards exposed existing root/child lock-order inversions previously
+   masked by the exclusive guard's early rejection. Logs, outcome recording and
+   recovery finalization now use one canonical ordering. Missing-run diagnostics
+   preserve their old contract, with owner revalidation for concurrent creation.
+3. Independent review found additional same-batch ownership and uncertain-enqueue
+   cleanup paths that had relied on blanket sibling cancellation. Preserving
+   siblings required retaining all saved entries and draining already-completed
+   outcomes before claim cleanup; the fix includes these paths and tests.
+4. Production additions exceeded the reviewed 525–905-line estimate: the current
+   formatted diff is approximately **1,490 added / 530 removed production lines**,
+   plus approximately **1,290 added / 60 removed test lines** (final counts follow
+   qualification). The added phases, acquired-result adoption, bounded recheck,
+   sequential reconciliation, and cancellation-safe tracking account for the
+   overrun. This is one existing retry scheduler and a closed command union,
+   not a replacement scheduler or new persistence framework. Astra must review
+   the overrun and final behavior against the approved baseline.
+   The wider suite also exposed a domain distinction: target-write contention
+   must retain its existing durable admission timer, even when preceded by a
+   history conflict. Both initial and replayed sequential claim replies now
+   preserve that path; PostgreSQL tests exercise owner completion and deadline
+   expiry without consuming another asset attempt.
+5. The repository PostgreSQL setup found an existing bootstrap-ownership mismatch
+   on its reused local volume. Verification uses a separate disposable
+   `favn_test_history_lifecycle` database under the bootstrap role; no user
+   development database, running pipeline or old failed run was reset/replayed.
+
+### Operational and recovery limits
+
+Follow the canonical [history-lock upgrade requirement](../../storage/postgresql/retention.md#live-execution-history-locks): old control-plane/maintenance processes must stop
+before the new lock protocol starts. Process-crash recovery during incomplete
+bookkeeping remains fail-closed. Unknown first replies may retain finite leases
+or claims for expiry/recovery when ownership cannot be established; they are not
+reported as successfully cleaned up. Neither a green suite nor review proves
+arbitrary workloads bug-free. The reported live backfill has not been replayed.

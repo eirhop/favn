@@ -233,6 +233,194 @@ defmodule FavnStoragePostgres.StorageV2.ConcurrencyAuthorityTest do
     {:ok, provision_fixture(36, version)}
   end
 
+  for operation <- [:logs, :resource_outcome, :recovery_completion] do
+    @tag operation: operation
+    test "#{operation} locks the cancellation root before a child", fixture do
+      root = new_run(fixture, "z-root-#{random_id()}")
+      child = new_run(fixture, "a-child-#{random_id()}")
+
+      for run <- [root, child],
+          do: assert({:ok, _} = RunStore.create_run(create_run_command(fixture, run)))
+
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.runs SET root_execution_group_id=$3, cancellation_owner_run_id=$3 WHERE workspace_id=$1 AND run_id=$2",
+        [fixture.workspace_id, child.id, root.id]
+      )
+
+      operation = history_order_operation(fixture, root, child)
+      owner = self()
+
+      assert {:ok, worker} =
+               Repo.transaction(fn ->
+                 FavnStoragePostgres.RunIdentity.lock!(fixture.workspace_id, root.id)
+
+                 worker =
+                   Task.async(fn ->
+                     Repo.checkout(fn ->
+                       %{rows: [[backend_pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()", [])
+                       send(owner, {:history_writer, backend_pid})
+                       operation.()
+                     end)
+                   end)
+
+                 assert_receive {:history_writer, backend_pid}, 5_000
+                 await_advisory_wait!(backend_pid)
+
+                 assert FavnStoragePostgres.RunIdentity.try_lock!(fixture.workspace_id, child.id),
+                        "the waiting writer must not hold the child while waiting for its root"
+
+                 worker
+               end)
+
+      assert result = Task.await(worker, 5_000)
+      assert result == :ok or match?({:ok, _}, result)
+    end
+  end
+
+  test "pre-creation log locking revalidates a newly created child owner", fixture do
+    root = create_run!(fixture)
+    child = new_run(fixture, "late-child-#{random_id()}")
+    command = log_batch_command(fixture, random_id())
+    command = %{command | entries: [%{hd(command.entries) | run_id: child.id}]}
+    owner = self()
+
+    assert {:ok, worker} =
+             Repo.transaction(fn ->
+               FavnStoragePostgres.RunIdentity.lock!(fixture.workspace_id, child.id)
+
+               worker =
+                 Task.async(fn ->
+                   Repo.checkout(fn ->
+                     %{rows: [[pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()", [])
+                     send(owner, {:late_log_writer, pid})
+                     LogStore.append_batch(command)
+                   end)
+                 end)
+
+               assert_receive {:late_log_writer, backend_pid}, 5_000
+               await_advisory_wait!(backend_pid)
+               assert {:ok, _} = RunStore.create_run(create_run_command(fixture, child))
+
+               SQL.query!(
+                 Repo,
+                 "UPDATE favn_control.runs SET root_execution_group_id=$3, cancellation_owner_run_id=$3 WHERE workspace_id=$1 AND run_id=$2",
+                 [fixture.workspace_id, child.id, root.id]
+               )
+
+               worker
+             end)
+
+    assert {:error, %{retryable?: true, details: %{operation: :history_owner_resolution}}} =
+             Task.await(worker, 5_000)
+
+    assert {:ok, [_]} = LogStore.append_batch(command)
+  end
+
+  defp history_order_operation(%{operation: :logs} = fixture, root, child) do
+    command = log_batch_command(fixture, random_id())
+    entry = hd(command.entries)
+    command = %{command | entries: [%{entry | run_id: child.id}, %{entry | run_id: root.id}]}
+    fn -> LogStore.append_batch(command) end
+  end
+
+  defp history_order_operation(fixture, _root, child) do
+    alias FavnOrchestrator.Persistence.Commands, as: C
+    alias FavnStoragePostgres.ResourceCircuits.Store, as: Circuits
+    now = DateTime.utc_now()
+    resource = Favn.Resource.Ref.new!(:connection, "order-#{random_id()}")
+
+    candidate = %C.RecordResourceRecoveryCandidate{
+      workspace_context: fixture.workspace_context,
+      candidate_id: "candidate-#{random_id()}",
+      source_run_id: child.id,
+      node_key: {{MyApp.ConcurrentAsset, :asset}, nil},
+      resource: resource,
+      reason: :safe_failure,
+      max_age_ms: 60_000,
+      occurred_at: now
+    }
+
+    case fixture.operation do
+      :resource_outcome ->
+        command = %C.RecordResourceOutcomes{
+          workspace_context: fixture.workspace_context,
+          command_id: "outcomes-#{random_id()}",
+          owner_id: "owner",
+          run_id: child.id,
+          asset_step_id: "step",
+          attempt: 1,
+          permits: [],
+          outcomes: [],
+          recovery_candidates: [candidate],
+          occurred_at: now
+        }
+
+        fn -> Circuits.record_outcomes(command) end
+
+      :recovery_completion ->
+        assert {:ok, _} =
+                 Circuits.acquire(%C.AcquireResourceCircuits{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "acquire-#{random_id()}",
+                   owner_id: "owner",
+                   run_id: child.id,
+                   asset_step_id: "step",
+                   probe_lease_ms: 30_000,
+                   requests: [
+                     %C.ResourceCircuitRequest{
+                       resource: resource,
+                       policy:
+                         Favn.CircuitBreaker.Policy.new!(failure_threshold: 1, probe_after_ms: 1)
+                     }
+                   ],
+                   occurred_at: now
+                 })
+
+        assert :ok = Circuits.record_recovery_candidate(candidate)
+
+        assert {:ok, %{candidates: [_]}} =
+                 Circuits.claim_recovery(%C.ClaimResourceRecovery{
+                   workspace_context: fixture.workspace_context,
+                   command_id: "claim-#{random_id()}",
+                   owner_id: "owner",
+                   resource: resource,
+                   limit: 1,
+                   claim_lease_ms: 30_000,
+                   occurred_at: now
+                 })
+
+        command = %C.CompleteResourceRecovery{
+          workspace_context: fixture.workspace_context,
+          owner_id: "owner",
+          candidate_ids: [candidate.candidate_id],
+          status: :submitted,
+          recovery_run_id: child.id,
+          occurred_at: now
+        }
+
+        fn -> Circuits.complete_recovery(command) end
+    end
+  end
+
+  defp await_advisory_wait!(pid, remaining \\ 250)
+  defp await_advisory_wait!(_pid, 0), do: flunk("writer did not wait for the history root")
+
+  defp await_advisory_wait!(pid, remaining) do
+    case SQL.query!(
+           Repo,
+           "SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND NOT granted",
+           [pid]
+         ) do
+      %{rows: [[1]]} ->
+        :ok
+
+      _ ->
+        Process.sleep(10)
+        await_advisory_wait!(pid, remaining - 1)
+    end
+  end
+
   test "concurrent admin demotions cannot orphan a workspace", fixture do
     now = DateTime.utc_now()
 

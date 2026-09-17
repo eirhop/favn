@@ -98,6 +98,18 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
       {:ok, %CapacityRelease{released_lease_ids: [], expired_waiter_ids: [], freed_scope_ids: []}}
     end
 
+    def record_outcomes(command) do
+      send(test_pid(), {:resource_outcomes, command})
+
+      case Process.get({__MODULE__, :resource_error}) do
+        nil ->
+          {:ok, %FavnOrchestrator.Persistence.Results.ResourceCircuitUpdate{closed_resources: []}}
+
+        reason ->
+          {:error, reason}
+      end
+    end
+
     def finish(command) do
       send(test_pid(), {:materialization_finished, command})
       {:ok, %MaterializationDecision{claim_key: command.claim_key, status: command.status}}
@@ -249,6 +261,67 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     assert finished.status == :ok
     assert node_result_count(finished) == 1
     refute_receive {:materialization_finished, %{status: :failed}}, 20
+  end
+
+  for disposition <- [:recover, :exhaust] do
+    @tag disposition: disposition
+    test "async completed bookkeeping #{disposition} preserves the successful asset", %{
+      disposition: disposition
+    } do
+      fixture = fixture([:a])
+      state = awaiting_state(fixture, [:a])
+      task = task_id(:a)
+
+      permit = %FavnOrchestrator.Persistence.Results.ResourceCircuitPermit{
+        resource: Favn.Resource.Ref.new!(:connection, "warehouse"),
+        owner_id: "owner",
+        probe?: false
+      }
+
+      owned = %{state.awaits[task].entry | resource_circuit_permits: [permit]}
+      state = put_in(state.awaits[task].entry, owned)
+      state = %{state | work_set: ActiveTaskSet.add_entry(state.work_set, owned)}
+      assert {:cont, pending} = deliver_result(state, fixture, :a, :ok)
+      assert_receive {:materialization_finished, %{status: :succeeded}}
+      [{ref, %{pid: worker}}] = Map.to_list(pending.post_step_continuations)
+      assert_receive {:worker_binding_read, ^worker, _}
+      release_worker(worker, {:ok, %{active_generation_id: "gen-a"}})
+      assert_receive {^ref, :ok}
+
+      conflict =
+        Error.new(:conflict, "history busy",
+          retryable?: true,
+          details: %{reason_code: "execution_history_owner_busy"}
+        )
+
+      Process.put({FakeStore, :resource_error}, conflict)
+
+      assert {:persist_retry, paused, retry, ^conflict} =
+               Execution.handle_event(pending, {:post_step_reply, ref, :ok})
+
+      assert_receive {:resource_outcomes, command}
+      assert ResultBuilder.latest_node_status(paused.run, fixture.node_keys.a) == :ok
+      retry = PersistenceRetry.rejected(retry, conflict)
+
+      result =
+        case disposition do
+          :recover ->
+            Process.delete({FakeStore, :resource_error})
+            assert {:ownership_gate, gated, replay} = Execution.retry_persistence(paused, retry)
+            assert_receive {:resource_outcomes, ^command}
+            Execution.resume_persisted_retry(gated, replay)
+
+          :exhaust ->
+            retry = %{retry | started_ms: System.monotonic_time(:millisecond) - 30_001}
+            Execution.retry_persistence(paused, retry)
+        end
+
+      assert {:terminal, finished} = result
+      assert finished.status == if(disposition == :recover, do: :ok, else: :error)
+      assert ResultBuilder.latest_node_status(finished, fixture.node_keys.a) == :ok
+      refute_received {:materialization_finished, _}
+      refute_received {:worker_binding_read, _, _}
+    end
   end
 
   test "cancel intent preserves completed siblings and suppresses their post-step workers" do

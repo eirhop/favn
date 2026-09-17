@@ -90,7 +90,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def error(%{"kind" => kind, "message" => message, "reason" => reason, "type" => type} = value) do
     %{
       "kind" => scalar_string(kind, "error"),
-      "type" => scalar_string(type, "term"),
+      "type" => meaningful_error_type(type, value, kind),
       "message" => safe_error_message(message),
       "reason" => safe_existing_error_reason(reason),
       "redacted" => true,
@@ -105,7 +105,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
     %{
       "kind" => scalar_string(kind, "error"),
-      "type" => error_type(reason),
+      "type" => meaningful_error_type(Map.get(value, :type), value, kind),
       "message" => safe_error_message(message || reason || value),
       "reason" => safe_error_reason(reason || value),
       "redacted" => true,
@@ -434,12 +434,29 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp exception_message(_value), do: nil
 
-  defp error_type(%{__exception__: true, __struct__: module}) when is_atom(module),
-    do: Atom.to_string(module)
+  defp meaningful_error_type(type, value, kind) do
+    details =
+      case Map.get(value, :details) || Map.get(value, "details") do
+        details when is_map(details) -> details
+        _ -> %{}
+      end
+
+    [
+      Map.get(details, :reason_code),
+      Map.get(details, "reason_code"),
+      type,
+      if(Map.get(value, :reason) != nil, do: error_type(value.reason)),
+      kind
+    ]
+    |> Enum.map(fn candidate ->
+      if is_binary(candidate), do: String.trim(candidate), else: candidate
+    end)
+    |> Enum.find(fn candidate -> candidate not in [nil, "", "nil", "null", false, true] end)
+    |> scalar_string("error")
+  end
 
   defp error_type(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
   defp error_type(value) when is_boolean(value), do: "boolean"
-  defp error_type(nil), do: "nil"
   defp error_type(value) when is_atom(value), do: Atom.to_string(value)
   defp error_type(value) when is_map(value), do: "map"
   defp error_type(value) when is_tuple(value), do: "tuple"

@@ -16,7 +16,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
   alias FavnOrchestrator.RunServer.Execution.ExecutionPool
   alias FavnOrchestrator.RunServer.Execution.FreshnessContext
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
-  alias FavnOrchestrator.RunServer.Persistence
+  alias FavnOrchestrator.RunServer.PersistenceRetry
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.RunnerPoolSelection
@@ -27,6 +27,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
           {:ok, RunState.t(), [Favn.Plan.node_key()], map(), FreshnessContext.t(),
            terminal_failure() | nil, [Favn.Plan.node_key()]}
           | {:error, RunState.t()}
+          | {:persist_retry, PersistenceRetry.t(), term()}
 
   @max_batch_nodes 4
   @max_batch_ms 25
@@ -51,13 +52,31 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
     {batch, remaining} = take_batch(node_keys)
     decisions = decisions(run_state, batch, freshness_context)
 
-    batch
-    |> Enum.reduce_while(
+    classify_nodes(
+      batch,
       {:ok, run_state, [], decisions, freshness_context, terminal_failure},
-      &classify_node(&1, &2, version, stage)
+      version,
+      stage,
+      remaining
     )
-    |> restore_runnable_order()
-    |> append_remaining(remaining)
+  end
+
+  defp classify_nodes([], result, _version, _stage, remaining),
+    do: result |> restore_runnable_order() |> append_remaining(remaining)
+
+  defp classify_nodes([node_key | rest], result, version, stage, remaining) do
+    case classify_node(node_key, result, version, stage, rest ++ remaining) do
+      {:cont, next} -> classify_nodes(rest, next, version, stage, remaining)
+      {:halt, {:persist_retry, _, _} = retry} -> retry
+      {:halt, other} -> other
+    end
+  end
+
+  @doc false
+  @spec resume_persisted(map(), RunState.t()) :: result()
+  def resume_persisted(ctx, run) do
+    {:cont, {:ok, next, runnable, decisions, context, failure}} = finish_decision(ctx, run)
+    {:ok, next, Enum.reverse(runnable), decisions, context, failure, ctx.remaining_node_keys}
   end
 
   @doc false
@@ -80,7 +99,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
          node_key,
          {:ok, current_run, runnable, decisions, current_context, current_failure},
          version,
-         stage
+         stage,
+         remaining
        ) do
     decision = Map.fetch!(decisions, node_key)
 
@@ -100,38 +120,45 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
           runnable: runnable,
           decisions: decisions,
           context: current_context,
-          terminal_failure: current_failure
+          terminal_failure: current_failure,
+          remaining_node_keys: remaining
         })
     end
   end
 
   defp persist_non_running_decision(ctx) do
-    case persist_decision(
-           ctx.run,
-           ctx.version,
-           ctx.node_key,
-           ctx.stage,
-           ctx.status,
-           ctx.decision
-         ) do
-      {:ok, next_run} ->
-        next_context = record_status(ctx.context, ctx.node_key, ctx.status)
+    retry =
+      prepare_decision(ctx.run, ctx.version, ctx.node_key, ctx.stage, ctx.status, ctx.decision)
 
-        next_failure =
-          if ctx.status == :blocked and is_nil(ctx.terminal_failure) do
-            %{status: :error, error: {:blocked, ctx.node_key, ctx.decision.reason}}
-          else
-            ctx.terminal_failure
-          end
+    retry = %{
+      retry
+      | resume: {:stage_classification, Map.put(ctx, :persisted_run, decision_result(retry))}
+    }
 
-        {:cont, {:ok, next_run, ctx.runnable, ctx.decisions, next_context, next_failure}}
+    case PersistenceRetry.persist(retry) do
+      :ok ->
+        finish_decision(ctx, decision_result(retry))
 
       {:error, :external_cancel} ->
         {:halt, {:error, Snapshots.cancelled_snapshot(ctx.run)}}
 
       {:error, reason} ->
-        {:halt, {:error, Snapshots.snapshot_update(ctx.run, status: :error, error: reason)}}
+        if PersistenceRetry.replayable?(reason),
+          do: {:halt, {:persist_retry, retry, reason}},
+          else:
+            {:halt, {:error, Snapshots.snapshot_update(ctx.run, status: :error, error: reason)}}
     end
+  end
+
+  defp finish_decision(ctx, next_run) do
+    next_context = record_status(ctx.context, ctx.node_key, ctx.status)
+
+    next_failure =
+      if ctx.status == :blocked and is_nil(ctx.terminal_failure),
+        do: %{status: :error, error: {:blocked, ctx.node_key, ctx.decision.reason}},
+        else: ctx.terminal_failure
+
+    {:cont, {:ok, next_run, ctx.runnable, ctx.decisions, next_context, next_failure}}
   end
 
   defp restore_runnable_order({:ok, run, runnable, decisions, context, failure}),
@@ -179,7 +206,26 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
           :skipped_fresh | :blocked,
           map()
         ) :: {:ok, RunState.t()} | {:error, term()}
-  def persist_decision(
+  def persist_decision(run, version, node_key, stage, status, decision) do
+    retry = prepare_decision(run, version, node_key, stage, status, decision)
+    with :ok <- PersistenceRetry.persist(retry), do: {:ok, decision_result(retry)}
+  end
+
+  @doc false
+  @spec decision_result(PersistenceRetry.t()) :: RunState.t()
+  def decision_result(retry),
+    do: ResultBuilder.append_node_result(retry.run, retry.data.node_result)
+
+  @doc false
+  @spec prepare_decision(
+          RunState.t(),
+          Version.t(),
+          Favn.Plan.node_key(),
+          non_neg_integer(),
+          atom(),
+          map()
+        ) :: PersistenceRetry.t()
+  def prepare_decision(
         %RunState{} = run_state,
         %Version{} = _version,
         node_key,
@@ -220,28 +266,22 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
 
     event_type = if status == :skipped_fresh, do: :step_skipped_fresh, else: :step_blocked
 
-    case Persistence.persist_run_step(next_run, event_type, %{
-           asset_ref: node.ref,
-           node_key: node_key,
-           window: node.window,
-           asset_step_id: asset_step_id,
-           stage: stage,
-           execution_pool: execution_pool,
-           reason: decision.reason,
-           freshness_key: freshness_key,
-           node_result: result
-         }) do
-      :ok ->
-        next_run
-        |> ResultBuilder.append_node_result(result)
-        |> then(&{:ok, &1})
-
-      {:error, :external_cancel} ->
-        {:error, :external_cancel}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    PersistenceRetry.new(
+      next_run,
+      event_type,
+      %{
+        asset_ref: node.ref,
+        node_key: node_key,
+        window: node.window,
+        asset_step_id: asset_step_id,
+        stage: stage,
+        execution_pool: execution_pool,
+        reason: decision.reason,
+        freshness_key: freshness_key,
+        node_result: result
+      },
+      nil
+    )
   end
 
   defp decision_metadata(decision),
