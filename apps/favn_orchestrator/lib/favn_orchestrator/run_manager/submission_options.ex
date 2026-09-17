@@ -5,6 +5,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
   alias Favn.Window.Anchor
   alias Favn.Window.Selection
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunServer.Execution.AdmissionIntent
 
   @enforce_keys [
     :run_id,
@@ -89,6 +90,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptions do
            :ok <- map(values.params, :invalid_run_params),
            :ok <- map(values.trigger, :invalid_pipeline_trigger),
            :ok <- map(values.metadata, :invalid_run_metadata),
+           :ok <- AdmissionIntent.validate_submission_metadata(values.metadata),
            :ok <- positive_integer(values.timeout_ms, :invalid_timeout_ms),
            :ok <- dependencies(values.dependencies),
            :ok <- anchor(values.anchor_window),

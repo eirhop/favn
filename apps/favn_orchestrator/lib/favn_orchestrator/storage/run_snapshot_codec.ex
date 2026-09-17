@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Window.Selection
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunServer.Execution.AdmissionIntent
   alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
@@ -168,7 +169,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @spec encode_run(RunState.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def encode_run(%RunState{} = run_state, opts \\ []) when is_list(opts) do
     with :ok <- validate_current_release_binding(run_state),
-         {:ok, normalized} <- RunStateCodec.normalize(run_state) do
+         {:ok, normalized} <- RunStateCodec.normalize(run_state),
+         :ok <- AdmissionIntent.validate_metadata(normalized.metadata) do
       snapshot =
         case Keyword.get(opts, :plan, :inline) do
           :inline ->
@@ -266,6 +268,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     encoded =
       metadata
       |> Map.drop([
+        AdmissionIntent.metadata_key(),
         :execution_pool_policy,
         "execution_pool_policy",
         :connection_circuit_policy,
@@ -273,18 +276,24 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       ])
       |> JsonSafe.data()
 
-    case field(metadata, :pipeline_context) do
-      context when is_map(context) ->
-        encoded_context =
-          context
-          |> JsonSafe.data()
-          |> Map.put("settings", settings_to_dto(field(context, :settings, %{})))
-          |> Map.put("metadata", pipeline_metadata_to_dto(field(context, :metadata, %{})))
+    encoded =
+      case field(metadata, :pipeline_context) do
+        context when is_map(context) ->
+          encoded_context =
+            context
+            |> JsonSafe.data()
+            |> Map.put("settings", settings_to_dto(field(context, :settings, %{})))
+            |> Map.put("metadata", pipeline_metadata_to_dto(field(context, :metadata, %{})))
 
-        Map.put(encoded, "pipeline_context", encoded_context)
+          Map.put(encoded, "pipeline_context", encoded_context)
 
-      _other ->
-        encoded
+        _other ->
+          encoded
+      end
+
+    case Map.fetch(metadata, AdmissionIntent.metadata_key()) do
+      {:ok, intent} -> Map.put(encoded, AdmissionIntent.metadata_key(), intent)
+      :error -> encoded
     end
   end
 
@@ -384,6 +393,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, runner_releases} <- runner_releases_from_dto(dto, schema_version),
          {:ok, metadata} <-
            metadata_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
+         :ok <- AdmissionIntent.validate_metadata(metadata),
          {:ok, metadata} <- policy_metadata_from_dto(dto, metadata),
          {:ok, result} <- result_from_dto(Map.get(dto, "result"), allowed_atom_strings) do
       {:ok,

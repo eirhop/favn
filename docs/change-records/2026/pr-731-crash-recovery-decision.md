@@ -541,3 +541,154 @@ application fix, checked maintenance procedure, test evidence and size deviation
 against addendum baseline `bd5a2f28`, with no blocking findings. This approval
 explicitly excludes the unintegrated recovery reducer and does not establish
 external-effect or full crash-recovery qualification.
+
+## Implementation investigation: recovery facts and admission (2026-09-17)
+
+This section records new findings against the original approved baseline. It
+does not change that baseline into a claim that runtime integration is complete.
+The initial-marker correction is committed as `f5cd25ed`; its exact-head CI
+passed quick checks, compilation, Dialyzer, fast, acceptance and slow tests, and
+the control-plane, runner-template and repository-image qualification jobs.
+
+### What a restart can already reconstruct
+
+| Fact | Existing source | Missing part |
+| --- | --- | --- |
+| Node, stage, manifest, target generation, upstream pins and package | Pinned run plan, manifest and immutable package | Validate identity before using a task as evidence |
+| Parameters, pipeline context, backfill/operator metadata and run start time | Run snapshot and the explicit work-metadata selection | Freeze the original attempt deadline before admission |
+| Successful callback result | Accepted asset task, whose attempt has its own deterministic task ID | Persist the settlement position and restore the completed sibling |
+| Original claim and circuit permits after enqueue | Task-local orchestration context | No equivalent immutable fact exists before enqueue |
+| Freshness inputs | Shared run checkpoint | Couple checkpoint replacement with its matching progress transition |
+| Completed/blocked/skipped nodes and first permanent failure | Ordered step events | Compact references and bounded replay; do not retain every result body |
+| Retry selection | Existing retry checkpoint and step retry disposition | Restore the exact original delay/deadline and distinguish retry from permanent failure |
+
+The pure progress-reducer prototype is still unintegrated. Its tests distinguish
+an accepted step outcome from finished bookkeeping, preserve a blocked branch
+as a failure, and reject changed identities, sequence gaps and replay of a
+successful node. They do not establish sufficient live or restart behavior.
+
+### Why the pre-dispatch gap needs an atomic boundary
+
+For example, Favn can grant a half-open circuit probe and then crash before
+saving its task. The circuit may have changed by restart. Asking for permission
+again cannot reliably recover whether the first attempt owned that probe.
+
+Source inspection established three concrete gaps:
+
+- A closed circuit returns a permit without an immutable acquisition receipt.
+  The returned resource set also depends on the active execution-pool policy.
+- An execution lease's exact replay includes its previous owner and fence.
+  An expired or released lease cannot simply be reacquired under the same ID.
+- Materialization preparation can already acquire a combined-window target
+  lock before it returns the claim command.
+
+Astra independently recommended one bounded transaction per node, after saving
+the immutable attempt intent. A runnable decision must commit its capacity,
+circuit permits, optional target lock, claim, task and matching run transition
+together. A waiting, blocked or already-satisfied decision must not leave
+provisional handles behind. Package loading and work preparation remain outside
+the transaction; process notifications happen after commit. Returned errors
+must explicitly roll back, rather than accidentally committing an outer
+transaction containing an error tuple.
+
+This is narrower than recording and recovering four or five separate
+acquisition phases. It adds no new progress table or generic transaction API.
+Lock order, waiting-decision takeover and rollback tests remain implementation
+gates; the current facades cannot simply be wrapped in a transaction.
+
+### Corrected bounds and further design checks
+
+The existing event-page maximum is **200**, not the 500 assumed in the baseline.
+Run events are capped at 512 KiB, task payloads at 8 MiB for asset work and 1 MiB
+for other work, task results at 1 MiB, task-local continuation at 4 MiB, and the
+shared run checkpoint/plan at 64 MiB. The run snapshot is limited to 4 MiB.
+Recovery must use smaller pages where needed and account for decoded working
+memory through the existing active-run capacity owner. A 200-event maximum
+alone is not a memory bound acceptable for every run.
+
+Two additional checks are required before finalizing the integration estimate:
+
+1. **Avoid unnecessary historical-result machinery.** Generic task retry only
+   restarts failed `safe_to_retry` tasks. It cannot replace a successful result;
+   asset attempts also use different task IDs. Successful inspection and
+   capability tasks may therefore be sufficient current-row evidence. Their
+   retention still needs protection for the run that will reuse them. Review
+   must settle the failure/fallback cases before removing the baseline's
+   proposed historical lookup.
+2. **Expiry is not proof that execution stopped.** Admission expiry currently
+   frees capacity without checking the saved runner task. Claim/start does not
+   check the execution-capacity lease. Merely skipping lease adoption for a
+   successful task cannot qualify the all-leases-expired recovery scenario.
+   Joining only run and step is insufficient because it conflates attempts.
+   Review must specify the exact task-to-capacity relationship and all release
+   paths before introducing a changed reservation contract.
+
+These findings keep the broader PR in implementation. The marker fix's passing
+tests and review do not establish that the original crash-recovery gates passed.
+
+### Reviewed simplifications from those checks
+
+Astra's follow-up source review supports the following narrower implementation:
+
+- Reuse accepted successful tasks through their current rows, with their
+  assignment/result identity checked. Success cannot be replaced by generic
+  retry. Preserve accepted failure decisions in progress; a task's initial
+  retry classification does not make every failed result immutable. Protect
+  the current operation tasks required by a recoverable run instead of adding
+  the proposed historical-result reader and historical-reference retention.
+- Preserve existing finite admission-lease semantics. Normal task deadlines
+  precede their capacity-lease expiry by at least the lease buffer. Settle a
+  proven terminal task without adopting capacity. Reconcile/cancel expired
+  unfinished tasks under their original deadline, then re-fetch authoritative
+  results so a winning completion is preserved. Valid unfinished work still
+  requires a live adopted lease. Missing deadlines remain a precise refusal;
+  never infer a fresh deadline from the current timeout setting. Sequential
+  work does not acquire capacity today, and this change must not invent it.
+- Use one pending admission intent. Current submission stops at the first
+  waiting node, so there is no need for an intent per planned node in each run
+  snapshot. Persist the exact pending attempt and frozen decision before
+  acquisition; preserve it through sibling completion and clear it only with
+  its committed admission/outcome/abandonment transition. No new task status
+  or mutable pre-admission task payload is needed.
+- Keep admission request hashes and exact owner/fence replay checks. A waiting
+  request can be re-evaluated under a different command ID only when its stored
+  scope IDs/units and step identity match, the current run owner is locked and
+  validated, and the same pending intent/deadline remains admissible. This
+  avoids changing the hash format or adding waiter owner columns.
+
+The all-leases-expired qualification row means safe recovery under these
+existing contracts. It does not introduce a stronger promise that PostgreSQL
+capacity can stop an unconfirmed external write physically. Unknown outcomes
+retain their target exclusion and existing reconciliation requirements.
+
+The prototype's actual snapshot round-trip test exposed why typed intent cannot
+pass through the general display-metadata encoder: that encoder deliberately
+limits depth and collection sizes. The intent now has an exact bounded path
+inside the run snapshot, and its metadata key is reserved against new
+submissions and removed when constructing a new rerun. This is separate from
+application-result serialization. Runtime admission does not use the prototype
+yet; full composed integration and fresh-process crash qualification remain open.
+
+Astra's foundation review also removed a proposed 64 KiB limit on the full
+freshness diagnostic tree. The intent now preserves only the execution decision
+(`decision`, `reason`, `node_key`, `freshness_key`) and checkpoint reference;
+`stale_reasons` is not required for claim or freshness settlement. Live admission
+must use that same canonical decision when integrated. Existing context and
+snapshot limits remain in force. A pipeline intent cannot substitute a
+sequential context; checkpoint stage/attempt and freshness-key equality are
+validated too. Two fresh BEAM processes restore the original deadline from the
+saved snapshot and manifest without relying on previously loaded consumer atoms.
+This qualifies the foundation format only, not whole-run crash recovery.
+
+The localized marker correction is now independently extracted into
+[PR 732](https://github.com/eirhop/favn/pull/732) on current main so it can ship
+without unfinished recovery work. Its source/tests/repair behavior are unchanged.
+PR 731 remains a draft for the broader implementation.
+
+Foundation review outcome: Astra xhigh approved the corrected identity checks,
+diagnostic compaction and exact snapshot path with no remaining production
+blockers in that slice. The final focused set passed 52 tests, including both
+fresh-process decodes and stripping a previous intent from a new rerun. This
+still does not qualify runtime admission, exact event persistence, checkpoint
+transaction consistency, whole-run restore or crash behavior. Those integration
+gates remain required before this draft can be made ready.

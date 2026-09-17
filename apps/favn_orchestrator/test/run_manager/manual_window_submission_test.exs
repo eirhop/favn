@@ -112,6 +112,7 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
           source.metadata
           |> Map.put("execution_pool_policy", %{"spoofed" => %{}})
           |> Map.put("connection_circuit_policy", %{"spoofed" => %{}})
+          |> Map.put("execution_admission_intent", %{"task_id" => "prior-task"})
     }
 
     Process.put(:manual_window_source_run, legacy_source)
@@ -135,6 +136,7 @@ defmodule FavnOrchestrator.RunManager.ManualWindowSubmissionTest do
     assert rerun.run_state.metadata.connection_circuit_policy == %{}
     refute Map.has_key?(rerun.run_state.metadata, "execution_pool_policy")
     refute Map.has_key?(rerun.run_state.metadata, "connection_circuit_policy")
+    refute Map.has_key?(rerun.run_state.metadata, "execution_admission_intent")
   end
 
   defp manifest_version do
