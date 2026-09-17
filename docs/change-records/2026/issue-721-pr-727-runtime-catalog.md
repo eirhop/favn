@@ -10,20 +10,21 @@ Documentation type: implementation plan and review evidence.
 | Primary issue | [#721](https://github.com/eirhop/favn/issues/721) |
 | Pull request | [#727](https://github.com/eirhop/favn/pull/727) |
 | Related work | [#723](https://github.com/eirhop/favn/pull/723), [#724](https://github.com/eirhop/favn/pull/724), [#720](https://github.com/eirhop/favn/issues/720) |
-| Affected areas | Core contracts, Authoring manifest configuration, Orchestrator runner-work construction, PostgreSQL activation/write-start guards, Runner SQL execution, SQL runtime, DuckDB adapter, public catalog guide |
+| Affected areas | Core contracts, Authoring manifest generation, Orchestrator runner-work construction, PostgreSQL activation/write-start guards, Runner SQL execution, SQL runtime, DuckDB adapter, public catalog guide |
 | Approved plan commit | `f7aa6ac985953257819593b471a112ae53bc0f9c` |
 | Last updated | 2026-09-17 |
 
 ## One-minute summary
 
 SQL consumers can discover Favn's definitions and metric macros, but cannot yet
-read evidence about the data that was actually published. Each opted-in SQL
-asset will write its publication metadata in the same transaction as its data,
-using the connection and execution already doing that work. Consumers will
+read evidence about the data that was actually published. Every supported SQL
+table will automatically write publication metadata in the same transaction as
+its data, using the connection and execution already doing that work. Consumers will
 compare a stored `fresh_until` deadline with the current time and inspect exact
 successful windows; no scheduled freshness updater, summary run, or background
-exporter is introduced. This is a bounded extension to materialization, with
-cross-app work needed to preserve pinned identity, rollback and recovery.
+exporter is introduced. Favn uses the reserved `favn_runtime` schema in the
+asset's existing catalog; no asset list or runtime configuration is required.
+This is a bounded extension to materialization, with cross-app work needed to preserve pinned identity, rollback and recovery.
 
 ## Impact
 
@@ -34,7 +35,7 @@ its successful checks, and its deadline remain unchanged. A partial backfill
 can expose January and March successes without claiming February was covered.
 
 The main cost is bounded extra SQL inside an existing data transaction. When
-runtime metadata is enabled, a metadata-write failure rolls back the data write
+a supported asset publishes, a metadata-write failure rolls back the data write
 too: consumers must not receive new data with old metadata.
 
 ## Problem analysis
@@ -50,10 +51,10 @@ freshness evaluation and full semantic readiness remain follow-ups.
 
 ### Assumptions
 
-- Start with opted-in managed SQL tables on the native DuckDB and DuckLake paths
+- Start automatically with managed SQL tables on the native DuckDB and DuckLake paths
   already qualified by #724. Remote Quack publication requires separate native
   transport qualification. A server-owned file is never opened as a second writer.
-- Favn controls writes to opted-in relations. External mutation invalidates the
+- Favn controls writes to the supported managed relations. External mutation invalidates the
   guarantee; ordinary existing drift checks remain in force.
 - Metadata describes a committed publication under its pinned policy. It does
   not claim an independently published CI catalog is the active execution
@@ -97,6 +98,150 @@ flowchart LR
     Reader[SQL consumer] --> Definitions
     Reader --> Data
 ```
+
+## Plan amendment: automatic runtime metadata
+
+This amendment replaces the original opt-in configuration below at the user's
+request on 2026-09-17. It is the current implementation direction. The original
+approved baseline is preserved for comparison; its manual asset selection and
+runtime-schema configuration are superseded, not additional setup requirements.
+Independent Astra xhigh review approved this amendment after one correction
+for removal/reintroduction safety; no blocking findings remain.
+
+### No runtime configuration
+
+Every supported Favn-managed SQL table automatically publishes metadata in its
+existing write transaction. There is no `runtime` block, asset allowlist,
+per-asset flag, metadata destination declaration or schema override in this
+first version. Newly added supported assets receive the same behavior without
+configuration changes. Hundreds of assets require no maintained selection list.
+
+Use the reserved schema `favn_runtime` in each asset's existing write catalog.
+Resolve it from the pinned managed target descriptor and the same runner session
+that writes the data. When the existing relation omits its catalog, resolve the
+actual write catalog once through that session and use it for data and metadata;
+do not assume `main`, reject supported unqualified relations, or redirect writes.
+For example, a table at `mart.sales.daily` publishes its metadata into `mart.favn_runtime`; a table in `core` uses `core.favn_runtime`.
+Assets in one catalog share these metadata tables, keyed by workspace and target.
+The first normal write installs/verifies the schema transactionally. Existing
+non-Favn objects or incompatible schema versions cause a bounded error before
+data mutation; there is no fallback to a second schema or untracked write.
+
+The existing `catalog_targets` configuration remains only for standalone CI
+publication of definitions and semantic macros. It is not required for runtime
+metadata, is not extended, and does not select tracked assets. The CI publisher's
+existing `schema` setting is outside this amendment. Runtime publication starts
+with normal asset execution, even when definitions have never been published by CI.
+
+### Automatic scope and honest unsupported cases
+
+Automatically derive the eligible targets from the manifest's existing SQL target
+descriptors, including their adapter, relation and materialization. Core owns the
+versioned internal tracking contract; Authoring emits it without user settings;
+the orchestrator pins it into normal work. Keep credentials and native transport
+resolution runner-local. A qualified native execution verifies that contract
+before mutation, rather than inferring an optional flag from application config.
+
+The first version includes every managed native DuckDB/DuckLake table using
+full replacement, append, delete/insert or group replacement, whether or not it
+has checks, freshness policy or a coverage declaration. Missing declarations
+retain the baseline's explicit `not_checked`, unknown expiry and no coverage
+claim; they never exclude an otherwise supported asset.
+
+Group replacement always publishes receipts, checks and time-policy facts for
+real writes. When its group scope cannot prove logical window coverage, expose
+`coverage_support = 'unsupported'` and do not add successful window rows. An
+asset without window coverage uses `not_applicable`; the qualified exact-window
+strategies use `supported`. Do not report unsupported coverage as zero gaps or
+as complete. This replaces the baseline's group-window opt-in rejection without
+inventing an entity-to-time-window mapping or a second coverage engine. Existing
+full-replacement and generation rules still prevent old coverage from surviving
+an incompatible mutation; a transition to group-based coverage marks the affected
+generation's window coverage unsupported and clears its current window evidence.
+Historical publication receipts remain intact.
+
+Views, Elixir assets, arbitrary SQLClient writes and unqualified adapters or
+remote transports remain outside this first SQL publication contract. Mixed
+projects may continue executing those assets using their existing behavior;
+the existing bounded planning/result diagnostics report the unsupported runtime-catalog
+capability, and consumer documentation makes the gap explicit. Do not claim
+that a missing receipt proves a never-run or failed asset. Ordinary incremental
+`replace`/`merge` remain unsupported by the existing execution planner.
+
+An already tracked target cannot silently become untracked by changing asset
+kind, adapter or transport. Keep the baseline's durable activation/write-start
+fencing and reject an unsupported change before its data mutation. A runner
+transport mismatch for a tracked task is an explicit capability failure, not
+permission to publish data alone.
+
+### Upgrade and transaction guarantees
+
+Default-on publication changes the supported SQL execution contract when the
+feature is deployed. Update the existing manifest/runner compatibility versions
+and closed codecs together; old work does not acquire metadata policy by reading
+new runtime configuration. The deployment guard compares old and new required
+publication-contract versions and *derived* target contracts under the existing target locks. Its durable
+running barrier still excludes queued/assigned/preparing untracked tasks;
+in-flight or unknown old writes block activation as specified in the original
+baseline. Apply that requirement to every qualified target-mutating task kind,
+including generation activation; an old queued swap must not bypass metadata
+selection. New tracked work uses the fixed schema through its pinned contract.
+
+All original atomicity, adoption, generation, bounded payload, unknown-outcome,
+clock and failure rules remain. Automatic inclusion adds no runs, tasks, timers,
+background bootstrap, scanning of all assets during each write, or history
+backfill. Each normal execution updates only its actual affected asset/scope.
+Operators must provision the normal runner principal to create and write the
+reserved schema as part of upgrade readiness. Insufficient permissions fail the
+publication; they do not silently disable metadata.
+
+There is no disable option or schema-move workflow to implement. Removing an
+asset from a manifest is allowed: retained metadata describes its last committed
+data under the recorded policy, and does not claim current manifest membership.
+Such removal must not weaken legacy-task fencing. The durable running barrier
+checks the workspace's active required publication-contract version and the
+task's pinned target/contract, even if that target is absent from the new manifest.
+This requirement is part of the existing deployed-manifest authority, not a new
+registry or table. Reject a downgrade to an untracked execution contract, an
+unqualified writer for an already tracked target, or an incompatible destination
+change; supporting those transitions remains outside this slice. On removal
+and reintroduction, consult the retained workspace target binding and its last
+pinned descriptor as well as the old/new manifests. Resolve logical target
+identity for reintroduced assets even when their new kind lacks a SQL table
+descriptor. Reject unsupported reuse before activation or work construction;
+an intermediate removal must not erase tracking history or let a task with no
+write-target ID bypass the guard. Reuse the existing retained binding; no new
+table or lifecycle is required.
+
+### Changes to the implementation and verification plan
+
+| Baseline element | Amended requirement |
+| --- | --- |
+| Public `catalog_targets.runtime`, schema and asset allowlist | Remove from the planned API; derive all eligible targets and reserve `favn_runtime` |
+| Never-enabled target stays untracked when configuration is omitted | Supported targets are tracked automatically under the new execution contract |
+| Authoring validates opt-in settings and resolves listed assets | Authoring derives a deterministic contract from existing target descriptors; no new public settings |
+| CI request accepts runtime settings | No change to CI request configuration or artifact bytes for this purpose |
+| Admission and activation compare user-selected policies | Compare derived, versioned tracking contracts with the same durable guards for asset writes and generation activation |
+| Removal of a listed asset is forbidden | Manifest removal is allowed; last-publication facts remain, and workspace contract-version fencing still rejects legacy writes |
+| Group-window opt-in rejection | Publish group receipts automatically; expose unsupported coverage and invalidate incompatible current window evidence |
+| Enabled-versus-disabled execution comparison | Compare ordinary execution before/after the contract upgrade; identical run/task counts and zero expiry-driven work |
+| No behavior change when metadata is disabled | Supported writes always include metadata; unsupported asset classes retain existing execution behavior |
+
+Keep the original five ownership slices and their numerical budgets as ceilings.
+Replace selection/configuration tests with a mixed-manifest fixture containing
+hundreds of supported assets across catalogs, a newly added asset and assets with
+no checks/freshness/coverage. Assert automatic inclusion, deterministic derived
+contracts, no CI configuration dependency and only the executed asset's metadata
+writes. Test default schema creation/collision/permissions, supported-versus-
+unsupported capability reporting, group-window unsupported coverage and
+invalidation, unqualified catalog resolution, manifest asset removal with queued
+old work, tracked-SQL → removed → unsupported-reintroduced asset reuse, and
+upgrade races against old asset and generation-activation work.
+No extra lifecycle, scheduler, service, storage table or public configuration
+framework is added by this amendment.
+
+<details>
+<summary>Original approved baseline: preserved for comparison; the amendment above supersedes opt-in configuration and the listed consequences.</summary>
 
 ## Approved plan
 
@@ -503,6 +648,8 @@ not assumptions of success. If any invariant cannot be met inside the stated
 budget and existing lifecycle, narrow the supported surface and seek plan
 re-review rather than adding a scheduler or exporter.
 
+</details>
+
 ## Plan review
 
 | Field | Result |
@@ -511,7 +658,8 @@ re-review rather than adding a scheduler or exporter.
 | Reviewed against | User-approved scope, #721, merged #723/#724, current code/tests, record process and this plan |
 | Findings | Initial Astra xhigh review: three P1 corrections (recovery, actual strategy/coverage scope, disable guard) and two simplifications (upstream evaluation, shared clocks) |
 | Findings addressed and rechecked | All initial findings and simplifications accepted on recheck; final PostgreSQL activation/write-start correction rechecked and accepted on 2026-09-17 |
-| Verdict | Plan approved. No remaining blocking findings. Approval covers the planning baseline only; native behavior and implementation remain unverified |
+| Amendment review | Astra xhigh approved automatic inclusion and fixed schema after rechecking retained-binding protection across removal/reintroduction on 2026-09-17 |
+| Verdict | Baseline and amendment approved. No remaining blocking findings. Approval covers the plan only; implementation and native behavior remain unverified |
 
 ## Implementation outcome
 
@@ -521,7 +669,11 @@ no runtime feature, migration or deployment is represented as completed.
 ## Deviations from the approved plan
 
 No implementation deviations exist. Initial plan review corrections are part
-of the approved baseline.
+of the approved baseline. The user requested a product change after approval:
+
+| Baseline | Amendment | Reason | Review |
+| --- | --- | --- | --- |
+| Opt-in asset list and configured runtime schema | Automatic supported-asset inclusion with reserved `favn_runtime`; CI configuration stays independent | User rejected maintaining hundreds of asset references or choosing a runtime schema | Approved by Astra xhigh after retained-binding correction |
 
 ## Decision log
 
@@ -531,17 +683,18 @@ of the approved baseline.
 | 2026-09-17 | Defer run exports, automatic retention and remote serving | Keep the first implementation bounded; no claim to finish all of #721 | Included in initial independent review |
 | 2026-09-17 | Preserve unknown outcomes, reject unsupported strategies/group-window coverage and policy removal, defer upstream evaluation, keep separate clocks | Initial Astra xhigh findings remove implied new recovery/lifecycle machinery and unimplemented features | Original corrections accepted on recheck |
 | 2026-09-17 | Name PostgreSQL target locks and durable running barrier for tracking enablement | Close the race with assigned/preparing old work using existing authority; add owner, budget and deterministic tests | Accepted by Astra xhigh final plan review |
+| 2026-09-17 | Automatically track supported SQL tables in `favn_runtime` without user configuration | User correction removes selection-list maintenance and unnecessary schema choice | Approved by Astra xhigh after retained-binding correction |
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | Source and issue inspection | Inspected base `ba3fa194` and current #721 | Static behavior/evidence only |
-| Independent plan review | Astra xhigh approved after two correction rounds; no remaining blocking findings | Plan approval only, not implementation approval |
+| Independent plan review | Astra xhigh approved the baseline after two correction rounds and the automatic-default amendment after one correction; no remaining blocking findings | Plan approval only, not implementation approval |
 | Local link review | All nine relative links resolve | Local paths, not remote rendering |
 | Local Mermaid rendering | Both revised diagrams parsed and rendered with Mermaid 11 in headless Chrome; visually inspected | Local syntax and layout only |
 | GitHub Mermaid rendering | Both diagrams in approved baseline `f7aa6ac9` rendered successfully on GitHub and were visually inspected; diagram source is unchanged in the PR-number rename | Document rendering, not runtime behavior |
-| Whitespace and baseline preservation | `git diff --check` passed; the approved plan body is unchanged by the PR-number and evidence update | Documentation checks only |
+| Whitespace and baseline preservation | `git diff --check`, all nine relative links and block structure passed; comparison with `f7aa6ac9` confirms the original approved plan body is unchanged inside the historical baseline | Documentation checks only |
 | Implementation tests | Not run: no implementation exists | Planned checks above are not passing results |
 
 ### Not verified
