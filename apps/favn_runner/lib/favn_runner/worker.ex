@@ -3,6 +3,7 @@ defmodule FavnRunner.Worker do
 
   use GenServer
 
+  alias Favn.Contracts.RunnerAssetEvidence
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerEvent
@@ -338,6 +339,12 @@ defmodule FavnRunner.Worker do
          error
        ) do
     meta = RuntimeConfigRedactor.redact(meta, asset.runtime_config || %{})
+
+    {meta, evidence} =
+      if asset.type in [:sql, :source],
+        do: {%{}, RunnerAssetEvidence.new!(asset.type, meta)},
+        else: {meta, nil}
+
     duration_ms = duration_ms(started_at, finished_at)
 
     normalized_error = normalize_error(error)
@@ -350,6 +357,7 @@ defmodule FavnRunner.Worker do
       finished_at: finished_at,
       duration_ms: duration_ms,
       meta: meta,
+      evidence: evidence,
       error: normalized_error,
       attempt_count: work.attempt,
       max_attempts: work.max_attempts,
@@ -361,6 +369,7 @@ defmodule FavnRunner.Worker do
           duration_ms: duration_ms,
           status: status,
           meta: meta,
+          evidence: evidence,
           error: normalized_error
         }
       ],

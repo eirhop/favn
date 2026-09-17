@@ -83,8 +83,57 @@ defmodule FavnView.Components.OutputMetadataTest do
   end
 
   describe "output_metadata/1" do
+    test "application SQL-looking keys remain generic metadata" do
+      metadata = %{
+        "write_outcome" => "no_op",
+        "quality_status" => "warning",
+        "check_results" => ["application-check"]
+      }
+
+      html = render_component(&OutputMetadata.output_metadata/1, metadata: metadata, status: :ok)
+      assert html =~ "no_op"
+      assert html =~ "application-check"
+      refute html =~ "SQL quality checks"
+      refute html =~ "existing target was kept"
+      refute html =~ "No-op write"
+    end
+
+    test "asset detail does not turn callback fields into a write verdict" do
+      meta = %{
+        "kind" => "sql",
+        "evidence" => %{"write_outcome" => "written"},
+        "write_outcome" => "no_op",
+        "quality_status" => "warning",
+        "check_results" => ["application-check"]
+      }
+
+      for status <- [:ok, :error] do
+        run = %{
+          run_id: "application-result",
+          status: status,
+          asset_result: %{status: status, meta: meta, evidence: nil}
+        }
+
+        html =
+          render_component(&FavnView.Components.AssetDetailPage.run_detail_panel/1,
+            run: run,
+            asset_id: "asset",
+            timezone: "Etc/UTC"
+          )
+
+        assert html =~ "application-check"
+        refute html =~ "Kept the existing table"
+        refute html =~ "existing target was kept"
+        refute html =~ "No write was attempted"
+      end
+    end
+
     test "keeps every field behind one disclosure rather than promoting twelve" do
-      html = render_component(&OutputMetadata.output_metadata/1, metadata: @sql_metadata)
+      html =
+        render_component(&OutputMetadata.output_metadata/1,
+          evidence: @sql_metadata,
+          metadata: @sql_metadata
+        )
 
       assert html =~ "metadata fields"
       assert html =~ "mart"
@@ -93,6 +142,7 @@ defmodule FavnView.Components.OutputMetadataTest do
     test "says nothing about checks that all passed" do
       html =
         render_component(&OutputMetadata.output_metadata/1,
+          evidence: @sql_metadata,
           metadata: @sql_metadata,
           status: :ok
         )
@@ -105,7 +155,11 @@ defmodule FavnView.Components.OutputMetadataTest do
       metadata = Map.put(@sql_metadata, "write_outcome", "no_op")
 
       html =
-        render_component(&OutputMetadata.output_metadata/1, metadata: metadata, status: :ok)
+        render_component(&OutputMetadata.output_metadata/1,
+          evidence: metadata,
+          metadata: metadata,
+          status: :ok
+        )
 
       assert html =~ ~s(data-testid="sql-check-summary")
       assert html =~ "No-op write"
@@ -118,7 +172,11 @@ defmodule FavnView.Components.OutputMetadataTest do
         ])
 
       html =
-        render_component(&OutputMetadata.output_metadata/1, metadata: metadata, status: :error)
+        render_component(&OutputMetadata.output_metadata/1,
+          evidence: metadata,
+          metadata: metadata,
+          status: :error
+        )
 
       assert html =~ ~s(data-testid="sql-check-result")
       assert html =~ "revenue_not_negative"

@@ -162,7 +162,8 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
              %C.RunnerAssetResult{
                ref: ref,
                status: :ok,
-               meta: %{
+               evidence: %C.RunnerAssetEvidence{
+                 kind: :sql,
                  group_replacement: %Favn.SQL.GroupReplacementResult{
                    operation: :replaced,
                    scope_group_count: 1,

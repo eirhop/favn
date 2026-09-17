@@ -57,6 +57,7 @@ defmodule FavnView.RunAssetAttemptLive do
       status_label: LogsViewModel.status_label(status),
       status_tone: LogsViewModel.status_tone(status),
       output_metadata: attempt.output_metadata,
+      evidence: Map.get(attempt, :evidence),
       error_summary: error_summary(attempt.error),
       facts: [
         %{label: "Started", value: LogsViewModel.timestamp_label(attempt.started_at, timezone)},

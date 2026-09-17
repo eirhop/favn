@@ -57,6 +57,7 @@ defmodule FavnView.Components.RunAssetAttemptPage do
         <OutputMetadata.output_metadata
           id={"asset-attempt-output-#{@attempt.id}"}
           metadata={@attempt.output_metadata}
+          evidence={Map.get(@attempt, :evidence)}
           status={@attempt.raw_status}
         />
 

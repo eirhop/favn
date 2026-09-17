@@ -294,14 +294,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert [asset_result] = result.asset_results
 
-    assert asset_result.meta.runtime_inputs == %{
+    assert asset_result.evidence.runtime_inputs == %{
              resolver: FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver,
              input_identity: "manifest:runtime-inputs",
              input_metadata: %{file_count: 1},
-             duration_ms: asset_result.meta.runtime_inputs.duration_ms
+             duration_ms: asset_result.evidence.runtime_inputs.duration_ms
            }
 
-    refute inspect(asset_result.meta) =~ "runtime-value"
+    refute inspect(asset_result.evidence) =~ "runtime-value"
   end
 
   test "resolver failure prevents SQL rendering and connection mutation" do
@@ -856,10 +856,10 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert result.status == :ok
     assert [asset_result] = result.asset_results
-    assert asset_result.meta.quality_status == :warning
-    assert asset_result.meta.write_outcome == :written
+    assert asset_result.evidence.quality_status == :warning
+    assert asset_result.evidence.write_outcome == :written
 
-    assert Enum.map(asset_result.meta.check_results, &{&1.name, &1.outcome}) == [
+    assert Enum.map(asset_result.evidence.check_results, &{&1.name, &1.outcome}) == [
              {:candidate_ready, :passed},
              {:target_warning, :warned}
            ]
@@ -910,12 +910,12 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert result.status == :ok
     assert [asset_result] = result.asset_results
 
-    assert Enum.map(asset_result.meta.check_results, &{&1.name, &1.outcome, &1.reason}) == [
+    assert Enum.map(asset_result.evidence.check_results, &{&1.name, &1.outcome, &1.reason}) == [
              {:candidate_ready, :not_run, :empty_generation},
              {:target_warning, :not_run, :empty_generation}
            ]
 
-    assert asset_result.meta.contract_validation.status == :passed
+    assert asset_result.evidence.contract_validation.status == :passed
     assert_received :checked_transaction_commit
   end
 
@@ -979,7 +979,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
       assert {:ok, result} = FavnRunner.TestExecution.run(work)
       assert result.status == :ok
-      assert [%{meta: %{write_outcome: :written}}] = result.asset_results
+      assert [%{evidence: %{write_outcome: :written}}] = result.asset_results
 
       assert_received {:checked_columns,
                        %RelationRef{name: "favn_check_candidate_" <> _rest} = candidate}
@@ -1045,7 +1045,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
                  type: :materialization_planning_failed,
                  message: "incremental delete scope column is missing"
                },
-               meta: %{write_outcome: :rolled_back}
+               evidence: %{write_outcome: :rolled_back}
              }
            ] = result.asset_results
 
@@ -1075,9 +1075,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert result.status == :error
     assert [asset_result] = result.asset_results
-    assert asset_result.meta.quality_status == :failed
-    assert asset_result.meta.write_outcome == :rolled_back
-    assert [%{name: :target_valid, outcome: :failed}] = asset_result.meta.check_results
+    assert asset_result.evidence.quality_status == :failed
+    assert asset_result.evidence.write_outcome == :rolled_back
+    assert [%{name: :target_valid, outcome: :failed}] = asset_result.evidence.check_results
     assert asset_result.error.type == :check_failed
     assert_received {:checked_materialize, _write_plan}
     assert_received :checked_transaction_rollback
@@ -1111,7 +1111,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
              FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_rollback_failure"))
 
     assert result.status == :error
-    assert [%{meta: meta}] = result.asset_results
+    assert [%{evidence: meta}] = result.asset_results
     assert meta.transaction_outcome == :unknown
     assert meta.write_outcome == :unknown
     assert [%{name: :target_valid, outcome: :failed}] = meta.check_results
@@ -1142,7 +1142,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
              FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_begin_failure"))
 
     assert result.status == :error
-    assert [%{meta: meta}] = result.asset_results
+    assert [%{evidence: meta}] = result.asset_results
     assert meta.transaction_outcome == :not_started
     assert meta.write_outcome == :not_started
 
@@ -1160,7 +1160,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert {:ok, persisted} =
              PersistenceCodec.decode_result(:asset_attempt, :failed, encoded, version)
 
-    assert [%{meta: persisted_meta}] = persisted.asset_results
+    assert [%{evidence: persisted_meta}] = persisted.asset_results
     assert persisted_meta.connection == :runner_sql_runtime
     assert persisted_meta.quality_status == :failed
     assert persisted_meta.transaction_outcome == :not_started
@@ -1198,11 +1198,11 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert result.status == :ok
     assert [asset_result] = result.asset_results
-    assert asset_result.meta.write_outcome == :no_op
-    assert asset_result.meta.quality_status == :warning
-    assert asset_result.meta.reason == :unchanged
+    assert asset_result.evidence.write_outcome == :no_op
+    assert asset_result.evidence.quality_status == :warning
+    assert asset_result.evidence.reason == :unchanged
 
-    assert Enum.map(asset_result.meta.check_results, &{&1.name, &1.outcome}) == [
+    assert Enum.map(asset_result.evidence.check_results, &{&1.name, &1.outcome}) == [
              {:unchanged, :materialization_skipped},
              {:after_write, :not_run}
            ]
@@ -1221,7 +1221,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert {:ok, result} =
              FavnRunner.TestExecution.run(work_for(version, ref, "run_contract_schema"))
 
-    assert [%{status: :ok, meta: meta}] = result.asset_results
+    assert [%{status: :ok, evidence: meta}] = result.asset_results
     assert meta.contract_validation.status == :passed
     assert [%{name: "id", type: :integer}] = meta.contract_validation.expected_columns
     assert [%{name: "id", native_type: "INTEGER"}] = meta.contract_validation.observed_columns
@@ -1275,7 +1275,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :error
-    assert [%{meta: meta}] = result.asset_results
+    assert [%{evidence: meta}] = result.asset_results
     assert meta.write_outcome == :rolled_back
 
     assert Enum.map(meta.check_results, &{&1.claim_id, &1.outcome}) == [
@@ -1303,7 +1303,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
-    assert [%{meta: meta}] = result.asset_results
+    assert [%{evidence: meta}] = result.asset_results
     assert meta.write_outcome == :no_op
 
     assert Enum.map(meta.check_results, &{&1.claim_id, &1.outcome}) == [
@@ -1330,7 +1330,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     assert {:ok, result} = FavnRunner.TestExecution.run(work)
     assert result.status == :ok
-    assert [%{meta: meta}] = result.asset_results
+    assert [%{evidence: meta}] = result.asset_results
     assert meta.write_outcome == :written
 
     assert Enum.map(meta.check_results, &{&1.claim_id, &1.outcome}) == [
@@ -1401,7 +1401,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
              FavnRunner.TestExecution.run(work_for(version, ref, "run_contract_mismatch"))
 
     assert result.status == :error
-    assert [%{error: %{type: :contract_violation}, meta: meta}] = result.asset_results
+    assert [%{error: %{type: :contract_violation}, evidence: meta}] = result.asset_results
     assert meta.contract_validation.status == :failed
 
     assert Enum.any?(
@@ -1434,7 +1434,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
              FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_bootstrap"))
 
     assert result.status == :ok
-    assert [%{meta: meta}] = result.asset_results
+    assert [%{evidence: meta}] = result.asset_results
     assert [%{name: :existing_target_valid, outcome: :condition_skipped}] = meta.check_results
     assert meta.write_outcome == :written
     assert_received {:checked_materialize, _write_plan}
@@ -1466,7 +1466,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
                )
 
       assert result.status == :error
-      assert [%{meta: meta, error: error}] = result.asset_results
+      assert [%{evidence: meta, error: error}] = result.asset_results
       assert [%{outcome: :errored, reason: ^expected_reason}] = meta.check_results
       assert meta.write_outcome == :rolled_back
       assert error.phase == :before_materialize
@@ -1494,7 +1494,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
              FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_cleanup"))
 
     assert result.status == :error
-    assert [%{meta: %{write_outcome: :rolled_back}}] = result.asset_results
+    assert [%{evidence: %{write_outcome: :rolled_back}}] = result.asset_results
     assert_received {:checked_materialize, _write_plan}
     assert_received :checked_transaction_rollback
     refute_received :checked_transaction_commit
@@ -1519,7 +1519,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
              FavnRunner.TestExecution.run(work_for(version, ref, "run_checked_commit_failure"))
 
     assert result.status == :error
-    assert [%{error: error, meta: meta}] = result.asset_results
+    assert [%{error: error, evidence: meta}] = result.asset_results
     assert [%{name: :candidate_valid, outcome: :passed}] = meta.check_results
 
     surfaced = inspect(error, limit: :infinity)

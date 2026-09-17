@@ -326,7 +326,7 @@ defmodule FavnRunnerTest do
 
     assert [asset_result] = result.asset_results
     assert asset_result.ref == {FavnRunnerTest.SourceAsset, :asset}
-    assert asset_result.meta[:observed] == true
+    assert asset_result.evidence.observed == true
   end
 
   test "normalizes invalid asset return into a non-retryable runner error" do

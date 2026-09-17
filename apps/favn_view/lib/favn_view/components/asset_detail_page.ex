@@ -1792,15 +1792,17 @@ defmodule FavnView.Components.AssetDetailPage do
 
   def run_detail_panel(assigns) do
     result = assigns.run[:asset_result]
-    meta = (result && result[:meta]) || %{}
+    evidence = result && result[:evidence]
+    meta = (result && (evidence || result[:meta])) || %{}
 
     assigns =
       assigns
       |> assign(:failed?, run_failed?(assigns.run))
       |> assign(:result, result)
       |> assign(:meta, meta)
+      |> assign(:evidence, evidence)
       |> assign(:facts, run_facts(assigns.run, result, assigns.timezone))
-      |> assign(:write, OutputMetadata.outcome(meta, result && result[:status]))
+      |> assign(:write, OutputMetadata.outcome(evidence, result && result[:status]))
       |> assign(:inputs, List.wrap(assigns.run[:runtime_inputs]))
 
     ~H"""
@@ -1885,6 +1887,7 @@ defmodule FavnView.Components.AssetDetailPage do
         :if={@meta != %{}}
         id={"asset-run-metadata-#{@run.run_id}"}
         metadata={@meta}
+        evidence={@evidence}
         status={@result && @result[:status]}
       />
     </div>

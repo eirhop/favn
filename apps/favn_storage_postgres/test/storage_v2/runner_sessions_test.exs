@@ -406,7 +406,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerSessionsTest do
       runner_pool: fixture.runner_pool,
       required_runner_release_id: @release,
       beam_node: "runner@favn.test",
-      protocol_version: 13,
+      protocol_version: 14,
       lifecycle_mode: :elastic,
       registered_at: Keyword.get(opts, :registered_at, fixture.now)
     }

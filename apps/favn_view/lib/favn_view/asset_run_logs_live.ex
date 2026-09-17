@@ -32,6 +32,7 @@ defmodule FavnView.AssetRunLogsLive do
         status_tone: context.status_tone,
         output_status: context.output_status,
         output_metadata: context.output_metadata,
+        evidence: context.evidence,
         facts: context.facts,
         back_href: ~p"/runs/#{run_id}",
         back_label: "Back to run",

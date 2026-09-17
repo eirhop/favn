@@ -13,6 +13,32 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   alias FavnStoragePostgres.Materialization.Store, as: Materialization
   alias FavnStoragePostgres.TestSupport.TaskManifest
 
+  defmodule HistoryConflictMaterializationStore do
+    @behaviour FavnOrchestrator.Persistence.MaterializationStore
+    for {operation, arity} <-
+          FavnOrchestrator.Persistence.MaterializationStore.behaviour_info(:callbacks) --
+            [claim: 1] do
+      args = Macro.generate_arguments(arity, __MODULE__)
+      @impl true
+      def unquote(operation)(unquote_splicing(args)),
+        do: apply(FavnStoragePostgres.Materialization.Store, unquote(operation), unquote(args))
+    end
+
+    @impl true
+    def claim(command) do
+      if Process.delete({__MODULE__, :reject_once}) do
+        {:error,
+         FavnOrchestrator.Persistence.Error.new(:conflict, "history owner busy",
+           retryable?: true,
+           details: %{reason_code: "execution_history_owner_busy"}
+         )}
+      else
+        Process.get({__MODULE__, :result}) ||
+          FavnStoragePostgres.Materialization.Store.claim(command)
+      end
+    end
+  end
+
   setup_all do
     {:ok, options} =
       Config.repo_options(
@@ -135,7 +161,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     alias FavnOrchestrator.RunServer.Execution.RunExecutionState
     state = sequential_state(f, 5_000)
     task = start(f)
-    assert {:cont, waiting} = Sequential.continue(state)
+    assert {:cont, waiting} = continue_after_history_conflict(state)
     [timer] = Map.values(waiting.retry_timers)
     retry = timer.payload
     assert retry.next_attempt == 1
@@ -192,7 +218,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     alias FavnOrchestrator.RunServer.Execution.RunExecutionState
     state = sequential_state(f, 5_000)
     task = start(f)
-    assert {:cont, waiting} = Sequential.continue(state)
+    assert {:cont, waiting} = continue_after_history_conflict(state)
     [timer] = Map.values(waiting.retry_timers)
     RunExecutionState.cancel_timers(waiting)
 
@@ -227,6 +253,175 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
 
     assert DateTime.to_unix(queued.deadline_at, :millisecond) ==
              timer.payload.admission_deadline_ms
+  end
+
+  test "pipeline claim history retry becomes a normal wait for the live target writer", f do
+    alias FavnOrchestrator.RunServer.Execution
+    alias FavnOrchestrator.RunServer.Execution.RunExecutionState
+    alias FavnOrchestrator.RunServer.Execution.FreshnessContext
+    state = sequential_state(f, 5_000)
+    task = start(f)
+    {:ok, context} = FreshnessContext.initialize(state.run, state.manifest_index)
+
+    state = %{
+      state
+      | mode: :pipeline,
+        stage_groups: [{0, state.run.plan.target_node_keys}],
+        freshness_context: context
+    }
+
+    install_history_conflict_store()
+    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
+
+    assert {:persist_retry, paused, retry,
+            %{details: %{reason_code: "execution_history_owner_busy"}}} =
+             Execution.handle_event(state, :continue)
+
+    assert retry.event_type == :materialization_claim
+    assert {:cont, waiting} = Execution.retry_persistence(paused, retry)
+    assert waiting.paused_admission == nil
+    assert waiting.terminal_failure == nil
+    assert waiting.stage_state.deferred_node_keys == state.run.plan.target_node_keys
+    deadline = waiting.stage_admission_deadline_ms
+    assert is_integer(deadline)
+    RunExecutionState.cancel_timers(waiting)
+
+    assert {:ok, _} =
+             Store.complete(%C.CompleteRunnerTask{
+               workspace_context: f.workspace_context,
+               command_id: "pipeline-safe-end",
+               task_id: task.task_id,
+               runner_instance_id: task.assigned_runner_instance_id,
+               runner_session_generation: 1,
+               assignment_generation: 1,
+               result_version: 1,
+               outcome: :failed,
+               result: nil,
+               retry_class: :terminal,
+               error: Favn.Contracts.RunnerError.new(outcome: :safe_failure),
+               issued_at: f.now,
+               occurred_at: f.now
+             })
+
+    assert {:cont, admitted} = Execution.handle_event(waiting, :continue)
+    assert admitted.stage_admission_deadline_ms == deadline
+    assert [%{attempt: 1}] = Map.values(admitted.work_set.entries)
+    RunExecutionState.cancel_timers(admitted)
+  end
+
+  test "a resolved non-owned claim never renews its released combined-window lock", f do
+    alias FavnOrchestrator.RunServer.Execution
+    alias FavnOrchestrator.RunServer.Execution.StageAdmission
+    alias FavnOrchestrator.RunServer.PersistenceRetry
+    alias FavnOrchestrator.Persistence.Results.MaterializationDecision
+    alias FavnStoragePostgres.TargetOperationLocks.Store, as: Locks
+    state = sequential_state(f, 5_000)
+    install_history_conflict_store()
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.materialization_claims SET status='released' WHERE workspace_id=$1",
+      [f.workspace_id]
+    )
+
+    for status <- [:competing, :materialized] do
+      assert {:ok, [lock]} =
+               Locks.acquire_many(%C.AcquireTargetOperationLocks{
+                 workspace_context: f.workspace_context,
+                 command_id: "combined-#{status}",
+                 target_ids: [f.work.logical_target_id],
+                 operation_id: "combined-#{status}",
+                 operation_type: :materialization,
+                 lease_owner: state.run.storage_owner_id,
+                 lease_duration_ms: 60_000,
+                 occurred_at: DateTime.utc_now()
+               })
+
+      prepared = Map.put(f.claim, :target_operation_lock, lock)
+
+      pause = %{
+        phase: :materialization_claim,
+        entries: [],
+        ctx: %{prepared_claim: prepared, current_run: state.run, waiters: [], work: f.work}
+      }
+
+      decision = %MaterializationDecision{
+        status: status,
+        claim_key: f.claim.claim_key,
+        claim: f.claim
+      }
+
+      Process.put({HistoryConflictMaterializationStore, :result}, {:ok, decision})
+
+      retry =
+        PersistenceRetry.command(
+          state.run,
+          :materialization_claim,
+          claim_command(f),
+          %{},
+          {:stage_operation, pause}
+        )
+
+      assert {:ownership_gate, gated, replay} = Execution.retry_persistence(state, retry)
+      assert replay.resume == {:stage_operation, gated.paused_admission}
+      # This is the same paused-lock renewal called by RunServer's ownership gate.
+      assert :ok = StageAdmission.renew_paused_claim(gated.paused_admission)
+      assert {:error, _} = FavnOrchestrator.MaterializationClaims.renew_operation_lock(prepared)
+
+      assert SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.target_operation_locks WHERE workspace_id=$1",
+               [f.workspace_id]
+             ).rows == [[0]]
+    end
+  end
+
+  test "rebuild input expectation survives work construction and rejects changed resolution", f do
+    alias Favn.RuntimeInput.Resolution
+    alias FavnOrchestrator.RunServer.Execution.{Sequential, RunExecutionState}
+    alias FavnOrchestrator.RuntimeInputPins
+    state = sequential_state(f, 5_000)
+
+    assert {:ok, planned} =
+             Resolution.new(%{
+               resolver: __MODULE__,
+               params: %{version: 1},
+               input_identity: "planned"
+             })
+
+    expectation = %{
+      resolver: Atom.to_string(planned.resolver),
+      input_identity: planned.input_identity,
+      payload_fingerprint: planned.payload_fingerprint
+    }
+
+    state = put_in(state.run.metadata[:runtime_input_expectation], expectation)
+    install_history_conflict_store()
+    assert {:await, queued, entry} = Sequential.continue(state)
+
+    assert {:ok, task} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: f.workspace_context,
+               task_id: entry.task_id
+             })
+
+    assert task.payload.metadata.runtime_input_expectation == expectation
+
+    assert {:ok, _pin} =
+             RuntimeInputPins.pin_for_resolution(f.workspace_id, entry.task_id, planned)
+
+    for attrs <- [
+          %{input_identity: "changed"},
+          %{params: %{version: 2}, payload_fingerprint: nil},
+          %{resolver: OtherResolver}
+        ] do
+      assert {:ok, changed} = Resolution.new(Map.merge(Map.from_struct(planned), attrs))
+
+      assert {:error, :rebuild_runtime_input_pin_changed} =
+               RuntimeInputPins.pin_for_resolution(f.workspace_id, entry.task_id, changed)
+    end
+
+    RunExecutionState.cancel_timers(queued)
   end
 
   test "a valid context from another task cannot change the immutable claim binding", f do
@@ -657,6 +852,35 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
              )
   end
 
+  defp continue_after_history_conflict(state) do
+    alias FavnOrchestrator.RunServer.Execution
+    alias FavnOrchestrator.RunServer.Execution.Sequential
+
+    install_history_conflict_store()
+    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
+
+    assert {:persist_retry, paused, retry,
+            %{details: %{reason_code: "execution_history_owner_busy"}}} =
+             Sequential.continue(state)
+
+    assert retry.event_type == :materialization_claim
+    Execution.retry_persistence(paused, retry)
+  end
+
+  defp install_history_conflict_store do
+    alias FavnOrchestrator.Persistence.Runtime
+    alias FavnStoragePostgres.Backend
+
+    start_supervised!(
+      {Runtime,
+       %Runtime{
+         backend: Backend,
+         options: [],
+         stores: %{Backend.stores() | materialization: HistoryConflictMaterializationStore}
+       }}
+    )
+  end
+
   defp sequential_state(f, timeout_ms) do
     ref = f.work.asset_ref
     key = {ref, nil}
@@ -674,7 +898,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
       target_id: f.work.logical_target_id,
       target_generation_id: f.work.target_generation_id,
       evidence_generation_id: f.work.target_generation_id,
-      physical_relation: nil,
+      physical_relation: f.work.write_relation,
       input_generations: [],
       retry_policy: Favn.Retry.Policy.default(),
       retry_policy_source: :asset

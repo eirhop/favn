@@ -93,7 +93,17 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
            result.status == expected or (outcome != :succeeded and result.status == :timed_out),
          true <-
            is_list(result.asset_results) and
-             Enum.all?(result.asset_results, &is_struct(&1, Contracts.RunnerAssetResult)),
+             Enum.all?(result.asset_results, fn asset ->
+               is_struct(asset, Contracts.RunnerAssetResult) and
+                 Contracts.RunnerAssetEvidence.valid?(asset.evidence) and
+                 is_list(asset.attempts) and
+                 Enum.all?(asset.attempts, fn attempt ->
+                   is_map(attempt) and
+                     Contracts.RunnerAssetEvidence.valid?(
+                       Map.get(attempt, :evidence, Map.get(attempt, "evidence"))
+                     )
+                 end)
+             end),
          true <- is_list(result.resource_outcomes) and is_map(result.metadata),
          true <-
            outcome != :succeeded or

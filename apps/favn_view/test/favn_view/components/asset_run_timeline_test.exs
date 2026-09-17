@@ -69,7 +69,7 @@ defmodule FavnView.Components.AssetRunTimelineTest do
             attempt_count: 1,
             max_attempts: 3,
             error: nil,
-            meta: %{"rows_written" => 1_284, "relation" => "mart.orders"}
+            evidence: %{"rows_written" => 1_284, "relation" => "mart.orders"}
           },
           assurance: %{
             quality_status: :passed,

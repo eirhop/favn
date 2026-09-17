@@ -34,12 +34,18 @@ defmodule FavnOrchestrator.MaterializationClaims do
   @type claim :: map()
   @type node_key :: Favn.Plan.node_key()
 
-  @spec acquire(RunState.t(), Version.t(), Index.t(), node_key(), map(), map(), RunnerWork.t()) ::
-          {:ok, claim()}
-          | {:already_succeeded, claim()}
-          | {:already_claimed, claim()}
-          | {:error, term()}
-  def acquire(
+  @doc false
+  @spec prepare_acquire(
+          RunState.t(),
+          Version.t(),
+          Index.t(),
+          node_key(),
+          map(),
+          map(),
+          RunnerWork.t()
+        ) ::
+          {:ok, map(), ClaimMaterialization.t()} | {:already_claimed, map()} | {:error, term()}
+  def prepare_acquire(
         %RunState{} = run_state,
         %Version{} = version,
         %Index{} = manifest_index,
@@ -103,27 +109,24 @@ defmodule FavnOrchestrator.MaterializationClaims do
            heartbeat_at: now,
            expires_at: DateTime.add(now, ttl_ms(run_state), :millisecond)
          },
-         {:ok, %MaterializationDecision{} = decision} <-
-           claim_materialization(claim, %ClaimMaterialization{
-             workspace_context:
-               SystemContext.workspace(run_state.workspace_id, :materialization_claim),
-             command_id: command_id("claim", claim.claim_key, run_state.id),
-             claim_key: claim.claim_key,
-             deployment_id: run_state.deployment_id,
-             target_kind: :asset,
-             target_id: TargetIdentity.for_asset(node.ref),
-             operation_id: operation_id(work, operation_lock),
-             target_generation_id: generation.target_generation_id,
-             evidence_generation_id: generation.evidence_generation_id,
-             partition_key: freshness_key,
-             run_id: run_state.id,
-             owner_id: run_state.storage_owner_id,
-             lease_duration_ms: ttl_ms(run_state),
-             occurred_at: now
-           }) do
-      decision
-      |> classify_claim(claim)
-      |> retain_or_release_operation_lock(claim)
+         command <- %ClaimMaterialization{
+           workspace_context:
+             SystemContext.workspace(run_state.workspace_id, :materialization_claim),
+           command_id: command_id("claim", claim.claim_key, run_state.id),
+           claim_key: claim.claim_key,
+           deployment_id: run_state.deployment_id,
+           target_kind: :asset,
+           target_id: TargetIdentity.for_asset(node.ref),
+           operation_id: operation_id(work, operation_lock),
+           target_generation_id: generation.target_generation_id,
+           evidence_generation_id: generation.evidence_generation_id,
+           partition_key: freshness_key,
+           run_id: run_state.id,
+           owner_id: run_state.storage_owner_id,
+           lease_duration_ms: ttl_ms(run_state),
+           occurred_at: now
+         } do
+      {:ok, claim, command}
     else
       {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
         {:already_claimed, %{claim_key: "target:" <> TargetIdentity.for_asset(work.asset_ref)}}
@@ -133,11 +136,20 @@ defmodule FavnOrchestrator.MaterializationClaims do
     end
   end
 
-  @doc "Acquires write ownership for a forced sequential target without publishing freshness evidence."
-  @spec acquire_sequential(RunState.t(), RunnerWork.t()) :: {:ok, map() | nil} | {:error, term()}
-  def acquire_sequential(_run, %RunnerWork{target_operation: nil}), do: {:ok, nil}
+  @doc false
+  @spec resolve_claim(map(), MaterializationDecision.t()) :: term()
+  def resolve_claim(claim, decision),
+    do: decision |> classify_claim(claim) |> retain_or_release_operation_lock(claim)
 
-  def acquire_sequential(%RunState{} = run, %RunnerWork{} = work) do
+  @doc false
+  @spec release_prepared_claim(map()) :: :ok | {:error, term()}
+  def release_prepared_claim(claim), do: release_operation_lock(claim)
+
+  @doc false
+  @spec prepare_sequential(RunState.t(), RunnerWork.t()) :: {:ok, ClaimMaterialization.t() | nil}
+  def prepare_sequential(_run, %RunnerWork{target_operation: nil}), do: {:ok, nil}
+
+  def prepare_sequential(%RunState{} = run, %RunnerWork{} = work) do
     key =
       "sequential:" <>
         AssetStepIdentity.node_fingerprint({run.id, work.asset_step_id, work.attempt})
@@ -162,17 +174,15 @@ defmodule FavnOrchestrator.MaterializationClaims do
       occurred_at: DateTime.utc_now()
     }
 
-    case Persistence.stores().materialization.claim(command) do
-      {:ok, %MaterializationDecision{status: :claimed, claim: claim}} ->
-        {:ok, Map.from_struct(claim)}
-
-      {:ok, _competing} ->
-        {:error, :target_operation_in_progress}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    {:ok, command}
   end
+
+  @doc false
+  @spec resolve_sequential(MaterializationDecision.t()) :: {:ok, map()} | {:error, term()}
+  def resolve_sequential(%MaterializationDecision{status: :claimed, claim: claim}),
+    do: {:ok, Map.from_struct(claim)}
+
+  def resolve_sequential(_decision), do: {:error, :target_operation_in_progress}
 
   @doc "Releases an exact sequential claim only while no task has been bound to it."
   @spec abandon_sequential(claim() | nil) :: :ok | {:error, term()}
@@ -331,17 +341,6 @@ defmodule FavnOrchestrator.MaterializationClaims do
     |> Map.put(:expires_at, persisted.expires_at)
   end
 
-  defp claim_materialization(claim, command) do
-    case Persistence.stores().materialization.claim(command) do
-      {:ok, %MaterializationDecision{}} = result ->
-        result
-
-      {:error, _reason} = error ->
-        _ = release_operation_lock(claim)
-        error
-    end
-  end
-
   defp validate_authority(%RunState{
          workspace_id: workspace_id,
          deployment_id: deployment_id,
@@ -483,7 +482,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   defp reusable_reason?(_reason), do: false
 
   defp result_check_results(%RunnerResult{asset_results: [result]}) do
-    result.meta
+    (result.evidence || %{})
     |> field(:check_results)
     |> JsonSafe.data()
   end
@@ -491,7 +490,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   defp result_check_results(%RunnerResult{}), do: []
 
   defp result_contract_validation(%RunnerResult{asset_results: [result]}) do
-    result.meta
+    (result.evidence || %{})
     |> field(:contract_validation)
     |> JsonSafe.data()
   end
@@ -499,7 +498,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
   defp result_contract_validation(%RunnerResult{}), do: nil
 
   defp result_rows_affected(%RunnerResult{asset_results: [result]}),
-    do: result.meta |> field(:rows_affected)
+    do: field(result.evidence || %{}, :rows_affected)
 
   defp result_rows_affected(%RunnerResult{}), do: nil
 

@@ -572,7 +572,9 @@ defmodule FavnOrchestrator.Operator.Catalogue do
       # The whole bag, not a chosen field: the operator UI already owns the priority
       # ordering and the disclosure for asset output metadata, and a key this release
       # does not know about is still evidence.
-      meta: Map.get(result, :meta) || %{}
+      meta: Map.get(result, :meta) || %{},
+      evidence: Map.get(result, :evidence),
+      output_metadata: Map.get(result, :evidence) || Map.get(result, :meta) || %{}
     }
   end
 

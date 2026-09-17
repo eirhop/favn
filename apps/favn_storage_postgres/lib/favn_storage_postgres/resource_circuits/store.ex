@@ -295,12 +295,9 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
     FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
 
     workspace_id = command.workspace_context.workspace_id
-    FavnStoragePostgres.RunIdentity.lock!(workspace_id, command.run_id)
-
-    lock_candidate_owners!(
-      workspace_id,
-      Enum.map(command.recovery_candidates, & &1.source_run_id)
-    )
+    candidate_runs = Enum.map(command.recovery_candidates, & &1.source_run_id)
+    Enum.each(candidate_runs, &CancellationOwnership.owner!(workspace_id, &1))
+    CancellationOwnership.lock_new_many!(workspace_id, [command.run_id | candidate_runs])
 
     permits = Map.new(command.permits, &{resource_identity(&1.resource), &1})
 
@@ -609,13 +606,6 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   end
 
   defp complete_recovery!(command) do
-    if command.recovery_run_id,
-      do:
-        FavnStoragePostgres.RunIdentity.lock!(
-          command.workspace_context.workspace_id,
-          command.recovery_run_id
-        )
-
     workspace = command.workspace_context.workspace_id
 
     query =
@@ -624,7 +614,9 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
       )
 
     selected = Repo.all(query)
-    lock_candidate_owners!(workspace, Enum.map(selected, & &1.source_run_id))
+    source_runs = Enum.map(selected, & &1.source_run_id)
+    Enum.each(source_runs, &CancellationOwnership.owner!(workspace, &1))
+    CancellationOwnership.lock_new_many!(workspace, [command.recovery_run_id | source_runs])
     candidates = Repo.all(from(c in query, order_by: [asc: c.candidate_id], lock: "FOR UPDATE"))
 
     if length(candidates) != length(command.candidate_ids),
@@ -665,12 +657,8 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
     :ok
   end
 
-  defp lock_candidate_owners!(workspace, run_ids) do
-    run_ids
-    |> Enum.uniq()
-    |> Enum.sort_by(&{CancellationOwnership.owner!(workspace, &1), &1})
-    |> Enum.each(&CancellationOwnership.lock!(workspace, &1))
-  end
+  defp lock_candidate_owners!(workspace, run_ids),
+    do: CancellationOwnership.lock_many!(workspace, run_ids)
 
   defp candidate_result!(candidate) do
     {:ok, node_key} = PayloadCodec.decode(candidate.node_key)

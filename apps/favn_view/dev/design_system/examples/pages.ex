@@ -547,7 +547,8 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             status_tone: :success,
             live?: false,
             output_status: :ok,
-            output_metadata: Fixtures.Logs.output_metadata()
+            output_metadata: Fixtures.Logs.output_metadata(),
+            evidence: Fixtures.Logs.output_metadata()
           }),
           "A finished step shows what it wrote alongside its logs."
         )
@@ -915,6 +916,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             status_label: "Succeeded",
             status_tone: :success,
             error_summary: nil,
+            evidence: %{"rows_affected" => 82_101, "write_outcome" => "written"},
             output_metadata: %{
               "rows_written" => 82_101,
               "relation" => "warehouse.crm_orders",
@@ -960,7 +962,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       runner_pool: "duckdb",
       required_runner_release_id: "rr_local",
       beam_node: "runner@favn.local",
-      protocol_version: 13,
+      protocol_version: 14,
       lifecycle_mode: :elastic,
       status: :idle,
       supported_task_kinds: [:relation_inspection, :asset_attempt],
@@ -977,7 +979,7 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
       runner_pool: "duckdb",
       required_runner_release_id: "rr_local",
       beam_node: "runner@favn.local",
-      protocol_version: 13,
+      protocol_version: 14,
       lifecycle_mode: "elastic",
       registered_at: ~U[2026-07-31 09:18:00Z],
       ended_at: nil,

@@ -35,6 +35,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
           required(:error) => term(),
           required(:output) => term(),
           required(:output_metadata) => map() | nil,
+          required(:evidence) => map() | nil,
           required(:explanation) => String.t() | nil,
           required(:failure_role) => :primary | :cascade | nil,
           required(:root_failure_asset_ref) => String.t() | nil
@@ -378,6 +379,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
       error: nil,
       output: nil,
       output_metadata: nil,
+      evidence: nil,
       explanation: "Asset has not started yet for this run.",
       failure_role: nil,
       root_failure_asset_ref: nil
@@ -431,7 +433,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
   defp step_summary(result, context) when is_map(result) do
     {step_id, node_key, canonical_asset_ref} = step_identity(result, context.run)
     status = value(result, :status)
-    output_metadata = result |> value(:meta, %{}) |> output_metadata()
+    output_metadata = output_metadata(value(result, :evidence) || value(result, :meta, %{}))
 
     %{
       id: step_id,
@@ -452,6 +454,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
       error: first_value(result, [:error, :reason]),
       output: output_from_metadata(output_metadata),
       output_metadata: output_metadata,
+      evidence: output_metadata(value(result, :evidence)),
       explanation: step_explanation(status),
       failure_role: nil,
       root_failure_asset_ref: nil
@@ -547,7 +550,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
     latest = List.last(events)
     data = latest.data || %{}
     result = event_result(latest, data)
-    output_metadata = result |> value(:meta, %{}) |> output_metadata()
+    output_metadata = output_metadata(value(result, :evidence) || value(result, :meta, %{}))
 
     %{
       id: event_step_id(run_id, latest),
@@ -569,6 +572,7 @@ defmodule FavnOrchestrator.RunReadModel.StepProjection do
       error: first_value(result, [:error, :reason]) || value(data, :error),
       output: output_from_metadata(output_metadata),
       output_metadata: output_metadata,
+      evidence: output_metadata(value(result, :evidence)),
       explanation: event_step_explanation(latest.event_type),
       failure_role: nil,
       root_failure_asset_ref: nil

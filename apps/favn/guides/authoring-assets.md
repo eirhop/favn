@@ -132,7 +132,13 @@ strings and are stored as strings; atom values are also stored as strings.
 Values may be nested maps and lists containing strings, numbers, booleans,
 `nil`, dates, times, datetimes, and decimals. Duplicate atom/string keys such
 as `:count` and `"count"`, tuples, processes, functions, and arbitrary structs
-are rejected instead of being changed or dropped.
+are rejected instead of being changed or dropped. Application metadata needs
+no framework key registration. For example, `%{pages_written: 12, load_mode: :append}`
+is stored as `%{"pages_written" => 12, "load_mode" => "append"}`.
+
+SQL and Source execution evidence is stored separately in the result's `evidence`
+field. Application keys such as `status`, `write_outcome`, or `check_results` are
+ordinary metadata; they cannot set execution status or SQL assurance evidence.
 
 Common declarations:
 
@@ -404,7 +410,7 @@ do not own the staged transactional scope.
 Group replacement is currently supported by the DuckDB/DuckLake ADBC adapter.
 Other adapters reject the plan before writing.
 
-Successful run metadata includes a separate `group_replacement` result with
+Successful SQL execution evidence includes a `group_replacement` result with
 `scope_group_count`, `candidate_row_count`, `deleted_row_count`,
 `inserted_row_count`, and one exact operation:
 `:replaced`, `:delete_only`, `:empty_scope_no_op`, `:before_check_skipped`,

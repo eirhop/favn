@@ -162,6 +162,10 @@ defmodule FavnStoragePostgres.Runs.Store do
                       do:
                         Repo.rollback(
                           Error.new(:conflict, "execution history owner is busy",
+                            details: %{
+                              reason_code: "execution_history_owner_busy",
+                              operation: :create_run
+                            },
                             retryable?: true
                           )
                         )

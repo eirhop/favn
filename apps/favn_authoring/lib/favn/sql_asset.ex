@@ -325,7 +325,7 @@ defmodule Favn.SQLAsset do
   freshness and downstream gating.
 
   Check results use `Favn.SQL.CheckResult` and are exposed in durable run detail
-  metadata with `quality_status` and `write_outcome`. Read
+  execution evidence with `quality_status` and `write_outcome`. Read
   `Favn.SQLAsset.check/3` for the exact option and return contract. The package
   guide `guides/sql-asset-checks.md` provides the complete authoring workflow,
   examples, metric limits, and failure modes.

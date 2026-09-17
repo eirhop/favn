@@ -20,7 +20,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Assurance do
     if is_nil(contract) and checks == [] do
       nil
     else
-      meta = latest_asset_meta(latest_run, asset_ref)
+      meta = latest_asset_evidence(latest_run, asset_ref)
       results = meta |> field(:check_results, []) |> List.wrap()
       results_by_name = Map.new(results, &{to_string(field(&1, :name)), &1})
 
@@ -160,9 +160,9 @@ defmodule FavnOrchestrator.Operator.Catalogue.Assurance do
     }
   end
 
-  defp latest_asset_meta(nil, _asset_ref), do: %{}
+  defp latest_asset_evidence(nil, _asset_ref), do: %{}
 
-  defp latest_asset_meta(latest_run, asset_ref) do
+  defp latest_asset_evidence(latest_run, asset_ref) do
     result =
       case Map.get(latest_run, :asset_results) do
         results when is_map(results) ->
@@ -175,7 +175,7 @@ defmodule FavnOrchestrator.Operator.Catalogue.Assurance do
           |> find_asset_result(asset_ref)
       end
 
-    field(result, :meta, %{})
+    field(result, :evidence, %{})
   end
 
   defp find_asset_result(results, asset_ref) when is_map(results), do: Map.get(results, asset_ref)

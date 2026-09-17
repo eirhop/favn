@@ -2,6 +2,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   @moduledoc false
 
   alias Favn.Contracts.RunnerTask
+  alias Favn.Contracts.RunnerTask.OpenData
   alias Favn.Contracts.RunnerTask.PersistenceSchema
   alias Favn.Contracts.RunnerTask.PersistenceResult
   alias Favn.Contracts.RunnerTask.PersistenceData
@@ -20,7 +21,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   def payload_version, do: 2
 
   def encode_payload(task_kind, payload) do
-    with :ok <- apply_validation(&RunnerTask.validate_payload/2, task_kind, nil, payload),
+    with {:ok, payload} <- normalize_work_metadata(payload),
+         :ok <- apply_validation(&RunnerTask.validate_payload/2, task_kind, nil, payload),
          :ok <- Limits.validate_payload(task_kind, payload),
          {:ok, stripped, hash} <- strip_package(payload),
          {:ok, data} <- PersistenceData.encode(stripped, Limits.payload_bytes(task_kind)) do
@@ -37,6 +39,22 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
       {:ok, envelope, hash}
     end
   end
+
+  defp normalize_work_metadata(%RunnerWork{metadata: metadata} = work) when is_map(metadata) do
+    with {:ok, operator_metadata} <-
+           OpenData.normalize(Map.get(metadata, :operator_metadata, %{})) do
+      metadata =
+        if Map.has_key?(metadata, :operator_metadata),
+          do: Map.put(metadata, :operator_metadata, operator_metadata),
+          else: metadata
+
+      {:ok, %{work | metadata: metadata}}
+    else
+      {:error, reason} -> {:error, {:invalid_runner_task_open_data, :operator_metadata, reason}}
+    end
+  end
+
+  defp normalize_work_metadata(payload), do: {:ok, payload}
 
   def decode_payload(task_kind, envelope, version \\ nil, packages \\ []) do
     with {:ok, hash} <- package_hash(envelope),

@@ -22,6 +22,15 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
           | {:error, term()}
   def enqueue(%RunState{} = run, %RunnerWork{} = work, node_key, _stage, attempt, context)
       when is_map(context) do
+    with {:ok, command, work} <- prepare(run, work, node_key, attempt, context),
+         {:ok, task} <- RunnerTasks.enqueue(command),
+         do: {:ok, task, work}
+  end
+
+  @doc false
+  @spec prepare(RunState.t(), RunnerWork.t(), Favn.Plan.node_key(), pos_integer(), map()) ::
+          {:ok, EnqueueRunnerTask.t(), RunnerWork.t()} | {:error, term()}
+  def prepare(run, work, node_key, attempt, context) do
     task_id = task_id(run, work, node_key, attempt)
     work = prepare_payload(work, task_id)
     occurred_at = run.inserted_at || DateTime.utc_now()
@@ -30,41 +39,40 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
          {:ok, payload, payload_hash} <- PersistenceCodec.encode_payload(:asset_attempt, work),
          {:ok, orchestration_context} <-
            RunnerTaskContext.encode(context),
-         {:ok, task} <-
-           RunnerTasks.enqueue(%EnqueueRunnerTask{
-             workspace_context:
-               SystemContext.workspace(run.workspace_id, :asset_runner_task_enqueue),
-             command_id: "enqueue:#{task_id}",
-             task_id: task_id,
-             domain_identity: domain_identity(run, work, node_key, attempt),
-             task_kind: :asset_attempt,
-             manifest_version_id: work.manifest_version_id,
-             manifest_content_hash: work.manifest_content_hash,
-             write_claim_key: get_in(context, [:materialization_claim, :claim_key]),
-             write_claim_fence: get_in(context, [:materialization_claim, :fencing_token]),
-             write_target_id:
-               if(RunnerWork.runtime_input_resolution_only?(work),
-                 do: nil,
-                 else:
-                   if(context[:materialization_claim],
-                     do: Favn.TargetIdentity.for_asset(work.asset_ref),
-                     else: work.logical_target_id
-                   )
-               ),
-             runner_pool: runner_pool,
-             required_runner_release_id: work.required_runner_release_id,
-             retry_class: :unknown_do_not_retry,
-             payload: payload,
-             payload_hash: payload_hash,
-             orchestration_context: orchestration_context,
-             run_id: run.id,
-             asset_step_id: work.asset_step_id,
-             required_capability: "asset_execution",
-             deadline_at: work.deadline_at,
-             issued_at: occurred_at,
-             occurred_at: occurred_at
-           }) do
-      {:ok, task, work}
+         command <- %EnqueueRunnerTask{
+           workspace_context:
+             SystemContext.workspace(run.workspace_id, :asset_runner_task_enqueue),
+           command_id: "enqueue:#{task_id}",
+           task_id: task_id,
+           domain_identity: domain_identity(run, work, node_key, attempt),
+           task_kind: :asset_attempt,
+           manifest_version_id: work.manifest_version_id,
+           manifest_content_hash: work.manifest_content_hash,
+           write_claim_key: get_in(context, [:materialization_claim, :claim_key]),
+           write_claim_fence: get_in(context, [:materialization_claim, :fencing_token]),
+           write_target_id:
+             if(RunnerWork.runtime_input_resolution_only?(work),
+               do: nil,
+               else:
+                 if(context[:materialization_claim],
+                   do: Favn.TargetIdentity.for_asset(work.asset_ref),
+                   else: work.logical_target_id
+                 )
+             ),
+           runner_pool: runner_pool,
+           required_runner_release_id: work.required_runner_release_id,
+           retry_class: :unknown_do_not_retry,
+           payload: payload,
+           payload_hash: payload_hash,
+           orchestration_context: orchestration_context,
+           run_id: run.id,
+           asset_step_id: work.asset_step_id,
+           required_capability: "asset_execution",
+           deadline_at: work.deadline_at,
+           issued_at: occurred_at,
+           occurred_at: occurred_at
+         } do
+      {:ok, command, work}
     end
   end
 
@@ -76,6 +84,7 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
   end
 
   defp rejected_enqueue?(%Error{kind: :invalid}), do: true
+  defp rejected_enqueue?({:invalid_runner_task_open_data, :operator_metadata, _reason}), do: true
   defp rejected_enqueue?({:runner_task_payload_too_large, _size, _limit}), do: true
   defp rejected_enqueue?({:invalid_runner_pool, _value}), do: true
 

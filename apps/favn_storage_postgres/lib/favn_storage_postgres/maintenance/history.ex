@@ -75,7 +75,7 @@ defmodule FavnStoragePostgres.Maintenance.History do
       %{rows: [[locked]]} =
         SQL.query!(
           Repo,
-          "SELECT pg_try_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text)::text,0))",
+          "SELECT pg_try_advisory_xact_lock_shared(hashtextextended(jsonb_build_array('execution_history',$1::text,$2::text)::text,0))",
           [workspace, root]
         )
 
@@ -106,7 +106,7 @@ defmodule FavnStoragePostgres.Maintenance.History do
         %{rows: [[locked]]} =
           SQL.query!(
             Repo,
-            "SELECT pg_try_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text)::text,0))",
+            "SELECT pg_try_advisory_xact_lock_shared(hashtextextended(jsonb_build_array('execution_history',$1::text,$2::text)::text,0))",
             [workspace, root]
           )
 
@@ -451,7 +451,7 @@ defmodule FavnStoragePostgres.Maintenance.History do
   defp lock!(workspace, root) do
     SQL.query!(
       Repo,
-      "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array($1::text,$2::text)::text,0))",
+      "SELECT pg_advisory_xact_lock(hashtextextended(jsonb_build_array('execution_history',$1::text,$2::text)::text,0))",
       [workspace, root]
     )
   end

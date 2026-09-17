@@ -6,53 +6,13 @@ defmodule Favn.Contracts.RunnerTask.PersistenceResult do
   alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerAssetEvidence
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerTask.OpenData
   alias Favn.SQL.Column
   alias Favn.SQL.Relation
-
-  @sql_asset_meta_keys [
-    :check_results,
-    :command,
-    :connection,
-    :contract_validation,
-    :group_replacement,
-    :manifest_content_hash,
-    :manifest_version_id,
-    :materialized,
-    :message,
-    :metrics,
-    :observed,
-    :quality_status,
-    :reason,
-    :relation,
-    :rows_affected,
-    :runtime_inputs,
-    :transaction_outcome,
-    :write_outcome
-  ]
-
-  @sql_asset_required_keys [
-    :check_results,
-    :command,
-    :connection,
-    :group_replacement,
-    :materialized,
-    :quality_status,
-    :reason,
-    :rows_affected,
-    :write_outcome
-  ]
-
-  @sql_failure_required_keys [
-    :check_results,
-    :connection,
-    :quality_status,
-    :transaction_outcome,
-    :write_outcome
-  ]
 
   @generation_results [
     GenerationActivationResult,
@@ -88,9 +48,10 @@ defmodule Favn.Contracts.RunnerTask.PersistenceResult do
 
   defp normalize_asset_result(%RunnerAssetResult{} = result) do
     with {:ok, meta} <- normalize_asset_meta(result.meta),
+         {:ok, evidence} <- normalize_evidence(result.evidence),
          {:ok, error} <- normalize_error(result.error, :runner_error_details),
          {:ok, attempts} <- normalize_attempts(result.attempts) do
-      {:ok, %{result | meta: meta, error: error, attempts: attempts}}
+      {:ok, %{result | meta: meta, evidence: evidence, error: error, attempts: attempts}}
     end
   end
 
@@ -103,113 +64,33 @@ defmodule Favn.Contracts.RunnerTask.PersistenceResult do
 
   defp normalize_attempt(%{} = attempt) do
     with {:ok, meta} <- normalize_asset_meta(field(attempt, :meta, %{})),
+         {:ok, evidence} <- normalize_evidence(field(attempt, :evidence)),
          {:ok, error} <-
            normalize_error(field(attempt, :error), :runner_error_details) do
       {:ok,
        attempt
        |> put_field(:meta, meta)
+       |> put_field(:evidence, evidence)
        |> put_field(:error, error)}
     end
   end
 
   defp normalize_attempt(_attempt), do: {:error, :invalid_runner_asset_attempt}
 
-  defp normalize_asset_meta(meta) when is_map(meta) do
-    cond do
-      source_asset_meta?(meta) -> {:ok, meta}
-      sql_asset_meta?(meta) -> normalize_sql_asset_meta(meta)
-      true -> normalize_open(meta, :asset_metadata)
-    end
-  end
-
+  defp normalize_asset_meta(meta) when is_map(meta), do: normalize_open(meta, :asset_metadata)
   defp normalize_asset_meta(_meta), do: {:error, :invalid_runner_asset_metadata}
 
-  defp normalize_sql_asset_meta(meta) do
-    meta
-    |> Enum.reduce_while({:ok, %{}, MapSet.new()}, fn {key, value}, {:ok, acc, seen} ->
-      with {:ok, normalized_key, normalized_value} <- normalize_sql_asset_meta_entry(key, value),
-           canonical_key <- canonical_key(normalized_key),
-           false <- MapSet.member?(seen, canonical_key) do
-        {:cont,
-         {:ok, Map.put(acc, normalized_key, normalized_value), MapSet.put(seen, canonical_key)}}
-      else
-        true -> {:halt, open_error(:asset_metadata, :duplicate_key)}
-        {:error, _reason} = error -> {:halt, error}
-      end
-    end)
-    |> drop_seen_keys()
-  end
+  defp normalize_evidence(nil), do: {:ok, nil}
 
-  defp normalize_sql_asset_meta_entry(key, value) when key in @sql_asset_meta_keys do
-    with {:ok, normalized} <- normalize_sql_asset_meta_value(key, value) do
-      {:ok, key, normalized}
+  defp normalize_evidence(%RunnerAssetEvidence{kind: kind} = evidence)
+       when kind in [:sql, :source] do
+    with {:ok, metrics} <- normalize_open(evidence.metrics, :sql_metrics),
+         {:ok, runtime_inputs} <- normalize_runtime_inputs(evidence.runtime_inputs) do
+      {:ok, %{evidence | metrics: metrics, runtime_inputs: runtime_inputs}}
     end
   end
 
-  defp normalize_sql_asset_meta_entry(key, value) do
-    with {:ok, normalized} <- OpenData.normalize(%{key => value}) do
-      [{normalized_key, normalized_value}] = Map.to_list(normalized)
-      {:ok, normalized_key, normalized_value}
-    else
-      {:error, reason} -> open_error(:asset_metadata, reason)
-    end
-  end
-
-  defp normalize_sql_asset_meta_value(:runtime_inputs, value), do: normalize_runtime_inputs(value)
-
-  defp normalize_sql_asset_meta_value(:metrics, value) do
-    case OpenData.normalize(value) do
-      {:ok, normalized} -> {:ok, normalized}
-      {:error, reason} -> open_error(:sql_metrics, reason)
-    end
-  end
-
-  defp normalize_sql_asset_meta_value(_key, value), do: {:ok, value}
-
-  defp source_asset_meta?(%{observed: true, relation: %Favn.RelationRef{}} = meta),
-    do: map_size(meta) == 2
-
-  defp source_asset_meta?(_meta), do: false
-
-  defp sql_asset_meta?(meta) do
-    complete_sql_meta?(meta) or complete_sql_failure_meta?(meta) or typed_sql_evidence?(meta)
-  end
-
-  defp complete_sql_meta?(meta) do
-    Enum.all?(@sql_asset_required_keys, &Map.has_key?(meta, &1)) and
-      match?(%Favn.RelationRef{}, Map.get(meta, :materialized)) and
-      is_atom(Map.get(meta, :connection)) and
-      is_list(Map.get(meta, :check_results)) and
-      Map.get(meta, :quality_status) in [:passed, :warning] and
-      Map.get(meta, :write_outcome) in [:written, :no_op]
-  end
-
-  defp typed_sql_evidence?(meta) do
-    match?(%Favn.SQL.ContractValidation{}, Map.get(meta, :contract_validation)) or
-      match?(%Favn.SQL.GroupReplacementResult{}, Map.get(meta, :group_replacement)) or
-      match?(%Favn.RelationRef{}, Map.get(meta, :materialized)) or
-      typed_check_results?(Map.get(meta, :check_results))
-  end
-
-  defp complete_sql_failure_meta?(meta) do
-    Enum.all?(@sql_failure_required_keys, &Map.has_key?(meta, &1)) and
-      is_atom(Map.get(meta, :connection)) and
-      is_list(Map.get(meta, :check_results)) and
-      Map.get(meta, :quality_status) == :failed and
-      Map.get(meta, :transaction_outcome) in [:rolled_back, :not_started, :unknown] and
-      Map.get(meta, :write_outcome) in [:rolled_back, :not_started, :unknown]
-  end
-
-  defp typed_check_results?(values) when is_list(values),
-    do: Enum.any?(values, &match?(%Favn.SQL.CheckResult{}, &1))
-
-  defp typed_check_results?(_values), do: false
-
-  defp canonical_key(key) when is_atom(key), do: Atom.to_string(key)
-  defp canonical_key(key), do: key
-
-  defp drop_seen_keys({:ok, normalized, _seen}), do: {:ok, normalized}
-  defp drop_seen_keys({:error, _reason} = error), do: error
+  defp normalize_evidence(_evidence), do: {:error, :invalid_runner_asset_evidence}
 
   defp normalize_runtime_inputs(%{} = value) do
     case Map.fetch(value, :input_metadata) do

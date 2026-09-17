@@ -117,7 +117,16 @@ defmodule FavnRunner.WorkerTest do
     assert {:ok, persisted} =
              PersistenceCodec.decode_result(:asset_attempt, :succeeded, encoded, version)
 
-    assert [%{meta: %{observed: true, relation: %Favn.RelationRef{} = relation}}] =
+    assert [
+             %{
+               meta: %{},
+               evidence: %Favn.Contracts.RunnerAssetEvidence{
+                 kind: :source,
+                 observed: true,
+                 relation: %Favn.RelationRef{} = relation
+               }
+             }
+           ] =
              persisted.asset_results
 
     assert relation.name == "orders"

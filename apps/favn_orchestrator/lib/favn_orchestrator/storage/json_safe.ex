@@ -1,6 +1,7 @@
 defmodule FavnOrchestrator.Storage.JsonSafe do
   @moduledoc false
 
+  alias Favn.Contracts.RunnerAssetEvidence
   alias Favn.Contracts.RunnerAssetResult
   alias Favn.Contracts.RunnerError
   alias Favn.Run.AssetResult
@@ -25,7 +26,13 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def data(value), do: data(value, nil, @max_depth)
 
   @spec output_metadata(term()) :: map() | list() | String.t() | number() | boolean() | nil
-  def output_metadata(value) when is_map(value) do
+  def output_metadata(value), do: data(value)
+
+  @spec execution_evidence(term()) :: map() | nil
+  def execution_evidence(%RunnerAssetEvidence{} = value),
+    do: value |> Map.from_struct() |> execution_evidence()
+
+  def execution_evidence(value) when is_map(value) do
     ordinary =
       value
       |> Enum.reject(fn {key, _value} ->
@@ -48,7 +55,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     |> maybe_put_assurance_field(value, :contract_validation, &contract_validation_to_dto/1)
   end
 
-  def output_metadata(value), do: data(value)
+  def execution_evidence(_value), do: nil
 
   @doc false
   @spec window_selection(Selection.t() | nil) :: map() | nil
@@ -90,7 +97,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def error(%{"kind" => kind, "message" => message, "reason" => reason, "type" => type} = value) do
     %{
       "kind" => scalar_string(kind, "error"),
-      "type" => scalar_string(type, "term"),
+      "type" => meaningful_error_type(type, value, kind),
       "message" => safe_error_message(message),
       "reason" => safe_existing_error_reason(reason),
       "redacted" => true,
@@ -105,7 +112,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
     %{
       "kind" => scalar_string(kind, "error"),
-      "type" => error_type(reason),
+      "type" => meaningful_error_type(Map.get(value, :type), value, kind),
       "message" => safe_error_message(message || reason || value),
       "reason" => safe_error_reason(reason || value),
       "redacted" => true,
@@ -199,6 +206,8 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp data(%DateTime{} = value, _key, _depth), do: DateTime.to_iso8601(value)
   defp data(%NaiveDateTime{} = value, _key, _depth), do: NaiveDateTime.to_iso8601(value)
   defp data(%Time{} = value, _key, _depth), do: Time.to_iso8601(value)
+  defp data(%RunnerAssetEvidence{} = value, _key, _depth), do: execution_evidence(value)
+
   defp data(%RunnerAssetResult{} = value, _key, depth), do: runner_asset_result(value, depth)
   defp data(%AssetResult{} = value, _key, depth), do: asset_result(value, depth)
 
@@ -271,6 +280,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "finished_at" => data(result.finished_at, nil, depth - 1),
       "duration_ms" => result.duration_ms,
       "meta" => output_metadata(result.meta),
+      "evidence" => execution_evidence(result.evidence),
       "error" => error(result.error),
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
@@ -287,6 +297,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "finished_at" => data(result.finished_at, nil, depth - 1),
       "duration_ms" => result.duration_ms,
       "meta" => output_metadata(result.meta),
+      "evidence" => execution_evidence(result.evidence),
       "error" => error(result.error),
       "attempt_count" => result.attempt_count,
       "max_attempts" => result.max_attempts,
@@ -434,12 +445,29 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp exception_message(_value), do: nil
 
-  defp error_type(%{__exception__: true, __struct__: module}) when is_atom(module),
-    do: Atom.to_string(module)
+  defp meaningful_error_type(type, value, kind) do
+    details =
+      case Map.get(value, :details) || Map.get(value, "details") do
+        details when is_map(details) -> details
+        _ -> %{}
+      end
+
+    [
+      Map.get(details, :reason_code),
+      Map.get(details, "reason_code"),
+      type,
+      if(Map.get(value, :reason) != nil, do: error_type(value.reason)),
+      kind
+    ]
+    |> Enum.map(fn candidate ->
+      if is_binary(candidate), do: String.trim(candidate), else: candidate
+    end)
+    |> Enum.find(fn candidate -> candidate not in [nil, "", "nil", "null", false, true] end)
+    |> scalar_string("error")
+  end
 
   defp error_type(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
   defp error_type(value) when is_boolean(value), do: "boolean"
-  defp error_type(nil), do: "nil"
   defp error_type(value) when is_atom(value), do: Atom.to_string(value)
   defp error_type(value) when is_map(value), do: "map"
   defp error_type(value) when is_tuple(value), do: "tuple"

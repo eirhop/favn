@@ -51,6 +51,22 @@ defmodule Favn.Contracts.GenerationContractsTest do
              |> RunnerAssetResult.validate_generation_result(candidate)
   end
 
+  test "SQL evidence cannot weaken the authoritative write outcome" do
+    work = runner_work(:normal_materialization)
+
+    for {status, outcome, evidence_outcome, expected} <- [
+          {:ok, :succeeded, :written, :ok},
+          {:error, :safe_failure, :rolled_back, :ok},
+          {:error, :safe_failure, :written, {:error, :inconsistent_runner_write_evidence}},
+          {:ok, :succeeded, :unknown, {:error, :inconsistent_runner_write_evidence}},
+          {:error, :outcome_unknown, :written, :ok}
+        ] do
+      evidence = Favn.Contracts.RunnerAssetEvidence.new!(:sql, %{write_outcome: evidence_outcome})
+      result = %{runner_result(work, status, outcome) | evidence: evidence}
+      assert RunnerAssetResult.validate_generation_result(result, work) == expected
+    end
+  end
+
   test "runner work and input pins match manifest descriptors and packages" do
     {descriptor, package} = descriptor_and_package()
 

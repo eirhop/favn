@@ -338,6 +338,23 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   def handle_info(
+        {:favn_run_cancel_requested, _reason} = message,
+        %{execution_persist_pending: %{retry: %PersistenceRetry{event_type: :resource_outcomes}}} =
+          state
+      ),
+      do: {:noreply, defer_execution_event(state, message)}
+
+  def handle_info(
+        {:favn_run_cancel_requested, _reason} = message,
+        %{
+          storage_renewal_pending: %{
+            purpose: {:resume, %PersistenceRetry{event_type: :resource_outcomes}}
+          }
+        } = state
+      ),
+      do: {:noreply, defer_execution_event(state, message)}
+
+  def handle_info(
         {:favn_run_cancel_requested, reason},
         %{execution_state: %RunExecutionState{} = execution_state} = state
       ) do
@@ -555,6 +572,7 @@ defmodule FavnOrchestrator.RunServer do
          {:persist_retry, %RunExecutionState{} = execution_state, %PersistenceRetry{} = retry,
           reason}
        ) do
+    retry = PersistenceRetry.rejected(retry, reason)
     token = make_ref()
 
     Process.send_after(
@@ -566,11 +584,11 @@ defmodule FavnOrchestrator.RunServer do
     OperationalEvents.emit(
       :run_execution_persist_retry_scheduled,
       %{},
-      %{
+      Map.merge(PersistenceRetry.diagnostics(retry), %{
         run_id: retry.run.id,
         event_type: retry.event_type,
         reason: reason
-      },
+      }),
       level: :warning
     )
 

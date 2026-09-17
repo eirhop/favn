@@ -92,6 +92,7 @@ defmodule Favn.Contracts.ContractLockTest do
         :logical_target_id,
         :max_attempts,
         :meta,
+        :evidence,
         :ref,
         :started_at,
         :status,

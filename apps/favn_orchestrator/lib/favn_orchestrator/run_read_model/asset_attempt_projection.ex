@@ -86,7 +86,10 @@ defmodule FavnOrchestrator.RunReadModel.AssetAttemptProjection do
          finished_at: finished_at || if(terminal?(status), do: occurred_at),
          duration_ms: integer(field(node_result, :duration_ms)),
          error: field(node_result, :error) || field(data, :error),
-         output_metadata: map(field(node_result, :meta)),
+         output_metadata: %{
+           "meta" => map(field(node_result, :meta)),
+           "evidence" => map(field(node_result, :evidence))
+         },
          window_identity: window_identity(window),
          window: window
        }}

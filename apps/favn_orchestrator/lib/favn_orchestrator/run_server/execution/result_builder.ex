@@ -82,6 +82,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
         asset_result_field(asset_result, :max_attempts) || node.retry_policy.max_attempts,
       runner_task_id: task_id,
       meta: map_field(asset_result, :meta),
+      evidence: asset_result_field(asset_result, :evidence),
       error: asset_result_field(asset_result, :error),
       attempts: list_field(asset_result, :attempts),
       asset_step_id:
