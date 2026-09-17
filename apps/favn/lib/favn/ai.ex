@@ -54,8 +54,11 @@ defmodule Favn.AI do
   and violation policy; read the SQL Output Contracts guide for snapshot guarantees.
   Build semantics with a
   dedicated `MIX_BUILD_PATH` established before Mix starts; never use active runner
-  output. The finished artifact is independently versioned; catalog publication,
-  freshness context, and MCP are separate capabilities.
+  output. Publish either immutable artifact with `mix favn.catalog.publish`; read
+  [SQL Catalog Publication](sql-catalog-publication.html) and `Favn.Catalog` for
+  dedicated CI configuration, named targets and required version/revision
+  expectations. Selection is a definition choice, not verified served compatibility.
+  Freshness context and MCP remain separate capabilities.
 
   ## What To Read
 

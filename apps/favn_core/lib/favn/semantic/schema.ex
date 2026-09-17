@@ -29,6 +29,16 @@ defmodule Favn.Semantic.Schema do
     :invalid_semantic_artifact -> {:error, :invalid_semantic_artifact}
   end
 
+  @doc false
+  def validate_snapshot(snapshot) do
+    check!(list?(snapshot, 10_000, &asset?/1) and unique?(snapshot, "ref"))
+    assets = Map.new(snapshot, &{&1["ref"], &1})
+    Enum.each(snapshot, &asset_refs!(&1, assets))
+    :ok
+  catch
+    :invalid_semantic_artifact -> {:error, :invalid_snapshot}
+  end
+
   defp compiler?(value),
     do:
       record?(value, %{

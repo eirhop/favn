@@ -155,3 +155,12 @@ uncertainty instead of claiming data-plane cancellation certainty.
 not expose arbitrary operator SQL because a shared read-write DuckDB session
 cannot also provide a database-enforced read-only boundary. Stop Favn before
 opening a file-backed database with the DuckDB CLI.
+
+## Catalog publication
+
+`Favn.SQL.Catalog.Request` validates one named destination, immutable projections
+and version/revision expectations. `Publisher` owns fresh owner-exclusive sessions
+and read-only reconciliation; qualified adapters implement `Catalog.Backend`.
+The DuckDB plugin owns DDL, native macros, conditional selection and receipts.
+There is no control-plane persistence or runner registration in this workflow.
+See the [public guide](../../apps/favn/guides/sql-catalog-publication.md).

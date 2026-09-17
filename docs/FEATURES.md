@@ -62,7 +62,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   artifact build/inspect/diff commands. See the canonical
   [SQL Semantic Models guide](../apps/favn/guides/sql-semantic-models.md).
   Native validation requires Linux, Python 3, and the installed supported DuckDB
-  driver. Catalog activation, runtime analytical context, and MCP remain forward work.
+  driver. Full manifest and semantic catalogs can be published independently from
+  CI to named native DuckDB/DuckLake targets, with atomic selection, receipts and
+  persistent versioned macros. See [SQL catalog publication](../apps/favn/guides/sql-catalog-publication.md).
+  Verified serving readiness, runtime analytical context, and MCP remain forward work.
 
 ## Control plane
 

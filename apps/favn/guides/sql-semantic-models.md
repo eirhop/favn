@@ -153,9 +153,9 @@ content is idempotent; corrupt or unknown-version artifacts fail on read.
 ## Query from a dashboard
 
 The artifact provides the immutable macro namespace/name and ordered input
-bindings. Install its generated macro definitions in the consumer's DuckDB
-session. Durable catalog publication/activation is separate work; do not assume
-DuckLake itself persists arbitrary macro definitions.
+bindings. Install its generated macro definitions locally or use
+[SQL catalog publication](sql-catalog-publication.md) to publish metadata and
+persistent versioned macros in a qualified native DuckDB/DuckLake catalog.
 
 This example uses `metrics_v1` as a readable stand-in for the artifact's exact
 immutable namespace:
@@ -194,9 +194,9 @@ dependency graph, and time/grain requirements together. Build calls from those
 records rather than guessing argument names. Use one immutable semantic version
 throughout a request.
 
-This feature builds and inspects artifacts; it does not create a Favn query
-service, SQL metadata catalog, dashboard, or MCP server. Catalog publication and
-served-contract compatibility are tracked in #720; runtime freshness/quality
-context in #721; AI discovery/MCP in #719. A compatible catalog release must be
+Artifact building and [SQL catalog publication](sql-catalog-publication.md) are
+independent workflows. Neither creates a query service, dashboard or MCP server.
+Verified served-contract compatibility and runtime freshness/quality belong to
+#721; AI discovery/MCP belongs to #719. A compatible catalog release must be
 checked against the contract of the served data generation, not merely the newest
 execution manifest. Unknown served compatibility cannot imply safe activation.

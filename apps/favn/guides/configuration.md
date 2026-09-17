@@ -601,3 +601,9 @@ not automatically refresh a changed secret.
 | DuckDB has old root keys | Move to `open: [...]` and `duckdb: [...]`. |
 | DuckLake attach fails | Check extensions, secrets, metadata, data path, and `meta_secret`. |
 | SQL timeout after a write | Treat the write result as unknown; inspect before retrying. |
+
+## Consumer catalog publication
+
+For independent CI publication of the public manifest catalog and semantic model,
+see [SQL catalog publication](sql-catalog-publication.md). Named targets and
+dedicated publisher configuration are separate from execution deployment.

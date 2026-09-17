@@ -171,6 +171,16 @@ jobs:
           mkdir -p "$RUNNER_TEMP/duckdb"
           unzip -q "$RUNNER_TEMP/libduckdb-linux-amd64.zip" libduckdb.so -d "$RUNNER_TEMP/duckdb"
 
+      - name: Install qualified DuckLake extension
+        run: |
+          curl --fail --location --silent --show-error \
+            https://extensions.duckdb.org/v1.5.5/linux_amd64/ducklake.duckdb_extension.gz \
+            --output "$RUNNER_TEMP/ducklake.duckdb_extension.gz"
+          echo "733ccf19fedcfd5e0bfaf85993219145181099cc411076cabf14933ea16ab452  $RUNNER_TEMP/ducklake.duckdb_extension.gz" \
+            | sha256sum --check
+          mkdir -p "$HOME/.duckdb/extensions/v1.5.5/linux_amd64"
+          gzip -dc "$RUNNER_TEMP/ducklake.duckdb_extension.gz" > "$HOME/.duckdb/extensions/v1.5.5/linux_amd64/ducklake.duckdb_extension"
+
       - name: Test native DuckDB bootstrap and semantic compiler
         env:
           DUCKDB_ADBC_DRIVER: ${{ runner.temp }}/duckdb/libduckdb.so
@@ -183,6 +193,7 @@ jobs:
           test/semantic_artifact_integration_test.exs
           test/relationship_checks_test.exs
           test/relationship_publication_test.exs
+          test/catalog_publication_test.exs
 
   dialyzer:
     name: Dialyzer

@@ -27,6 +27,9 @@ defmodule Favn.SQL.Error do
           | :admission_timeout
           | :pool_timeout
           | :operation_timeout
+          | :catalog_conflict
+          | :catalog_integrity_failure
+          | :catalog_schema_conflict
 
   @type t :: %__MODULE__{
           type: type(),

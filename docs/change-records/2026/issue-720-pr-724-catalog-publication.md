@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented; independently reviewed |
 | Type | Feature |
 | Primary issue | [#720](https://github.com/eirhop/favn/issues/720) |
 | Pull request | [#724](https://github.com/eirhop/favn/pull/724) |
@@ -500,17 +500,71 @@ requires link checks, Markdown/Mermaid rendering, and `git diff --check`.
 
 ## Implementation outcome
 
-No implementation has started. This change contains the planning record only.
-The `Implementing` status follows the record lifecycle after draft PR creation;
-this task stops at the reviewed plan.
-The production/supporting implementation budgets above are estimates, not work
-completed. Canonical product documentation will change with implementation.
+The public manifest export, source-free projections, dedicated CI command,
+transactional native publisher, version selections and receipt reconciliation are
+implemented. The execution build prints the separate `catalog.json` path; its
+archive inventory remains unchanged. `Favn.Catalog` resolves one explicitly named
+connection provider and passes an invocation-owned registry to SQL runtime.
+The DuckDB adapter opts into the separate publication backend contract.
+
+Consumers can query public asset/contract/pipeline/schedule tables and semantic
+models/metrics/ordered inputs, with explicit installed macro coordinates.
+Definitions and receipts remain independent of runtime deployment and report
+served compatibility as unknown. No runner, orchestrator, storage or View lifecycle
+was added. Canonical usage is documented in the new SQL catalog publication guide.
+
+### Complexity accounting
+
+The current implementation diff, excluding this record, groups files by their
+owning slice. Native qualification tests are counted in slice 4 because they
+exercise installation and recovery together; shared build fixtures count in 1.
+The independent reviewer reconciled these counts after the final corrections.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 699 | 2 | 451 | 0 |
+| 2 | 456 | 5 | 207 | 0 |
+| 3 | 544 | 1 | 0 | 0 |
+| 4 | 130 | 0 | 869 | 13 |
+| Total | 1,829 | 8 | 1,527 | 13 |
+
+Slice 1 exceeds its 550-line upper estimate and 650-line review threshold.
+The complete manifest envelope and relational projection require 422 lines;
+typed, closed policy validation adds a 242-line schema. Validation reuses the
+existing domain constructors and verifies exact canonical round trips, rather
+than maintaining a second set of policy semantics. Non-secret runtime declarations
+and ISO date/time projection complete the approved public coverage.
+
+Slice 2 exceeds its 300-line upper estimate and 375-line review threshold.
+The 130-line request contract owns expectation parsing and deterministic operation
+identity. A 60-line invocation owner survives deadline termination and cleans up
+only the applications it started, including late startup. A same-BEAM admission
+lock prevents two invocations from stopping each other's dependencies. This is a
+short-lived command resource owner, not a new running platform service.
+
+Slice 3 remains within its review threshold. Slice 4 supporting lines exceed the
+550-line estimate and 650-line threshold because all 586 native qualification
+lines are counted there, including installation cases budgeted partly in slice 3.
+The combined slice-3/4 support is 869 lines against a combined 1,000-line upper
+estimate. Total supporting lines stay within the approved budget.
+
+Total production additions exceed the 1,570-line upper estimate by 259 lines.
+The closed schema and explicit lifecycle/recovery contracts above explain the
+variance; they preserve the planned behavior and introduce no product scope.
+Fewer deletions are intentional: there was no old publisher to retire. Existing
+runner connection-loading behavior remains intact; the new entry point resolves
+one provider explicitly. The independent reviewer accepted these variances after rechecking the corrections.
 
 ## Deviations from the approved plan
 
-No implementation deviations. Pre-approval refinements are stated in this
-record and accepted by the reviewer. Later changes must preserve this baseline
-and be recorded here with their reasons and independent review.
+| Planned | Implemented | Reason | Reviewer verdict |
+| --- | --- | --- | --- |
+| Explicit connection modules, resolved without unrelated initialization | Dedicated publisher config uses a name-to-module mapping; ordinary runtime module-list/discovery behavior is unchanged | Finding a name in a module list requires invoking unrelated providers; explicit association avoids those side effects | Accepted in initial Astra xhigh implementation review |
+| Bootstrap selection rows through one named table creation | Transaction creates the named selection table, then inserts its two initial rows before commit | Native DuckDB and DuckLake concurrency tests establish exactly one bootstrap winner; no uniqueness constraint or check-then-insert race is relied upon | Accepted in initial Astra xhigh implementation review |
+| Exploratory native checks used DuckDB 2.0 alpha | Committed qualification uses the existing CI-supported DuckDB 1.5.5 and checksum-pinned DuckLake `d8a1881e` | Qualifies the feature against Favn's supported CI runtime; no platform version promotion is needed | Accepted in initial Astra xhigh implementation review |
+
+The approved planning commit remains unchanged. Budget variance above and these
+implementation choices were accepted by the requested independent reviewer.
 
 ## Decision log
 
@@ -522,6 +576,9 @@ and be recorded here with their reasons and independent review.
 
 ## Verification evidence
 
+Results below distinguish completed local checks from remote CI and live
+qualification. The PR checks page records CI against the exact pushed head.
+
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | Source/issue inspection | Completed against `ce2729e7` and issue #720 | Establishes current capabilities and missing publication work; no implementation proof |
@@ -529,16 +586,34 @@ and be recorded here with their reasons and independent review.
 | Record links and whitespace | All 13 relative source links resolve; staged diff check passed | Documentation qualification only |
 | GitHub Markdown/Mermaid rendering | Both diagrams render as flowchart SVGs in the initial pushed baseline after draft creation; no diagram corrections | Verified rendered labels and 8 current/13 proposed nodes; no implementation proof |
 | Independent plan review | Approved after corrections and recheck, 2026-09-17; reviewer confirmed PR-number metadata preserves the plan | Plan review only; no implementation acceptance |
+| Core fast suite | 523 passed (including 6 catalog tests) | Closed artifacts, typed policies, full public graph, corruption and row bounds |
+| Authoring fast suite and export regressions | 158 passed; separate export checks 2 passed | Existing archive remains valid and repeated builds reuse output |
+| SQL runtime, public and local fast suites | 126 / 192 / 42 passed | Existing owning-app behavior; optional tiers excluded |
+| Fresh-process public command acceptance | 3 passed, including full-manifest input and timeout cleanup | Dedicated config, no customer/runtime boot, selected provider only; restored application set after deadline |
+| Native catalog and semantic qualification | 15 passed (13 catalog, 2 existing semantic integration tests) | DuckDB 1.5.5 and DuckLake d8a1881e; real CI command, two catalogs, quoted schemas, read-only macros returning 42, concurrency, rollback and recovery |
+| Format, compilation, lint and security | Passed warnings-as-errors compilation, explicit formatting of changed Elixir files, root format check, Credo warning checks, Sobelow and test-tier guard | Static qualification, not a live deployment |
+| Dialyzer | Passed; 3 existing exclusions, no new exclusions | Existing repository analysis configuration |
+| Updated documentation links and whitespace | 36 relative links resolve; diff check passed | Static Markdown qualification |
 
 ### Not verified
 
-No publisher implementation, CI deployment, live customer database mutation,
-remote Quack publication, distributed cancellation/recovery, sustained load,
-consumer authorization, or end-to-end dashboard integration has been performed
-for this record. Future implementation must supply the planned evidence.
+No live customer database or production infrastructure has been changed.
+Remote Quack publication, sustained load, end-user authorization and end-to-end
+dashboard integration are outside this native publication qualification.
+A missing receipt after process interruption does not prove native work has
+stopped; recovery remains read-only until the previous outcome is established.
 
 ## Final review
 
-Implementation review is not yet applicable. Before marking the eventual PR
-ready, a different reviewer must compare its code, tests, canonical docs,
-actual complexity and deviations with the approved planning commit.
+Independent Astra review at xhigh reasoning effort approved the implementation
+on 2026-09-17 against baseline `2320d9db`. Its four initial findings were corrected
+and independently rechecked: timeout application cleanup, native conflict
+classification, typed policy validation, and non-secret runtime requirements.
+
+The reviewer independently passed 6 artifact tests, 3 public command tests and
+13 native publication tests, then reran the two catalog-isolation cases after
+the last edits. No actionable findings remain. The approved plan is unchanged;
+all deviations and the 1,829 production / 1,527 supporting additions were accepted.
+The reviewer found no simpler design preserving the lifecycle and validation
+guarantees. Implementation review is complete; remote CI must also qualify the
+exact pushed PR head before readiness for merge.
