@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature and SQL schema upgrade |
 | Primary issue | [#728](https://github.com/eirhop/favn/issues/728) |
-| Pull request | Pending |
+| Pull request | [#730](https://github.com/eirhop/favn/pull/730) |
 | Related work | [#724](https://github.com/eirhop/favn/pull/724), [#729](https://github.com/eirhop/favn/issues/729) |
 | Affected areas | Core SQL projection, SQL publication request, native DuckDB/DuckLake publisher, public guides and Favn.AI |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `bae61ec2e8fd69d30f043c65cebbfd9f250c41f3` |
 | Source baseline | `ba3fa194` |
 | Last updated | 2026-09-17 |
 
