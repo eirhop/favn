@@ -4,7 +4,9 @@ defmodule FavnDuckdbADBC.SemanticArtifactIntegrationTest do
 
   alias Favn.Connection.Resolved
   alias Favn.SQL.Adapter.DuckDB.ADBC
-  alias Favn.Semantic.{Artifact, Catalog}
+  alias Favn.Semantic.{Artifact, Catalog, Compiler}
+  alias Favn.SQL.Contract
+  alias Favn.SQL.Contract.Column
   alias FavnAuthoring.Semantic.Builder
   alias FavnDuckdbADBC.SemanticCompiler
 
@@ -77,6 +79,87 @@ defmodule FavnDuckdbADBC.SemanticArtifactIntegrationTest do
     :code.delete(Sales)
     refute Code.ensure_loaded?(Sales)
     assert_generated_dashboard(decoded)
+  end
+
+  test "snapshot composition rejects raw aggregates with quoted, comment and Unicode separators" do
+    assert {:ok, artifact} = compile_closing("closing(@gross) + 1")
+    adjusted = hd(artifact.models)["metrics"] |> Enum.find(&(&1["name"] == "adjusted"))
+    assert adjusted["time_aggregate"] == "last"
+
+    assert {:ok, _} =
+             compile_closing("closing(@gross) + CASE WHEN 'ø' = 'ø' THEN 1 ELSE 0 END /* ø */")
+
+    for function <- ["sum", ~s|"sum"|],
+        {separator, code} <- [
+          {" ", :mixed_composition},
+          {"/* gap */", :mixed_composition},
+          {"/* ø */", :mixed_composition},
+          {"\u00A0", :unsupported_sql_token},
+          {"\u200B", :unsupported_sql_token},
+          {"\u00A0/* gap */", :unsupported_sql_token}
+        ] do
+      extra = function <> separator <> "(1)"
+
+      # DuckDB accepts these formulas; Favn must enforce the stronger declared
+      # snapshot-composition contract before emitting an artifact.
+      assert {:ok, _} =
+               SemanticCompiler.validate(~s|SUM("gross") + | <> extra, [
+                 %{name: "gross", type: :decimal, nullable: false}
+               ])
+
+      assert {:error, [diagnostic]} = compile_closing("closing(@gross) + " <> extra)
+      assert diagnostic.code == code
+    end
+  end
+
+  defp compile_closing(sql) do
+    contract =
+      Contract.new!(
+        grain: [by: [:id, :sale_date]],
+        columns: [
+          Column.new!(:id, :integer, null: false),
+          Column.new!(:sale_date, :date, null: false),
+          Column.new!(:gross, :decimal, null: false)
+        ]
+      )
+
+    asset = %{
+      ref: {__MODULE__, :inventory},
+      module: __MODULE__,
+      type: :sql,
+      depends_on: [],
+      relation: %{connection: :analytics, schema: "mart", name: "inventory"},
+      contract: contract
+    }
+
+    leaf = %{
+      name: :closing,
+      args: [:gross],
+      sql: "SUM(@gross)",
+      file: __ENV__.file,
+      line: 1,
+      opts: [unit: :count, time_aggregate: :last, description: "Closing amount"]
+    }
+
+    adjusted = %{
+      leaf
+      | name: :adjusted,
+        sql: sql,
+        opts: [unit: :count, description: "Adjusted closing amount"]
+    }
+
+    model = %{
+      name: :inventory,
+      module: __MODULE__,
+      time: %{column: :sale_date, grain: :day, timezone: "Europe/Oslo"},
+      dimension: nil,
+      hierarchies: [],
+      metrics: [leaf, adjusted],
+      file: __ENV__.file,
+      line: 1
+    }
+
+    Compiler.compile([model], [asset], SemanticCompiler)
   end
 
   defp assert_generated_dashboard(artifact) do

@@ -464,6 +464,39 @@ defmodule Favn.SemanticTest do
     invalid = metric(:bad, [:gross], "SELECT SUM(@gross) FROM Favn.SemanticTest.AssetTrap")
     assert {:error, [_]} = Compiler.compile([model([invalid])], assets(), &validator/2)
     refute_receive :customer_asset_loaded
+
+    for sql <- [
+          "revenue((SELECT SUM(@gross) FROM Favn.SemanticTest.AssetTrap), @discount)",
+          "revenue(revenue((SELECT SUM(@gross) FROM Favn.SemanticTest.AssetTrap), @discount), @discount)"
+        ] do
+      invalid = metric(:bad, [:gross, :discount], sql)
+
+      assert {:error, [_]} =
+               Compiler.compile([model([invalid, metric()])], assets(), &validator/2)
+
+      refute_receive :customer_asset_loaded
+    end
+  end
+
+  test "SQL syntax is ASCII while Unicode strings and comments remain valid" do
+    for separator <- ["\u00A0", "\u200B", "\u2007", "\u202F"] do
+      for sql <- ["SUM#{separator}(@gross)", "revenue(@gross, @discount) + sum#{separator}(1)"] do
+        args = if String.starts_with?(sql, "SUM"), do: [:gross], else: [:gross, :discount]
+        invalid = metric(:bad, args, sql)
+
+        assert {:error, [%{code: :unsupported_sql_token}]} =
+                 Compiler.compile([model([invalid, metric()])], assets(), &validator/2)
+      end
+    end
+
+    valid =
+      metric(
+        :unicode,
+        [:gross],
+        "SUM(CASE WHEN 'ø\u00A0\u200B' = 'ø' THEN @gross ELSE 0 END) /* ø\u00A0\u200B */"
+      )
+
+    assert {:ok, _} = Compiler.compile([model([valid])], assets(), &validator/2)
   end
 
   test "relationship minimum grain inherits and compatibility validates referenced target keys" do

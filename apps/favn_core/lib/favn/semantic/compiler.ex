@@ -6,6 +6,10 @@ defmodule Favn.Semantic.Compiler do
   must implement `Favn.Semantic.Validator`; Core never opens a SQL connection or
   loads a customer module. Diagnostics retain authoring locations, while artifact
   identity depends only on the public contract and validated formula content.
+
+  SQL syntax, separators and identifiers are ASCII. Unicode is supported inside
+  string literals and comments, and in business descriptions. This closed lexical
+  boundary avoids dialect-specific invisible separators changing composition.
   """
 
   alias Favn.Semantic.{Artifact, Diagnostic, Snapshot}
@@ -281,6 +285,7 @@ defmodule Favn.Semantic.Compiler do
 
     calls = Enum.filter(template.nodes, &match?(%Call{}, &1))
     text = template.nodes |> Enum.filter(&match?(%Text{}, &1)) |> Enum.map_join(" ", & &1.sql)
+    raw_aggregate? = raw_aggregate?(text)
 
     require!(
       calls == [] or not Enum.any?(template.nodes, &match?(%Placeholder{}, &1)),
@@ -289,7 +294,7 @@ defmodule Favn.Semantic.Compiler do
     )
 
     require!(
-      calls == [] or not raw_aggregate?(text),
+      calls == [] or not raw_aggregate?,
       :mixed_composition,
       "Composed metrics cannot add raw aggregates around metric calls."
     )
@@ -795,6 +800,13 @@ defmodule Favn.Semantic.Compiler do
 
   defp expression_tokens(<<quote, rest::binary>>, tokens) when quote in [?\', ?\"] do
     {value, rest} = quoted_token(rest, quote, false, [])
+
+    require!(
+      quote != ?\" or ascii?(value),
+      :unsupported_sql_token,
+      "SQL syntax and identifiers must use ASCII; Unicode is supported in strings and comments."
+    )
+
     token = if quote == ?\", do: {:identifier, String.downcase(value)}, else: :literal
     expression_tokens(rest, [token | tokens])
   end
@@ -821,6 +833,13 @@ defmodule Favn.Semantic.Compiler do
 
   defp expression_tokens(<<char, rest::binary>>, tokens) when char in [9, 10, 11, 12, 13, 32],
     do: expression_tokens(rest, tokens)
+
+  defp expression_tokens(<<char, _rest::binary>>, _tokens) when char > 127,
+    do:
+      fail(
+        :unsupported_sql_token,
+        "SQL syntax and identifiers must use ASCII; Unicode is supported in strings and comments."
+      )
 
   defp expression_tokens(sql, tokens) do
     case Regex.run(~r/\A[A-Za-z_][A-Za-z_0-9$]*/, sql) do
@@ -853,6 +872,7 @@ defmodule Favn.Semantic.Compiler do
   defp skip_comment("*/" <> rest, depth), do: skip_comment(rest, depth - 1)
   defp skip_comment(<<_, rest::binary>>, depth), do: skip_comment(rest, depth)
   defp skip_comment("", _depth), do: ""
+  defp ascii?(binary), do: Enum.all?(:binary.bin_to_list(binary), &(&1 <= 127))
 
   defp quote_identifier(value), do: "\"" <> String.replace(value, "\"", "\"\"") <> "\""
   defp require!(true, _, _), do: :ok

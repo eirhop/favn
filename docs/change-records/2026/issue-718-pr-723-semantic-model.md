@@ -1048,15 +1048,15 @@ slice 6. This avoids counting a shared file more than once.
 
 | Slice | Production added/deleted | Supporting added/deleted |
 | --- | --- | --- |
-| 1: contracts, snapshots and closed codec | +771 / -0 | +691 / -0 |
-| 2: relationships and execution compatibility | +255 / -21 | +754 / -87 |
-| 3: authoring and formula composition | +1224 / -6 | +129 / -0 |
+| 1: contracts, snapshots and closed codec | +771 / -0 | +724 / -0 |
+| 2: relationships and execution compatibility | +256 / -21 | +754 / -87 |
+| 3: authoring and formula composition | +1244 / -6 | +129 / -0 |
 | 4: native validation and supervision | +536 / -0 | +444 / -1 |
 | 5: build and local read tasks | +510 / -0 | +214 / -0 |
-| 6: guides, discovery and consumer integration | +19 / -0 | +416 / -4 |
-| Total | +3315 / -27 | +2648 / -92 |
+| 6: guides, discovery and consumer integration | +19 / -0 | +501 / -4 |
+| Total | +3336 / -27 | +2766 / -92 |
 
-Production exceeds the estimated 2,760-line upper bound by 555 lines. Slice 1's
+Production exceeds the estimated 2,760-line upper bound by 576 lines. Slice 1's
 closed decoder validates nested identities, input ordering, dependency closure,
 relationship mappings and consumed contract snapshots without atom creation or
 customer code. Slice 3 includes bounded expansion, exact input origins,
@@ -1076,9 +1076,11 @@ replaced. No old semantic implementation or compatibility path is retained.
 Local verification uses an isolated checkout, disposable PostgreSQL database,
 and installed pinned DuckDB library. It does not touch a deployed platform.
 
-- The final focused Core semantic suite passed 23 tests, including rejection of
+- The final focused Core semantic suite passed 24 tests, including rejection of
   relation syntax without loading customer code. The native compiler, lifecycle,
-  artifact and relationship suites passed 15 tests against DuckDB 1.5.5.
+  artifact and relationship suites passed 16 tests on both DuckDB 1.5.2 and 1.5.5.
+  Including existing adapter tests, the exact native CI command passed 24 tests
+  on 1.5.5. Core plus the affected shared Template suite passed 38 tests.
 - The native consumer fixture compares macro and inline SQL plans on a physical
   table and proves unused columns are pruned. Opening/closing values are 30/32;
   multiple buckets, missing dates, duplicate grain, null/empty/zero-denominator
@@ -1107,7 +1109,8 @@ absent from the bootstrap-owned disposable test database; its full qualification
 belongs to the configured CI acceptance job. The asset-build acceptance passed.
 
 Compilation with warnings-as-errors, formatting, changed Markdown link checks,
-and the CI test-tier guard passed. CI is a separate final-head gate, recorded in
+the CI test-tier guard, static security checks and whole-umbrella Dialyzer passed.
+CI is a separate final-head gate, recorded in
 the pull request checks; no local test result substitutes for that gate. No live deployment, production performance,
 permanent foreign-key enforcement, or automatic AI correctness is claimed.
 
@@ -1129,3 +1132,14 @@ per scenario to avoid external fixture resets against runner-owned sessions.
 The combined native suite passed both seeds 718 and 32559 (15 tests each);
 public semantic tasks passed six tests and focused Authoring passed eight. The corrected source is ready
 for independent recheck; approval is recorded only after that recheck.
+
+
+The second Astra recheck accepted the original metadata, plugin, cleanup and
+publication corrections, but found Unicode separator bypasses and nested
+argument compilation that dropped the no-module-resolution option. The next
+correction closes SQL syntax to ASCII outside text literals/comments and forwards
+the existing resolution option through recursive argument compilation. Unicode
+business text remains supported. Native-backed composed-selector regressions and
+a nested customer-metadata trap verify those boundaries. This is a deliberate
+fail-closed grammar restriction, documented in the canonical guide, rather than
+an attempt to duplicate DuckDB's evolving Unicode lexer.

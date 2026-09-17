@@ -995,6 +995,7 @@ defmodule Favn.SQL.Template do
     template =
       compile!(source,
         known_definitions: state.known_definitions,
+        resolve_asset_refs: state.resolve_asset_refs,
         file: state.file,
         line: start_pos.line,
         column: start_pos.column,
