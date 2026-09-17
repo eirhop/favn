@@ -5,11 +5,11 @@
 | Status | Plan reviewed |
 | Type | Feature |
 | Primary issue | [#718](https://github.com/eirhop/favn/issues/718) |
-| Pull request | Pending |
+| Pull request | [#723](https://github.com/eirhop/favn/pull/723) (draft; planning only) |
 | Related work | [#720 catalog publication](https://github.com/eirhop/favn/issues/720), [#721 runtime state](https://github.com/eirhop/favn/issues/721), [#719 AI/MCP](https://github.com/eirhop/favn/issues/719) |
 | Affected areas | Public authoring, Core contracts/compiler, local build tooling, DuckDB integration, generated relationship checks |
 | Source baseline | `8d2b8e1f1e574dabb4670ef0e56f46e073f51f8d` on `origin/main` |
-| Approved plan commit | This reviewed planning commit; exact ID recorded in the immediate PR-number update. |
+| Approved plan commit | [`00fe02f8c56b35d808bd4ca3fc4419097a0529dd`](https://github.com/eirhop/favn/commit/00fe02f8c56b35d808bd4ca3fc4419097a0529dd) |
 | Last updated | 2026-09-17 |
 
 ## One-minute summary
@@ -978,7 +978,7 @@ There are no implementation deviations or actual complexity figures yet.
 | Relative Markdown links | All targets exist. | Repository paths only. |
 | Elixir examples | All four blocks parse with Elixir 1.20.2 through `Code.string_to_quoted/1`. | Syntax, not compilation of unimplemented APIs. |
 | Documented SQL macros and dashboard queries | DuckDB 1.5.4 in-memory fixture returns revenue 210, weighted price 42, and ragged closing stock 32. | Native SQL feasibility, not Favn integration or live data. |
-| Mermaid source | Both flowcharts pass a simple syntax/structure check. | GitHub browser rendering follows after the draft is pushed. |
+| Mermaid rendering | Both approved-baseline diagrams render as visible SVGs on GitHub: current flow 8 nodes/7 edges, proposed flow 13 nodes/13 edges. No diagram corrections required. | Browser verification of the pushed plan; final renamed record is checked again before handoff. |
 | Whitespace/diff | `git diff --cached --check` passes; only this record is staged. | Documentation-only change. |
 
 The full planned acceptance suite, supported-adapter runtime behavior, release
