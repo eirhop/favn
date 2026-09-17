@@ -5,11 +5,11 @@
 | Status | Plan reviewed |
 | Type | Contract simplification and regression repair plan |
 | Primary issue | None; the maintainer authorized this regression work without a separate issue. |
-| Pull request | Pending draft creation |
+| Pull request | [#726](https://github.com/eirhop/favn/pull/726) |
 | Related work | [#703](https://github.com/eirhop/favn/pull/703), [#711](https://github.com/eirhop/favn/pull/711), [#714](https://github.com/eirhop/favn/pull/714), [#716](https://github.com/eirhop/favn/pull/716), [#717](https://github.com/eirhop/favn/pull/717), [#722](https://github.com/eirhop/favn/pull/722), [#725](https://github.com/eirhop/favn/pull/725) |
 | Compared versions | Main `ba3fa194`; proposed repair #725 at `f8fde8af` |
 | Affected areas | Core runner contracts; Runner result construction; Orchestrator task preparation and completion; PostgreSQL history protection |
-| Approved plan commit | To be recorded after independent approval |
+| Approved plan commit | `d96cf97c73131a876424bb8a65c26f4d18853a4d` |
 | Last updated | 2026-09-17 |
 
 ## One-minute summary
