@@ -452,3 +452,42 @@ permission to fill gaps with unreviewed state or extra persistence layers.
 
 Only this decision record has been created. No implementation, database change,
 live replay, production-readiness claim or issue creation is part of this work.
+
+## Added regression: initial marker ownership (2026-09-17)
+
+The maintainer reported a separate failure on #726 and explicitly included its
+repair. `InitialTargetGenerationReconciler` supplies its marker mutation ID as a
+runner task's `operation_id`. That field identifies a retained rebuild/recovery
+parent, while `write_operation_id` already carries the independent marker write
+identity. No such parent exists for normal first writes, so PostgreSQL correctly
+rejects the asserted parent at enqueue. The same guard protects later mutations.
+
+The proposed localized correction removes the false parent reference from normal
+initialization, keeping its deterministic task, marker token, payload and
+`write_operation_id`. Do not weaken `OperationRetention` or exempt names with an
+`initial-marker:` prefix. Actual parent references must continue to be checked
+at enqueue and subsequent transitions. Verify lifecycle and retention behavior
+using real PostgreSQL and an end-to-end first-write registration sequence.
+The existing reconciler unit suite substitutes a task store, and existing storage
+reconciliation tests skip runner marker dispatch; neither composes this path.
+
+Recovery of existing successful writes needs special care: current public target
+recovery requires an already present marker. It cannot repair a marker task that
+was rejected before execution. Qualify reuse of the original persisted successful
+asset task and claim through initial registration, with original manifest and
+generation pins and no asset re-execution. Do not document ordinary target recovery
+as sufficient for an unmarked target. Unknown writes and conflicting bindings
+remain rejected; do not reset bindings or clear materialization evidence.
+
+Additional estimate: 1–60 production additions, 1–10 deletions; 150–350 test and
+operator documentation additions. This is a correction of an existing owner
+reference, not a new retention or generic repair framework. Independent review
+must check the exact recovery entry and proof boundaries before delivery.
+
+Astra xhigh independently approved the localized ownership correction. Review
+confirmed that unknown marker tasks and unresolved write locks remain protected;
+SQL initialization also verifies an existing exact marker instead of replacing it.
+For manual repair, require the matching committed materialization before marker
+dispatch (the reconciler's final store validation occurs after dispatch), and
+leave an already failed run terminal. This approval does not qualify the broader
+crash-recovery retention and historical-outcome design.
