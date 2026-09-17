@@ -11,7 +11,7 @@
 | Source baseline | `8d2b8e1f1e574dabb4670ef0e56f46e073f51f8d` on `origin/main` |
 | Approved plan commit | [`00fe02f8c56b35d808bd4ca3fc4419097a0529dd`](https://github.com/eirhop/favn/commit/00fe02f8c56b35d808bd4ca3fc4419097a0529dd) |
 | Current design | [Revision 1: author contract and semantics together](#revision-1-author-contract-and-semantics-together) |
-| Revision 1 commit | This reviewed revision; exact commit ID recorded in the next metadata update. |
+| Revision 1 commit | [`2f198dc7f25e980d0f2ba009053cecb66f741c6d`](https://github.com/eirhop/favn/commit/2f198dc7f25e980d0f2ba009053cecb66f741c6d) |
 | Last updated | 2026-09-17 |
 
 ## Revision 1: author contract and semantics together
@@ -495,7 +495,7 @@ There is still no implementation code in this PR.
 | Original baseline preserved | Original body below matches the pre-revision record byte for byte; no prior diagram, requirement, or budget was rewritten. |
 | Relative links and example syntax | All relative targets exist; all seven Elixir blocks, including three new Revision 1 blocks, parse with Elixir 1.20.2. This is syntax validation of proposed APIs. |
 | Consumer SQL | Revision query matches the original query and returns revenue 210 and average unit price 42 in the same DuckDB 1.5.4 in-memory fixture. |
-| Whitespace and diagrams | `git diff --check` and simple flowchart structure checks pass. GitHub rendering of the new diagram and preserved historical diagrams is checked after push. |
+| Whitespace and diagrams | `git diff --check` passes. GitHub browser verification of reviewed Revision 1 renders all three diagrams as visible SVGs: revised flow 11 nodes/13 edges, original current flow 8/7, original proposed flow 13/13. The historical baseline expands correctly. |
 
 Compiler/runtime isolation remains an implementation acceptance requirement, not
 an already proven capability. No feature implementation or live deployment was
