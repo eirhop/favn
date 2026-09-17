@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Feature |
 | Primary issue | [#720](https://github.com/eirhop/favn/issues/720) |
-| Pull request | Pending |
+| Pull request | [#724](https://github.com/eirhop/favn/pull/724) |
 | Related work | [#723](https://github.com/eirhop/favn/pull/723), [#721](https://github.com/eirhop/favn/issues/721), [#719](https://github.com/eirhop/favn/issues/719) |
 | Affected areas | Public CLI, Authoring build output, Core catalog contracts, SQL runtime, DuckDB ADBC plugin, consumer documentation |
-| Approved plan commit | This reviewed snapshot; commit recorded in the immediate PR-number update |
+| Approved plan commit | [`2320d9db788cdc88997066714fe006099c6e7f30`](https://github.com/eirhop/favn/commit/2320d9db788cdc88997066714fe006099c6e7f30) |
 | Source baseline | `ce2729e7` on `origin/main` |
 | Last updated | 2026-09-17 |
 
@@ -501,6 +501,8 @@ requires link checks, Markdown/Mermaid rendering, and `git diff --check`.
 ## Implementation outcome
 
 No implementation has started. This change contains the planning record only.
+The `Implementing` status follows the record lifecycle after draft PR creation;
+this task stops at the reviewed plan.
 The production/supporting implementation budgets above are estimates, not work
 completed. Canonical product documentation will change with implementation.
 
@@ -524,8 +526,9 @@ and be recorded here with their reasons and independent review.
 | --- | --- | --- |
 | Source/issue inspection | Completed against `ce2729e7` and issue #720 | Establishes current capabilities and missing publication work; no implementation proof |
 | Earlier synthetic native exploration | Passed the bounded cases described above | Disposable native databases only; not the new publisher or a remote deployment |
-| Record link checks | All 13 relative source links resolve | Documentation qualification only; GitHub rendering follows draft creation |
-| Independent plan review | Approved after corrections and recheck, 2026-09-17 | Plan review only; no implementation acceptance |
+| Record links and whitespace | All 13 relative source links resolve; staged diff check passed | Documentation qualification only |
+| GitHub Markdown/Mermaid rendering | Both diagrams render as flowchart SVGs in the initial pushed baseline after draft creation; no diagram corrections | Verified rendered labels and 8 current/13 proposed nodes; no implementation proof |
+| Independent plan review | Approved after corrections and recheck, 2026-09-17; reviewer confirmed PR-number metadata preserves the plan | Plan review only; no implementation acceptance |
 
 ### Not verified
 
