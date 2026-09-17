@@ -1,0 +1,556 @@
+# Change Record: Publish runtime metadata with each SQL asset
+
+Reader: contributors reviewing and implementing the first runtime SQL catalog.
+Documentation type: implementation plan and review evidence.
+
+| Field | Value |
+| --- | --- |
+| Status | Plan reviewed |
+| Type | Feature |
+| Primary issue | [#721](https://github.com/eirhop/favn/issues/721) |
+| Pull request | Pending |
+| Related work | [#723](https://github.com/eirhop/favn/pull/723), [#724](https://github.com/eirhop/favn/pull/724), [#720](https://github.com/eirhop/favn/issues/720) |
+| Affected areas | Core contracts, Authoring manifest configuration, Orchestrator runner-work construction, PostgreSQL activation/write-start guards, Runner SQL execution, SQL runtime, DuckDB adapter, public catalog guide |
+| Approved plan commit | Recorded in the immediate PR-number update after this baseline commit |
+| Last updated | 2026-09-17 |
+
+## One-minute summary
+
+SQL consumers can discover Favn's definitions and metric macros, but cannot yet
+read evidence about the data that was actually published. Each opted-in SQL
+asset will write its publication metadata in the same transaction as its data,
+using the connection and execution already doing that work. Consumers will
+compare a stored `fresh_until` deadline with the current time and inspect exact
+successful windows; no scheduled freshness updater, summary run, or background
+exporter is introduced. This is a bounded extension to materialization, with
+cross-app work needed to preserve pinned identity, rollback and recovery.
+
+## Impact
+
+A table published at 02:00 with a six-hour age policy carries an 08:00 deadline.
+At 09:00 a SQL query reports that its age limit has expired without Favn running
+anything at 08:00. If a later refresh fails validation, the previous publication,
+its successful checks, and its deadline remain unchanged. A partial backfill
+can expose January and March successes without claiming February was covered.
+
+The main cost is bounded extra SQL inside an existing data transaction. When
+runtime metadata is enabled, a metadata-write failure rolls back the data write
+too: consumers must not receive new data with old metadata.
+
+## Problem analysis
+
+The issue originally proposed both transactional receipts and separately
+scheduled state projections. The user explicitly chose a simpler first version:
+update metadata per asset; derive time-based freshness when queried; introduce
+no separate runs for metadata. This approved direction supersedes the issue's
+illustrative `catalog_sync`, polling interval, stored stale flag, and run-summary
+projection proposal. This first slice does not close every acceptance item in
+#721; run/failed-attempt exports, automatic retention, remote serving, upstream
+freshness evaluation and full semantic readiness remain follow-ups.
+
+### Assumptions
+
+- Start with opted-in managed SQL tables on the native DuckDB and DuckLake paths
+  already qualified by #724. Remote Quack publication requires separate native
+  transport qualification. A server-owned file is never opened as a second writer.
+- Favn controls writes to opted-in relations. External mutation invalidates the
+  guarantee; ordinary existing drift checks remain in force.
+- Metadata describes a committed publication under its pinned policy. It does
+  not claim an independently published CI catalog is the active execution
+  manifest, or that a later policy deployment retroactively changed that receipt.
+- PostgreSQL remains authoritative for control-plane lifecycle. A target receipt
+  proves its target write committed, not that the entire run succeeded.
+- This task creates and reviews the plan only. Implementation has not started.
+
+### Evidence
+
+Paths below are relative to this record and refer to the inspected base
+`ba3fa194580f6b159535b4a15c143a93c039c2b6`.
+
+| Evidence | What it proves | What it does not prove |
+| --- | --- | --- |
+| [Catalog guide](../../../apps/favn/guides/sql-catalog-publication.md) | CI installs independent definitions; compatibility remains unknown | Runtime data readiness or remote transport support |
+| [Checked materialization](../../../apps/favn_runner/lib/favn/sql_asset/runtime.ex) | Checks and contracted table writes share a transaction; unchecked and group-replacement paths also exist | Existing runtime metadata writes |
+| [Freshness decider](../../../apps/favn_orchestrator/lib/favn_orchestrator/freshness/decider.ex), [state writer](../../../apps/favn_orchestrator/lib/favn_orchestrator/freshness/state_writer.ex) | Calendar/window keys, max-age and upstream versions already have owners | A pre-commit SQL receipt or a universal expiry timestamp |
+| [Expected windows](../../../apps/favn_core/lib/favn/coverage/expected.ex) | Coverage is generation- and calendar-aware; logical windows are explicit | Physical row completeness from an execution success alone |
+| [Runner work](../../../apps/favn_core/lib/favn/contracts/runner_work.ex), [task codec](../../../apps/favn_core/lib/favn/contracts/runner_task/persistence_schema.ex) | Durable work is explicit, bounded and closed-world | New fields becoming valid without codec changes |
+| [Generation design](../../architecture/target-generations-and-rebuilds.md) | Candidate writes and readable-generation activation are separate | Candidate metadata being safe to expose as current |
+| [Catalog request](../../../apps/favn_sql_runtime/lib/favn/sql/catalog/request.ex) | Current configuration accepts exactly connection, catalog and schema | The proposed runtime options already being supported |
+
+The development Tidewave endpoint was unavailable during investigation. Evidence
+is source and existing tests, not a live deployment experiment.
+
+## Current behavior
+
+CI publishes public definitions independently. SQL execution publishes tables
+and reports results to the orchestrator, whose PostgreSQL state drives operator
+freshness and coverage. A data-platform SQL reader cannot join those results to
+the table it reads.
+
+```mermaid
+flowchart LR
+    CI[CI publication] --> Definitions[Definitions and macros]
+    Run[Existing asset execution] --> Write[Write and validate data]
+    Write -->|Commit| Data[Readable table]
+    Write -->|Result| State[Orchestrator state]
+    Write -->|Rollback| Previous[Previous table]
+    Reader[SQL consumer] --> Definitions
+    Reader --> Data
+```
+
+## Approved plan
+
+This section is the independently approved baseline. Preserve it and record
+material implementation changes under deviations.
+
+```mermaid
+flowchart LR
+    Run[Existing asset execution] --> Tx[Existing target transaction]
+    Tx --> Validate[Write data and run checks]
+    Validate --> Metadata[Write publication and affected state]
+    Metadata -->|Commit| Together[Data and metadata visible together]
+    Validate -->|Failure| Rollback[Keep previous data and metadata]
+    Metadata -->|Failure| Rollback
+    Metadata -->|Commit uncertain| Unknown[Preserve unknown outcome and receipt evidence]
+    Together --> Query[SQL reads facts and compares time]
+    Clock[Current time] --> Query
+```
+
+### Configuration and scope
+
+Extend the existing named `catalog_targets` shape; do not add another target
+registry. The proposed public shape is:
+
+```elixir
+config :favn,
+  catalog_targets: [
+    analytics: [
+      connection: :warehouse,
+      catalog: "mart",
+      schema: "meta",
+      runtime: [
+        schema: "meta_runtime",
+        assets: ["Example.Mart.Sales.daily"]
+      ]
+    ]
+  ]
+```
+
+This is future syntax. A never-enabled target with omitted `runtime` is untracked;
+removal after enabling is rejected as described below. Use an explicit
+asset allowlist initially; no selector language, automatic all-catalog export,
+custom schedules or user-defined finalizer assets. The destination must match
+the asset's existing symbolic connection and write catalog. Metadata lives in a
+separate schema in that catalog; no cross-catalog transaction or second connection.
+Reject duplicate destinations, reserved-name collisions, unsupported assets and
+multiple runtime writers claiming the same asset before execution.
+
+Normalize the non-secret runtime policy into the immutable execution manifest
+and pin it through the existing run/work flow. Credentials stay runner-local.
+Do not reread application configuration during each write or pass a whole
+manifest in a task. Standalone CI publication accepts the extended configuration
+but uses only its existing definition-publication fields; enabling runtime
+metadata neither starts runtime services nor changes semantic artifact bytes.
+
+Include table materialization and the actually supported incremental strategies:
+append, delete/insert and group replacement. Although authoring accepts the names
+`replace` and `merge`, the ordinary runtime planner rejects them; this change
+must not implement those strategies. Views, Elixir assets, arbitrary SQLClient
+writes and unsupported adapters are outside the first contract. A mixed catalog
+can enable only its supported table assets. Windowed coverage support is narrower
+than publication support, as specified in the matrix below.
+
+### Small SQL contract
+
+Use four physical tables plus query views, rather than separate continuously
+maintained freshness, quality, coverage-gap, run and attempt projections.
+All identities include workspace and logical target; generation and exact
+window/freshness scope are included where applicable. Names below are the
+planned public SQL surface, with a separately versioned runtime schema marker.
+
+| Object | Purpose and essential content |
+| --- | --- |
+| `publication` | Immutable receipt keyed by publication ID: run/step/attempt, execution manifest/hash, runner release, target generation, actual relation, strategy, publication timestamp, contract reference, policy/key, `fresh_until`, deadline semantics, optional affected counts, bounded check JSON, optional existing input-provenance JSON, and exact mutation scope |
+| `contract_snapshot` | Immutable, content-addressed public contract records using the existing semantic snapshot representation; store once, reference from receipts |
+| `asset_state` | One current receipt per generation and freshness scope, plus the readable-generation selection needed by consumer views; updates share the publication/activation transaction |
+| `window_state` | Latest successful receipt for each exact logical window in that generation; window kind, timezone and half-open UTC bounds remain explicit |
+| `check_result`, `freshness`, `coverage` views | Expand bounded receipt fields and expose current generation-scoped facts; compute `time_freshness` when queried; no stored time-driven stale boolean |
+
+The schema marker is a small version record, not another publication stream.
+Store checks and optional existing input provenance as bounded canonical JSON as in #724's catalog;
+do not copy execution packages, SQL text, raw results or the full run into rows.
+The contract reference is immutable public content, not a pointer to whichever
+CI version happens to be selected. Distinguish execution manifest `mv_`, public
+catalog `mc_`, semantic `sm_` and contract snapshot identities.
+
+No persisted semantic compatibility verdict is introduced. Existing pure
+compatibility comparison can consume these contract records in a later change.
+The current CI publisher continues reporting `compatibility: "unknown"`.
+
+### Transaction and result flow
+
+1. The orchestrator attaches a compact typed publication context to the existing
+   SQL work: workspace/target, publication operation identity, effective policy
+   and freshness key, and exact logical windows. Existing input-provenance fields
+   may be included unchanged when available; do not add upstream join identities
+   or a new dependency evaluator. Persist this with the ordinary runner task.
+2. The runner opens the normal asset session and validates the opt-in target and
+   adapter capability before data mutation. Reuse the existing attempt deadline,
+   catalog admission and owner-exclusive session.
+3. Run the existing data mutation and checks. Opted-in unchecked assets also use
+   the transaction path; instrumentation cannot depend on a user having checks.
+4. For an actual write, store the contract if absent, insert the immutable
+   receipt and update affected current/window records before commit. Batch the
+   metadata statements. Receipt failure is materialization failure.
+5. Return the committed receipt identity and bounded publication fields through
+   the existing runner result. Persist them through normal settlement. The
+   runner never writes the orchestrator's PostgreSQL database directly.
+
+Allocate operation identity before dispatch from the existing workspace,
+run/step/attempt identity, with canonical request integrity. The metadata writer
+rejects an already recorded operation before invoking its data mutation, using a
+bounded `already_published` diagnostic; the same identity with different input is
+an integrity error. A uniqueness/conditional-write conflict rolls back the whole
+transaction, including a racing data write. Do not synthesize a successful
+`RunnerResult` from a receipt. Existing durable task-result replay remains the
+only automatic replay of a successful execution result. A new authorized attempt
+is distinct. Do not use timestamps or a control-plane outbox cursor as a target
+publication identity or ordering authority.
+
+Ordinary asset tasks retain `unknown_do_not_retry`. After a lost result or
+uncertain commit, the receipt is passive target evidence available through SQL;
+it does not cause automatic task retry, reconstructed control-plane settlement,
+or a new reconciliation task. Receipt-driven recovery is explicitly deferred.
+
+Current-state changes must follow actual target serialization. Concurrent
+transactions use a target-side conditional update of the same scoped state row;
+bootstrap conflicts and lost comparisons abort the entire transaction. Cover
+the actual DuckDB and DuckLake behavior, including disjoint window writes. Do
+not add a global lock, a distributed coordinator, or a blind write retry.
+
+Successful skip/no-op paths do not advance receipts, expiry or coverage. An empty
+full replacement or a non-empty group scope that deletes all matching data is
+an actual publication even when inserted-row count is zero. Failed check details
+remain in the existing operator surfaces; committed check rows must not be
+fabricated for a rolled-back attempt. Zero evaluated checks is `not_checked`,
+distinct from `passed`, and condition-skipped/not-run outcomes remain visible.
+
+### Time-based freshness
+
+Derive expiry from existing policy and calendar helpers. Factor only the small
+shared policy calculation needed by both paths; do not build a second engine.
+
+| Existing policy | Export and query behavior |
+| --- | --- |
+| Max age | `fresh_until = publication_at + duration`; preserve the decider's inclusive exact-boundary comparison |
+| Calendar day | Deadline is the end of the period named by the pinned freshness key, exclusive, using its timezone and DST rules |
+| Window success with refresh cadence | Per-window deadline is the end of its pinned refresh period, exclusive |
+| Window success without cadence | Successful exact-window evidence has no time expiry; export `expiry_kind = 'none'` |
+| No policy | Export `expiry_kind = 'unknown'`; NULL never silently means fresh |
+| Always run | Export the explicit `always` policy; do not claim a time-valid reuse period |
+
+`expiry_kind` and the deadline boundary distinguish no deadline, an unknown
+deadline and an actual instant. Use UTC instants for storage and retain the
+policy timezone. Long work crossing midnight must not acquire a new calendar
+key simply because the runner finished later.
+
+Capture `publication_at` once late in the successful transaction body. It becomes
+visible only on commit; it is not the database's exact commit wall-clock timestamp.
+The SQL age deadline uses this publication instant. The orchestrator continues
+using its existing settlement-time basis; this feature does not change scheduling
+or freshness settlement. A slow commit or delayed settlement can therefore make
+SQL time expiry earlier than the operator's max-age result. Document and test that
+conservative difference rather than adding clock synchronization to the scope.
+
+Query views expose time freshness under the receipt's pinned policy. Selecting
+new definitions or deploying a new policy does not relabel old data. This is
+deliberately not a promise to mirror every future orchestrator planning decision.
+
+### Freshness boundary and coverage
+
+`time_freshness` answers whether the publication satisfies its stored time policy.
+It does not claim to be Favn's complete planning freshness decision. Direct and
+transitive upstream-version comparisons are deferred. Optional existing consumed
+input provenance may be exported as facts, with its original shape and missing
+values intact; it is not a physical database snapshot claim or a new SQL join
+contract. No upstream state is replicated into this catalog.
+
+`window_state` records successful logical window publications, including each
+logical window of a coalesced execution. It does not infer windows from run
+counts, timestamps, row counts or a single maximum end date. Coverage denotes
+Favn's successful execution evidence, not per-row or business-source completeness.
+
+| Actual mutation | Publication metadata | Current window evidence |
+| --- | --- | --- |
+| Full table replacement, including bootstrap/full-refresh writes | Record the actual full-relation mutation, not merely the requested incremental strategy | Clear old window evidence and add only the exact logical windows carried by this replacement; no-window output has no window coverage claim |
+| Append | Record the actual committed append | Preserve prior windows and update the exact logical windows in the work context; successful execution does not prove uniqueness or row completeness |
+| Delete/insert | Record exact runtime window bounds and configured window column | Accept canonical windows at one declared kind/timezone per generation; a coalesced scope must be exactly their union. Replace those window records and retain disjoint windows. Reject partial overlaps or scope mismatch before mutation |
+| Group replacement | Record group-replacement provenance/checks, including real delete-only and no-op semantics | Admit only non-windowed assets with no coverage declaration initially. Reject an opted-in window/coverage configuration before mutation; do not infer windows from replacement keys |
+| Ordinary incremental replace or merge | Unsupported by the current planner | Remain unsupported; no execution feature added |
+
+Pin the coverage kind/timezone with the generation's first coverage evidence.
+Changing that scope requires a new generation; do not silently mix incompatible
+window keys. Validate target state and the actual write plan before mutation,
+including full-refresh/bootstrap overrides of an incremental declaration.
+
+Consumers compare recorded windows with an explicit requested expected-window
+set. The first version includes documented SQL for supported calendar ranges
+with exact timezone and exclusive-end behavior, tested against Favn's existing
+expected-window evaluator. No background process inserts missing windows as
+time passes. Export the pinned coverage declaration for interpretation; do not
+label an old computed gap list as current. A newly expected window absent from
+the successful set is missing when the consumer evaluates that range.
+
+### Generation lifecycle and adoption
+
+Candidate writes store candidate-scoped receipts and window state. They never
+replace the readable generation's metadata. Extend the existing generation
+activation transaction to switch the metadata selection alongside the table
+swap; reconcile the same marker after an uncertain activation. Candidate discard
+must preserve active evidence. There is no extra activation task or new generation
+lifecycle. An ordinary initial materialization's receipt is already evidence of
+the physical commit even while existing control-plane initialization is pending.
+
+Enable metadata for an existing table only through a full replacement or a
+verified existing Favn generation binding. Incremental adoption does not claim
+history before the first exported write. Mark its coverage baseline as unknown
+until evidence exists; do not backfill receipts from today's table shape.
+The first version has no disable/invalidation operation. During manifest
+activation, the orchestrator compares the previous pinned runtime policy with the
+proposed policy under its existing serialized deployment activation authority.
+Reject removal of a previously enabled target/asset or changes to its runtime
+destination with `runtime_catalog_policy_removal_unsupported` or
+`runtime_catalog_destination_change_unsupported`. Reject before activating the
+new manifest or dispatching data-plane work. The previous deployment remains
+active. Compare the union of old and new targets so an omitted asset or entire
+runtime configuration cannot bypass the guard.
+
+Already accepted tracked work continues with its pinned policy and the same
+destination. Initial enablement must also exclude older untracked work. Implement
+this through the existing orchestrator persistence boundary and PostgreSQL
+transactions, not just a process-local pre-dispatch check:
+
+- In `Registry.Store.deploy_manifest!`, acquire the existing
+  `WriteOwnership.lock_target!/2` advisories for affected targets in sorted order,
+  before runtime-state or target-owner/task row locks. Recheck the expected active
+  deployment and the old/new policy union after locking; reject a stale plan.
+  Use the existing `guard_target!/3` effect check before committing enablement.
+  An untracked in-flight effect rejects with
+  `runtime_catalog_untracked_write_in_flight`; an unresolved native outcome
+  retains the existing unknown-write conflict and is never assumed safe because
+  a lease expired.
+- At `RunnerTasks.Store.transition(:running)`, under the same target advisory and
+  before `WriteOwnership.start!` marks the effect in flight, check the active
+  tracking policy against the pinned task policy. Reject an untracked old-manifest
+  write with `runtime_catalog_tracking_required`. This covers queued, assigned
+  and preparing tasks; an earlier pre-dispatch check is only an optimization.
+- Whichever transaction acquires the target lock first determines the safe result:
+  a started untracked write blocks enablement, or committed enablement prevents
+  that untracked task from starting. Do not cancel or replay the old mutation.
+
+Keep validation and new fields behind existing orchestrator-owned deployment and
+runner-task persistence contracts. PostgreSQL implements their atomic checks;
+no new table or worker is needed. Existing enabled entries remain monotonic for
+this slice; additions are allowed. A deliberate disable, destination move or
+rollback to an older untracked manifest requires a separate reviewed workflow
+and is rejected here, rather than invented as an unspecified target operation.
+
+### Non-goals
+
+- No new runs, task kinds, periodic jobs, polling loop, finalizer asset or outbox
+  exporter for publication, freshness or coverage.
+- No run history, failed-attempt/check export, upstream freshness evaluator,
+  continuous health badge or alerting.
+- No receipt-driven control-plane recovery, successful-result reconstruction or
+  automatic retry of an uncertain mutation.
+- No runtime metadata disable/destination-move workflow; activation rejects it.
+- No automatic retention, history reconstruction, cross-catalog atomicity or
+  coherent multi-table release. Retained receipt history is initially unpruned.
+- No new query service, UI feature, authorization system or infrastructure.
+- No Quack serving-copy provenance, transport qualification or automatic semantic
+  readiness. Those need their own focused plans; source and serving times differ.
+- No changes to default materialization behavior when runtime metadata is disabled.
+
+### Implementation slices and complexity budget
+
+Ranges exclude this record, generated files, locks and formatting-only edits.
+Supporting lines include focused tests, fixtures, examples and canonical docs.
+
+| Slice | Outcome and owner | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | Core/Authoring: validated opt-in policy, compact publication context, wire codec and shared expiry calculation | 180-280 | 10-40 | 170-270 | 10-30 |
+| 2 | Orchestrator/Runner: context propagation, activation guards, admitted materialization paths and receipt result | 140-230 | 10-40 | 180-290 | 10-30 |
+| 3 | PostgreSQL: atomic activation and durable write-start policy guards using existing target locks | 60-100 | 0-20 | 100-170 | 0-10 |
+| 4 | SQL runtime/DuckDB: schema, transactional receipts/state, duplicate rejection, generation activation and read views | 300-480 | 10-40 | 280-430 | 0-20 |
+| 5 | Public docs/examples and native acceptance for consumption, coverage and failure cases | 0-40 | 0-10 | 160-260 | 10-30 |
+| Total | Focused materialization extension; no new service | 680-1130 | 30-150 | 890-1420 | 30-120 |
+
+The SQL slice includes the real cost of atomicity and generation safety. Prefer
+existing session, catalog-DDL, result and generation primitives. Do not introduce
+generic event/export/plugin frameworks to meet this budget. Under the record
+process, explain any category exceeding its upper estimate by more than 25% or
+100 lines, whichever is smaller, and materially fewer deletions. Preserve these
+estimates and record actual additions/deletions before final review.
+
+### Implementation map
+
+| Area | Responsibility |
+| --- | --- |
+| `favn_core` | Shared typed policy/context/receipt and expiry data; closed codecs and appropriate contract version changes |
+| `favn_authoring` | Normalize public opt-in configuration into manifest data; resolve allowlisted assets |
+| `favn_orchestrator` | Pin work context from existing authority, retain generation/admission ownership, persist receipt results |
+| `favn_storage_postgres` | Extend deployment and durable task-start transactions with shared target-lock policy checks; no direct SQL from other apps |
+| `favn_runner` | Integrate receipt writes into ordinary checked, unchecked and group-replacement transactions |
+| `favn_sql_runtime` | Narrow optional adapter contract, owner-exclusive transaction operations, generation hooks |
+| `favn_duckdb_adbc` | Qualified native DDL/DML, views, conflict handling and read-only receipt inspection |
+| `favn` | Document configuration and consumer SQL in the catalog guide; update public routing/docs/types as needed |
+
+## Operational design
+
+### Failures and recovery
+
+| Situation | Required outcome |
+| --- | --- |
+| Unsupported capability, bad config, oversized context or schema mismatch | Reject before data mutation with a bounded reason |
+| Check failure or metadata SQL error | Roll back data and all new metadata; preserve prior current state |
+| Failed/cancelled sibling later in the run | Keep already committed assets and their receipts; do not rewrite their outcome |
+| Commit acknowledgement lost, timeout or native cancellation uncertain | Preserve unknown outcome; never resubmit a mutation automatically |
+| Receipt found through a read-only SQL diagnostic | Matching identity proves the target commit only; preserve unknown run/task state until existing operator recovery resolves it. No reconstructed result or automatic settlement |
+| Receipt absent while an operation might still execute | Absence is not proof of rollback; retain unknown and require existing recovery fencing |
+| Orchestrator crashes after target commit | Target metadata remains usable; current task recovery preserves unknown when the original result was not durably recorded. No receipt-driven replay |
+| Conflicting publication/bootstrap/current-state update | Entire transaction aborts; preserve explicit conflict and existing retry classification |
+| Clock advances or no runs occur | Query-time time expiry changes; no job, task, write or runner wakeup |
+
+Bound metadata batches to the existing catalog writer's 500 rows/1 MiB shape,
+with a maximum 64 KiB publication context (excluding the separately referenced
+contract) and existing plan limits on logical windows/checks. Do not truncate
+identities, windows or check outcomes. Timeouts use the current attempt deadline;
+no new timeout/retry configuration matrix. Schema verification precedes each
+opted-in mutation, with safe invocation/session caching only if identity is exact.
+
+### Logs and diagnostics
+
+Use existing materialization telemetry/result surfaces. Add only bounded
+publication ID, target, generation, metadata-row count/duration and reason code.
+Emit once per existing attempt; use existing generation diagnostics for
+activation. No per-window logs,
+new polling logs, SQL parameters, exception dumps, customer values or secrets.
+Check metrics are public only through an explicit scalar allowlist; omit free
+text and string/date measured values by default. Size bounds alone are not
+redaction. Existing operator diagnostics remain unchanged.
+
+### Deployment, migration, and compatibility
+
+This is opt-in and pre-v1: update affected manifest/runner wire versions and
+closed persistence codecs together. Do not add a legacy compatibility layer.
+Use the existing deployment compatibility gates and document supported rollout
+order. No new PostgreSQL tables, scheduler state or background worker are planned.
+If evidence proves a PostgreSQL migration is necessary, record and re-review that
+scope change before implementation.
+
+The first enabled transaction installs/verifies its runtime SQL schema under
+the adapter's qualified transactional DDL behavior. Concurrent bootstrap must
+not partially install tables or hide collisions. Existing CI definition tables
+and selections remain untouched. Runtime metadata enabling is an execution-policy change, not a formula-only
+semantic publication. Unknown/downgraded runtime schema versions fail closed.
+Disabling, destination changes and rollback to an untracked manifest are rejected
+by the explicit activation guards above; retained history alone does not permit
+an untracked writer. Document this limitation before users opt in.
+
+## Verification plan
+
+| Acceptance criterion | Planned evidence | Owning layer |
+| --- | --- | --- |
+| No extra runs, dispatches or timed metadata activity | Compare run/task counts for enabled versus disabled normal execution; advance test clock past expiry and assert reads change with zero dispatched work | Orchestrator/Runner |
+| Data and metadata commit or roll back together | Native table and incremental strategies, before/after checks, metadata failure injection, no checks, empty replacement and group delete-only/no-op | Runner/DuckDB/DuckLake |
+| Stable operation identity and honest unknown outcomes | Duplicate operation rejected before mutation, integrity mismatch, concurrent duplicate rollback, lost acknowledgement, late commit, killed worker and restart; target receipt can exist while task remains unknown; no reconstructed settlement or automatic retry | Core/Runner/native |
+| Freshness matches the intended policy | Max-age equality boundary, UTC/DST daily bounds, cadence windows, midnight crossing, no policy, always, no expiry, skipped/failed write, slow commit and documented difference from unchanged settlement time | Core/Orchestrator/SQL view |
+| Time freshness stays within its scope | Upstream changes do not create a claimed complete-freshness verdict; optional input provenance preserves existing fields and unknowns; no extra dispatch or query-time dependency engine | Core/SQL view |
+| Coverage does not hide gaps or invent data | January/March success, empty success, partial backfill, coalesced logical windows, timezone boundaries, full replacement invalidation, strategy matrix, partial-overlap and group-window opt-in rejection | Core/Runner/native |
+| Generation changes preserve current evidence | Candidate success remains hidden; activation swap and metadata selection atomic; activation rollback/unknown/reconciliation; initial/adopted target | Generation/native |
+| Policy removal cannot leave untracked writes | Omitted runtime config, asset/target removal, destination rename, rollback to old manifest, concurrent activation, old tracked work, in-flight untracked/unknown writes and queued old-manifest writes; guard fails before activation/dispatch | Orchestrator/PostgreSQL |
+| Enablement and write start serialize | Deterministic barrier test for both lock orderings; already assigned/preparing task; lease expired with unknown native outcome; no effect starts after rejected tracking policy | PostgreSQL integration |
+| Concurrency never regresses current state | Simultaneous bootstrap, same target/scope and disjoint windows, separate workspaces/catalogs; verified native conflict behavior | DuckDB/DuckLake |
+| Public SQL is independently usable | Read-only consumer reads provenance, checks, age expiry and requested-window gaps; no orchestrator connection; CI manifest/semantic selections unchanged | Native acceptance |
+| Bounded and safe payloads | Limit boundaries, canonical JSON, no raw check text/secrets, and fresh-BEAM populated task/result codec round trips | Core/Runner |
+
+Start with the narrow owning-layer checks using `mise exec -- mix ...` and the
+repository's app-scoped `cmd mix test` pattern. The admitted mutation matrix,
+rollback, uncertain commit, initial publication and generation activation must
+pass on **both native DuckDB and DuckLake**. Existing #724 catalog tests prove
+definition publication only; they are fixtures to reuse, not qualification of
+this new data-plus-metadata contract. During implementation run format,
+warnings-as-errors compile, affected fast/native/acceptance tiers and the tier
+guard; then qualify the final implementation head in CI. This documentation-only
+planning task needs link review, Mermaid render review and `git diff --check`,
+not an umbrella test run.
+
+## Risks and open questions
+
+| Risk | Decision or limit |
+| --- | --- |
+| A small feature becomes an export subsystem | Four data tables, bounded views, existing lifecycle only; no job or service |
+| Metadata writes add catalog contention | Batch within the owned transaction, measure added statements/duration; do not raise write concurrency |
+| Receipt time differs from completion time | SQL age uses a pre-commit publication instant and can expire earlier after slow commit; orchestration clocks/decisions stay unchanged |
+| Complete freshness is inferred from age alone | Public column is `time_freshness`; complete upstream-aware freshness is deferred |
+| Coverage evidence is mistaken for complete source rows | Exact logical execution windows and mutation invalidation; no per-row completeness claim |
+| Old history grows without cleanup | Initial retention is explicit retain-forever; automatic reference-aware pruning remains a separate issue slice |
+| A serving copy is mistaken for its source | Remote copy binding and source-snapshot evidence deferred; this receipt describes its actual written relation |
+
+There are no unresolved product choices required to begin the first slice.
+Adapter behavior, performance and end-to-end recovery are qualification work,
+not assumptions of success. If any invariant cannot be met inside the stated
+budget and existing lifecycle, narrow the supported surface and seek plan
+re-review rather than adding a scheduler or exporter.
+
+## Plan review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent Astra (`gpt-6-astra`), xhigh reasoning; agent `astra_plan_review` |
+| Reviewed against | User-approved scope, #721, merged #723/#724, current code/tests, record process and this plan |
+| Findings | Initial Astra xhigh review: three P1 corrections (recovery, actual strategy/coverage scope, disable guard) and two simplifications (upstream evaluation, shared clocks) |
+| Findings addressed and rechecked | All initial findings and simplifications accepted on recheck; final PostgreSQL activation/write-start correction rechecked and accepted on 2026-09-17 |
+| Verdict | Plan approved. No remaining blocking findings. Approval covers the planning baseline only; native behavior and implementation remain unverified |
+
+## Implementation outcome
+
+Implementation has not started. This change contains the planning record only;
+no runtime feature, migration or deployment is represented as completed.
+
+## Deviations from the approved plan
+
+No implementation deviations exist. Initial plan review corrections are part
+of the approved baseline.
+
+## Decision log
+
+| Date | Decision | Reason | Review |
+| --- | --- | --- | --- |
+| 2026-09-17 | Per-asset transactional publication and query-time expiry | User explicitly selected this simpler approach and rejected extra freshness runs | Included in initial independent review |
+| 2026-09-17 | Defer run exports, automatic retention and remote serving | Keep the first implementation bounded; no claim to finish all of #721 | Included in initial independent review |
+| 2026-09-17 | Preserve unknown outcomes, reject unsupported strategies/group-window coverage and policy removal, defer upstream evaluation, keep separate clocks | Initial Astra xhigh findings remove implied new recovery/lifecycle machinery and unimplemented features | Original corrections accepted on recheck |
+| 2026-09-17 | Name PostgreSQL target locks and durable running barrier for tracking enablement | Close the race with assigned/preparing old work using existing authority; add owner, budget and deterministic tests | Accepted by Astra xhigh final plan review |
+
+## Verification evidence
+
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Source and issue inspection | Inspected base `ba3fa194` and current #721 | Static behavior/evidence only |
+| Independent plan review | Astra xhigh approved after two correction rounds; no remaining blocking findings | Plan approval only, not implementation approval |
+| Local link review | All nine relative links resolve | Local paths, not remote rendering |
+| Local Mermaid rendering | Both revised diagrams parsed and rendered with Mermaid 11 in headless Chrome; visually inspected | GitHub rendering still to verify |
+| Implementation tests | Not run: no implementation exists | Planned checks above are not passing results |
+
+### Not verified
+
+- No new runtime behavior, target schema, performance, concurrency or recovery
+  path has been implemented or tested.
+- No live database, infrastructure or customer deployment was modified.
+- GitHub Mermaid rendering is recorded after the draft PR exists; local rendering
+  and independent plan review have passed.
+
+## Final review
+
+Implementation review is not applicable yet. Independent plan review does not
+approve future implementation or establish runtime proof.
