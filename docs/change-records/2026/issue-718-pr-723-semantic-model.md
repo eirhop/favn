@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Plan reviewed (Revision 1) |
 | Type | Feature |
 | Primary issue | [#718](https://github.com/eirhop/favn/issues/718) |
 | Pull request | [#723](https://github.com/eirhop/favn/pull/723) (draft; planning only) |
@@ -10,7 +10,499 @@
 | Affected areas | Public authoring, Core contracts/compiler, local build tooling, DuckDB integration, generated relationship checks |
 | Source baseline | `8d2b8e1f1e574dabb4670ef0e56f46e073f51f8d` on `origin/main` |
 | Approved plan commit | [`00fe02f8c56b35d808bd4ca3fc4419097a0529dd`](https://github.com/eirhop/favn/commit/00fe02f8c56b35d808bd4ca3fc4419097a0529dd) |
+| Current design | [Revision 1: author contract and semantics together](#revision-1-author-contract-and-semantics-together) |
+| Revision 1 commit | This reviewed revision; exact commit ID recorded in the next metadata update. |
 | Last updated | 2026-09-17 |
+
+## Revision 1: author contract and semantics together
+
+**Contract and semantic declarations live in the same `Favn.SQLAsset` module
+and ordinary `.ex` file.** The compiler produces separate execution and semantic
+outputs. A metric edit can rebuild authoring metadata without rebuilding or
+redeploying the runner. This revision follows the user's 2026-09-17 request for
+one place to understand an asset.
+
+This is a material plan revision, not implemented behavior. The original approved
+plan, diagrams, and budget are preserved verbatim below for comparison. Revision
+1 replaces its source organization, compiler separation, build commands, related
+acceptance tests, and affected implementation estimates. All other contracts
+remain in force: explicit macro column arguments, one SQL formula DSL, DATE-based
+time rules, exact dependency records, transactional relationship checks, native
+validation ownership, and the #719–#721 boundaries.
+
+### R1.1 The current authoring DSL
+
+The new entrypoint is `semantic :model_name do ... end` inside an SQL asset,
+after its contract and before `query`. There is no `Favn.SemanticModel` module,
+`source` declaration, separate semantic source directory, or second user-managed
+model registry. The containing asset supplies the source and contract. One asset
+can declare at most one semantic block; its literal model name is unique in the
+compiled catalog and supplies stable IDs such as `sales.net_revenue`.
+
+The following complete asset declarations supersede the baseline's separate-file
+examples. They assume the existing `:analytics` connection and adjacent query
+files; those existing APIs are unchanged.
+
+```elixir
+# lib/my_app/mart/store.ex
+defmodule MyApp.Mart.Store do
+  use Favn.SQLAsset
+
+  relation connection: :analytics, schema: "mart", name: "dim_store"
+  materialized :table
+
+  contract do
+    grain by: [:store_id], description: "One row per store"
+    column :store_id, :integer, null: false
+    column :store_name, :string, null: false
+    column :region, :string, null: false
+  end
+
+  semantic :store do
+    dimension :store, label: :store_name
+    hierarchy :geography, [:region, :store_id]
+  end
+
+  query file: "dim_store.sql"
+end
+
+# lib/my_app/mart/sales.ex
+defmodule MyApp.Mart.Sales do
+  use Favn.SQLAsset
+  alias MyApp.Mart.Store
+
+  depends Store
+  relation connection: :analytics, schema: "mart", name: "fct_sales"
+  materialized :table
+
+  contract do
+    grain by: [:sale_line_id], description: "One row per sale line"
+    column :sale_line_id, :integer, null: false
+    column :sale_date, :date, null: false
+    column :store_id, :integer, null: false
+    column :gross_value, :decimal, null: false
+    column :discount_value, :decimal, null: false
+    column :units_sold, :integer, null: false
+
+    relationship :store, Store,
+      on: [store_id: :store_id],
+      cardinality: :many_to_one,
+      on_violation: :fail
+  end
+
+  semantic :sales do
+    time :sale_date, grain: :day, timezone: "Europe/Oslo"
+
+    metric net_revenue(gross_value, discount_value),
+      unit: {:currency, "NOK"},
+      time_aggregate: :aggregate,
+      description: "Sales revenue after discounts" do
+      ~SQL"SUM(@gross_value - @discount_value)"
+    end
+
+    metric units_sold(units_sold),
+      unit: :count,
+      time_aggregate: :aggregate,
+      description: "Units sold during the selected period" do
+      ~SQL"SUM(@units_sold)"
+    end
+
+    metric average_unit_price(gross_value, discount_value, units_sold),
+      unit: {:custom, "NOK/unit"},
+      description: "Net revenue divided by total units sold" do
+      ~SQL"""
+      net_revenue(@gross_value, @discount_value)
+        / NULLIF(units_sold(@units_sold), 0)
+      """
+    end
+  end
+
+  query file: "fct_sales.sql"
+end
+```
+
+The function-style `metric` signature, options, expression grammar, composition
+rules, and ordered consumer bindings are unchanged. The source column is resolved
+from the containing contract: `gross_value` means that asset's column, and
+`@gross_value` inside SQL is the corresponding macro argument. A metric file is
+relative to this same asset file:
+
+```elixir
+# Alternative to the inline declaration, inside semantic :sales do.
+metric net_revenue(gross_value, discount_value),
+  file: "metrics/net_revenue.sql",
+  unit: {:currency, "NOK"},
+  time_aggregate: :aggregate,
+  description: "Sales revenue after discounts"
+```
+
+Opening/closing rules also stay next to the columns they describe. This example
+assumes `MyApp.Mart.Product` has a non-null integer `product_id` and structured
+grain `[:product_id]`:
+
+```elixir
+# lib/my_app/mart/inventory.ex
+defmodule MyApp.Mart.Inventory do
+  use Favn.SQLAsset
+  alias MyApp.Mart.{Product, Store}
+
+  depends Store
+  depends Product
+  relation connection: :analytics, schema: "mart", name: "fct_inventory"
+  materialized :table
+
+  contract do
+    grain by: [:inventory_date, :store_id, :product_id],
+      description: "One product in one store at the daily boundary"
+
+    column :inventory_date, :date, null: false
+    column :store_id, :integer, null: false
+    column :product_id, :integer, null: false
+    column :opening_units, :integer, null: false
+    column :closing_units, :integer, null: false
+    column :units_delta, :integer, null: false
+
+    relationship :store, Store,
+      on: [store_id: :store_id], cardinality: :many_to_one, on_violation: :fail
+
+    relationship :product, Product,
+      on: [product_id: :product_id], cardinality: :many_to_one, on_violation: :fail
+  end
+
+  semantic :inventory do
+    time :inventory_date, grain: :day, timezone: "Europe/Oslo"
+
+    metric opening_units(opening_units),
+      unit: :count, time_aggregate: :first,
+      description: "Opening stock at each entity's first observation in the period" do
+      ~SQL"SUM(@opening_units)"
+    end
+
+    metric closing_units(closing_units),
+      unit: :count, time_aggregate: :last,
+      description: "Closing stock at each entity's last observation in the period" do
+      ~SQL"SUM(@closing_units)"
+    end
+
+    metric units_delta(units_delta),
+      unit: :count, time_aggregate: :aggregate,
+      description: "Total unit movement during the period" do
+      ~SQL"SUM(@units_delta)"
+    end
+  end
+
+  query file: "fct_inventory.sql"
+end
+```
+
+| Placement rule | Behavior |
+| --- | --- |
+| `contract do` | Owns schema, grain, and enforced relationships, exactly as in the baseline. |
+| `semantic :name do` | Owns dimensions, hierarchies, business time, and metrics for this SQL asset. Name is a literal lowercase ASCII identifier with the existing 64-byte limit. |
+| Source | Implicitly the containing asset; an explicit `source` or a second model for the same asset is rejected. |
+| Nested declarations | `dimension`, `hierarchy`, `time`, and `metric` are valid only inside the semantic block. Relationships remain contract declarations. |
+| Ordering | The semantic block follows the contract and precedes `query`, matching the existing declaration-before-query convention. |
+| Optional block | Assets without semantic declarations retain their authoring behavior. A semantic block requires an output contract. |
+| Formula files | Loaded relative to the asset source and tracked by the compiler as semantic inputs, so file-only edits rebuild the semantic output. |
+| Duplicate capture | Duplicate blocks/names and stale or unresolved asset references are build errors. Deterministic sorted discovery uses the existing asset build, not a manually maintained file list. |
+
+### R1.2 Consumer SQL remains ordinary SQL
+
+Collocation changes authoring, not the dashboard interface. The same generated
+input records still produce this query without a Favn query wrapper:
+
+```sql
+SELECT
+    store.region,
+    metrics_v1.sales_net_revenue(
+        sales.gross_value, sales.discount_value
+    ) AS net_revenue,
+    metrics_v1.sales_average_unit_price(
+        sales.gross_value, sales.discount_value, sales.units_sold
+    ) AS average_unit_price
+FROM mart.fct_sales AS sales
+JOIN mart.dim_store AS store ON store.store_id = sales.store_id
+WHERE sales.sale_date >= DATE '2026-01-01'
+  AND sales.sale_date < DATE '2026-02-01'
+GROUP BY store.region;
+```
+
+`metrics_v1` remains a readable stand-in for an immutable versioned namespace.
+Metadata carries the exact argument bindings, relationship keys, and time/grain
+requirements. SQL discovery and later AI/MCP context still read the same catalog;
+the consumer does not need to know which Elixir file authored the model.
+
+### R1.3 Compiler and runtime separation
+
+Separating two JSON manifests after compiling one mixed module is insufficient.
+The execution and semantic projections must split before their identities are
+formed, and the runner must load the runtime bytes whose identity was computed.
+
+| Current evidence | Required change |
+| --- | --- |
+| `SQLAsset.__before_compile__/1` emits execution raw-definition getters; SQL assets also permit ordinary Elixir functions. | Capture semantic data into a separate compiler-owned root. Do not put it into execution raw definitions or treat the entire asset module as disposable metadata. |
+| `SourceRelease.current/1` hashes all compiled BEAM files. | Derive local runner identity from a complete verified runtime inventory whose asset modules have semantic metadata projected out. |
+| [`RunnerProcessLauncher`](../../../apps/favn_local/lib/favn_local/runner_process_launcher.ex) inherits the authoring node's code paths. | Launch from the verified inventory, without a fallback path to the customer authoring BEAMs. Hashing a filtered list while loading the old files would be incorrect. |
+| [`ExecutionPackage`](../../../apps/favn_core/lib/favn/manifest/execution_package.ex) serializes SQL source locations and spans. | Give execution definitions stable diagnostic coordinates so adding lines to a semantic block does not change an unrelated execution package. |
+| [`RunnerRelease`](../../../apps/favn_core/lib/favn/runner_release.ex) and [production release rules](../../production/runner_releases.md) use immutable customer-assigned production IDs. | Preserve that meaning. This revision does not make production IDs semantic hashes or permit reusing an ID for a different image. |
+
+The proposed pipeline is one compilation capture, followed by projections. It
+must not evaluate authored Elixir twice to manufacture a different runner module:
+compile-time side effects or nondeterministic macro expansion could otherwise
+produce different behavior in the two passes.
+
+```mermaid
+flowchart TD
+    A[One SQL asset file with contract and semantics] --> B[Authoring compilation and capture]
+    B --> C[Execution definitions and contract snapshot]
+    B --> D[Semantic definitions]
+    B --> E[Expanded runtime code]
+    C --> F[Execution manifest and packages]
+    C --> G[Semantic validation and artifact]
+    D --> G
+    E --> H[Verified runtime inventory]
+    H --> I[Local runner or customer release assembly]
+    F --> I
+    G --> J[Independent catalog publication in issue 720]
+    B -->|Invalid| X[Diagnostics and no release output]
+    H -->|Projection cannot be verified| X
+```
+
+#### Capture and identities
+
+1. The ordinary asset compile captures contract/query/check declarations and
+   semantic declarations separately, under the same source asset reference.
+   Literal metric SQL, options, argument order, and formula-file contents become
+   inert typed semantic records. They never enter `SQLExecution`, execution raw
+   definitions, SQL runtime requirements, or execution hash payloads.
+2. Preserve the compiled execution-only getters and generated `asset/1` route.
+   They currently support direct local SQL execution as well as authoring; this
+   revision does not redesign that route merely to isolate semantic metadata.
+3. Give all SQL assets one compiler-tagged semantic capture root, even when no
+   semantic block exists. The authoring variant exposes the captured record; the
+   runtime variant replaces that root with a fixed `{:error, :authoring_only}`
+   result. Prefer this stable stub over deleting functions: exports and
+   `__info__` stay consistent when metrics or the whole block are added/removed.
+   Metric declarations do not generate one runtime function per metric.
+4. Build the runtime variant from the same already-expanded compiler output.
+   Preserve ordinary functions, guards, literals, module attributes, callbacks,
+   `on_load`, runtime-input resolvers, helper dependencies, and module names.
+   Projection removes only tagged semantic metadata and diagnostic annotations;
+   it must not pattern-match arbitrary user functions by a convenient name.
+   Calls from runtime code to the authoring-only capture API are unsupported and
+   diagnosed where statically visible; the runtime stub also fails explicitly.
+5. Normalize non-executable file/line/debug annotations for all modules emitted
+   from the affected compilation unit, including sibling modules in the same
+   `.ex` file. Otherwise adding metric lines can still change a sibling BEAM.
+   Preserve source-derived **executable literals**, including values expanded
+   from `__ENV__.line`, `__ENV__.file`, `__MODULE__`, module attributes, and macros.
+   If those values change, the edit has changed execution behavior and must
+   change runtime identity. Do not call it a semantic-only change based on the
+   textual location of the edit.
+6. Build and validate a complete module inventory. Do not introduce whole-program
+   dependency pruning: other customer/dependency modules remain included under
+   existing execution requirements. Preserve external-resource and compiler
+   dependency tracking in the authoring build; helper or resource edits invalidate
+   affected capture/projection results. Unsupported compiler output or missing
+   required expansion/debug information fails with a precise diagnostic. There
+   is no fallback to excluding whole modules, source globs, or directories.
+
+Elixir persists `@external_resource` paths in BEAM attributes. The semantic file
+loader must therefore record compiler-owned semantic file dependencies separately
+from ordinary user/query/runtime resources. Keep their paths and content digests
+in authoring dependency tracking and the semantic capture, but remove exclusively
+semantic entries from the runtime BEAM's attributes, debug/reflection data, and
+packaged resource inventory. Replacing the semantic getter alone is insufficient.
+
+Resource classification follows recorded compiler ownership, not filename or
+directory heuristics. A path also declared by user code, used by an execution
+query, or present in the required runtime resource inventory is shared/runtime;
+it stays included and relevant changes invalidate execution identity. Do not
+claim a semantic-only edit when a resource is runtime-observable or ownership is
+unresolved. Semantic SQL files, source maps, and capture receipts must not leak
+into release resource payloads through a broad copy of the authoring directory.
+Preserve all other user attributes and reflection behavior.
+
+The capture, runtime inventory, and contract snapshot are generated build data,
+not additional deployable services or user-maintained files. Projection receipts
+may identify the full authoring build for cache validation, but those receipts
+must stay outside runtime identity and packaged runtime payloads: their source
+digest changes on a formula edit. Runtime identity hashes the actual stable
+runtime payload. New and removed runtime modules, dependencies, or executable
+content must change it. Incremental builds must remove stale generated outputs.
+
+#### Source locations and package compatibility
+
+Execution-only getters and execution packages currently carry authored file/line
+values. Normalize compiler-owned diagnostic fields to stable source roles and
+positions relative to each SQL expression/query. Preserve the SQL text, node
+order, real arguments, types, policies, bindings, and every executable value.
+Keep physical Elixir locations in a separate authoring source map for build
+diagnostics and inspection. Runtime errors report the stable source role and SQL
+position; authoring tools can map that back using the selected authoring build.
+
+Do not merely exclude fields from a hash while continuing to publish different
+payload bytes under the same digest. Normalize the actual serialized execution
+payload first and continue hashing/verifying all of that canonical payload.
+This changes the execution-package/source-location contract and needs appropriate
+schema/version/codec updates and fresh-process tests. The initial platform
+upgrade can change identities; the formula-only stability claim applies after
+both compared builds use this compiler and contract version.
+
+#### The loaded code must match the inventory
+
+`favn_local` owns constructing and launching an immutable source-runtime directory
+from the verified inventory. It must not pass customer authoring `ebin` paths to
+the runner as fallback paths. Include the correct `.app` module lists, dependency
+paths, and required runtime resources. Validate package/inventory integrity before
+start and prove after boot that loaded customer modules come from this inventory
+with the expected bytes. A stale, incomplete, or mismatched inventory fails before
+advertising runner readiness; no silent reuse of the previous identity.
+
+The authoring/operator process can still load the full authoring variant. Project
+compilation, editor tooling, and source diagnostics may therefore run again on a
+metric edit. The requirement is that this does not replace the **runner** or
+alter its execution packages, manifest, generation, or freshness identities.
+
+Production assembly must stage the same runtime projection in the customer-owned
+release/image workflow. Update the generated deployment recipe and canonical
+instructions; ensure a later `mix release`/copy step cannot restore authoring BEAMs
+over the staged runtime variants. Favn does not build or deploy customer images.
+A semantic-only pipeline compiles authoring metadata and publishes its semantic
+artifact using an existing compatible execution/runner release. It need not run
+the image build at all. If the customer chooses to build an image with different
+contents or labels, that image still requires its own immutable production ID.
+Equal execution behavior is not permission to assign one ID to two image digests.
+
+### R1.4 Build workflow
+
+The normal semantic build uses the project's existing asset discovery:
+
+```sh
+# Reads semantic blocks from the normal SQL asset files.
+mix favn.build.semantics --output dist/semantics
+
+mix favn.semantic.inspect --artifact dist/semantics/sm_<digest>/semantic.json \
+  --metric sales.net_revenue --format json
+
+mix favn.semantic.diff --from previous/semantic.json --to current/semantic.json
+```
+
+This command performs normal authoring compilation/capture and produces the
+data-contract snapshot and semantic projection needed for validation, without
+requiring `runner_releases`, booting a runner/orchestrator, or activating an
+execution manifest. It must not interpret successful compilation as authorization
+to rebuild or deploy a runner. Normal local reload consumes the same projection
+boundary before making its runner-replacement decision.
+
+For split CI stages, expose the generated, closed authoring bundle as an optional
+build input. It contains the resolved semantic declarations and exact contract
+snapshot, never closures or arbitrary executable AST. A subsequent build can use
+`mix favn.build.semantics --input PATH --output dist/semantics` without source
+modules. The input mode and project capture mode are mutually exclusive. The
+bundle is schema-versioned, bounded by the existing snapshot/semantic limits,
+content-verified, and tied to its captured source build; stale or mismatched
+capture results fail. Users do not hand-edit it or maintain a second semantic
+file list. The baseline `--source semantics` workflow is removed.
+
+Semantic validation, macro rendering, atomic local artifact writing, and the
+separately owned DuckDB validation process retain their baseline responsibilities.
+Independent deployed publication/activation remains #720. Relationships still
+belong to the execution contract: changing enforcement is not a semantic-only
+change just because it appears beside a semantic block.
+
+### R1.5 Acceptance and implementation gate
+
+Implement and qualify the compiler/runtime split first. It is the feasibility
+gate for same-file authoring with independent deployment, not an optimization to
+add after shipping the DSL. If supported compiler output cannot meet these
+invariants within a bounded implementation, return for plan re-review rather
+than silently reverting to separate user files or weakened hashing.
+
+| Scenario | Required evidence |
+| --- | --- |
+| Same-file DSL | Complete Store, Sales, and Inventory examples compile; duplicate blocks, missing contracts, bad nesting, declarations after `query`, explicit `source`, and collisions fail precisely. |
+| Formula-only edits | Change inline SQL, descriptions, argument metadata, metric count, and entire block presence; semantic identity changes while runtime inventory bytes, execution package/manifest, runner release, target compatibility, and freshness/generation identities stay equal. |
+| Source-line shifts | Add/remove lines before query/check declarations and an ordinary sibling module; canonical execution payloads and runtime inventory stay equal when executable values are unchanged. Verify diagnostic source maps still identify the original source. |
+| Real execution changes | Change query SQL, contracts, relationship policies, runtime helper bodies, compile-time constants, runtime-input resolvers, same-file sibling code, or runtime resources; the owning execution/package/runtime identities must change as appropriate. A semantic-only path cannot silently carry these into an old runner. |
+| Observable source constants | A helper returns `__ENV__.line` or another source-derived literal. If its expanded value changes, runtime identity changes; normalization cannot erase that behavior. |
+| One evaluation | Instrument a compile-time macro/side effect and prove projection uses the captured expanded output, not a second source evaluation. |
+| Formula files | Edit/delete an adjacent metric SQL file without touching the Elixir file; recapture semantic output and reject missing files. Add/remove/rename a file-backed metric or block; verify exclusively semantic resource paths/content are absent from runtime Attr/debug/reflection and packaged resources, with unchanged execution identity. A resource also used by a query, user declaration, or runtime inventory remains included and changes execution identity as appropriate. |
+| Incremental correctness | Clean/incremental/parallel builds produce the same projections; deletions/renames remove old capture data and modules. No previous build's semantic root is reused after source changes. |
+| Runtime projection fidelity | Preserve ordinary functions, attributes, callbacks, helper/resource dependencies, execution getters and direct `asset/1` behavior; semantic root returns its fixed unavailable result. Check exports, `__info__`, specs and reflection for consistency. |
+| Actual local load path | Boot with authoring customer paths unavailable; inspect `:code.which`/object code and assert loaded module bytes match the verified inventory. Demonstrate semantic-only reload keeps the existing runner process. |
+| Production packaging | Assemble the release from the inventory and inspect packaged module bytes/paths; show semantic-only publication skips image construction and does not reassign an existing production ID to different image contents. |
+| Failure boundaries | Missing expansion information, unsupported compiler versions, corrupt/incomplete inventory, stale capture, projection mismatch and unavailable runtime modules prevent readiness/publication with bounded diagnostics. |
+
+All unchanged baseline formula, time-selection, dependency, relationship,
+serialization, native cleanup, and consumer SQL acceptance scenarios still apply.
+No supported-runtime guarantee is claimed from merely parsing these examples.
+
+### R1.6 Revised implementation slices and budget
+
+Keep the original budget below unchanged for comparison. This table replaces its
+affected slices and adds the compiler/runtime work that separate files avoided.
+The extra cost is owned by Favn's build process, while the author keeps one file.
+
+| Slice | Revision 1 outcome and owner | Depends on | Production added/deleted | Supporting added/deleted |
+| --- | --- | --- | --- | --- |
+| R1 | Verified expanded-code projection, stable execution source roles, runtime inventory, local launcher and production assembly integration | None; feasibility gate first | +450–750 / -40–90 | +450–750 / -20–50 |
+| 1 | Core snapshot/semantic types, closed codec and dependency/compatibility contracts | R1 | +300–500 / -0–30 | +250–400 / -0–20 |
+| 2 | Contract relationships and transactional checks | 1 | +300–500 / -20–60 | +300–500 / -10–40 |
+| 3 | Nested semantic DSL and separate typed capture in SQLAsset; formula composition | 1, R1 | +450–700 / -10–40 | +400–600 / -10–30 |
+| 4 | Native DuckDB validation and macro rendering | 3 | +300–500 / -0–20 | +350–550 / -0–20 |
+| 5 | Project/bundle semantic build, owned validation worker, inspection/diff and Mix tasks | 1, 3, 4 | +600–1,000 / -20–60 | +450–750 / -20–40 |
+| 6 | Same-file examples, guides, Favn.AI routing and end-to-end isolation acceptance | 2–5 | +20–60 / -0–20 | +350–550 / -20–60 |
+
+Revised totals: production additions 2,420–4,010; supporting additions
+2,550–4,100. Count runtime projection/launch tests in R1 and overall workflow
+tests in slice 6, without double counting. The original exclusions and variance
+rules still apply. A general module-pruning framework, a second source evaluator,
+or a new deployment service is outside this budget and scope.
+
+Core owns the typed capture/projection/inventory contracts and canonical identities.
+Authoring owns compiler integration and semantic capture. Local tooling owns
+runtime staging, source identity, launch paths, and reload decisions. Public build
+tasks and deployment recipes consume the same inventory. Runner execution and
+relationship checks keep their existing owners; View and storage do not acquire
+semantic deployment state in #718.
+
+### R1.7 Explicit deviations and review
+
+| Original approved plan | Revision 1 | Reason and impact |
+| --- | --- | --- |
+| Separate `Favn.SemanticModel` `.exs` files, explicit `source` | `semantic :name do` inside the owning SQL asset `.ex` | User-requested simpler authoring and one place to understand the data. |
+| File placement prevents runtime identity coupling | Verified compiler projections and actual runtime loading enforce separation | More compiler/build work, with explicit fidelity and deployment tests. |
+| Semantic build starts from separate source directory and snapshot | Default uses existing project asset discovery; optional generated bundle for split CI | Removes a second source registry; source-free builds consume generated records. |
+| Source spans remain in unchanged execution packages | Stable source roles/SQL-relative spans plus authoring source map | Necessary so adding semantic lines cannot change execution hashes; requires schema/codec qualification. |
+| Local release hashing/launch path and customer assembly largely unchanged | Both consume the verified runtime inventory | Prevents hashing one set of bytes while loading another; retains immutable production ID rules. |
+| Original implementation budget | Revised slices above | Records the added work openly; does not rewrite the earlier estimate. |
+
+The existing approved baseline commit remains the comparison point. After review,
+commit this revision separately and record its commit ID in a follow-up metadata
+update. Implementation must satisfy the baseline plus these explicit overrides.
+There is still no implementation code in this PR.
+
+| Revision review field | Result |
+| --- | --- |
+| Reviewer | Independent agent `review_semantic_plan`; read-only review. |
+| Evidence inspected | SQLAsset capture/getters/ordinary-function support, execution package spans, local release hashing/launcher, production release contract, and original approved plan. |
+| Design findings incorporated | Use one expanded compiler result; retain execution getters and direct asset route; preserve ordinary/sibling runtime code and executable source literals; align hashes, load paths, and production assembly. Full review additionally identified persisted `@external_resource` paths; compiler-owned semantic resource tracking is now separated from runtime attributes/resources, with shared-resource and add/remove/rename tests. |
+| Verdict | Approved after recheck on 2026-09-17; no remaining blocking findings. Compiler/runtime guarantees remain subject to the implementation feasibility gate. |
+
+| Revision verification | Evidence |
+| --- | --- |
+| Original baseline preserved | Original body below matches the pre-revision record byte for byte; no prior diagram, requirement, or budget was rewritten. |
+| Relative links and example syntax | All relative targets exist; all seven Elixir blocks, including three new Revision 1 blocks, parse with Elixir 1.20.2. This is syntax validation of proposed APIs. |
+| Consumer SQL | Revision query matches the original query and returns revenue 210 and average unit price 42 in the same DuckDB 1.5.4 in-memory fixture. |
+| Whitespace and diagrams | `git diff --check` and simple flowchart structure checks pass. GitHub rendering of the new diagram and preserved historical diagrams is checked after push. |
+
+Compiler/runtime isolation remains an implementation acceptance requirement, not
+an already proven capability. No feature implementation or live deployment was
+performed in this revision.
+
+<details>
+<summary>Original approved baseline: preserved for comparison; apply Revision 1 overrides above</summary>
 
 ## One-minute summary
 
@@ -990,3 +1482,5 @@ feature is not implemented. No live target or catalog was changed.
 Not applicable to this planning-only delivery. A later independent reviewer must
 compare implemented behavior, canonical documentation, test evidence, actual
 complexity, and any deviations against the recorded baseline before readiness.
+
+</details>
