@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#737](https://github.com/eirhop/favn/issues/737) |
 | Pull request | [#738](https://github.com/eirhop/favn/pull/738) |
@@ -246,9 +246,18 @@ browser. Interactive GitHub diagram presentation remains unverified.
 | --- | --- | --- |
 | Initial focused Local tests | 46 passed | Configuration, observer, publication and lifecycle tests before strict-parser follow-up |
 | Compile | Test-environment warnings-as-errors passed | Full umbrella compilation |
-| Local and Orchestrator fast suites | Running | Final result to be recorded before acceptance |
-| Format, tag tiers, whitespace | Running | Final result to be recorded before acceptance |
+| Local fast suite | 62 passed, 2 excluded | All untagged Local tests |
+| Orchestrator fast suite | 925 passed, 2 excluded, seed 720785 with `--max-cases 4` | All untagged Orchestrator tests; see timing note below |
+| Focused Orchestrator rerun | 28 passed | Includes configuration, admission and unchanged upload-heartbeat tests |
+| Format, tag tiers, whitespace and repository Markdown links | Passed | Local static checks |
+| Hosted CI | Use [PR #738 checks](https://github.com/eirhop/favn/pull/738/checks) for the current head | At record writing, hosted qualification is still running; readiness requires its result |
 | Diagram rendering | Both Mermaid diagrams rendered to SVG; GitHub returned both diagram containers | Local render plus GitHub Markdown, not interactive GitHub visual proof |
+
+The first two full Orchestrator runs at the default 28 concurrent test cases
+missed an unchanged upload-heartbeat test's 100 ms initial receive. The focused
+rerun passed unchanged, as did the full suite with the same seed and four
+concurrent cases. This is recorded as a timing-sensitive local test limitation;
+no heartbeat implementation or assertion was changed to obtain a pass.
 
 ### Not verified
 
@@ -258,4 +267,8 @@ were not verified. The cap and observer tests do not close those parts of #737.
 
 ## Final review
 
-Pending independent comparison with baseline `3d622fad` and final verification.
+Independent agent `review_737` compared the approved baseline `3d622fad`, code,
+tests, documentation, diagnostics, complexity counts and deviations. Code review
+found no actionable findings. Reviewer rechecked the completed verification record and accepted the final
+implementation with no outstanding findings. Marking the PR ready remains gated
+on hosted CI.
