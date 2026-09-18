@@ -97,6 +97,11 @@ sometimes is not:
 FAVN_DEV_RUNNER_START_TIMEOUT_MS=120000 mix favn.dev
 ```
 
+This setting controls runner registration. Deployment receives its own budget
+after registration, and the overall wait covers both phases. See the
+[local development guide](../../apps/favn/guides/local-development.md) for the
+startup timeout contract.
+
 ## Design system
 
 `/design-system` lists every function component in `FavnView.UI` and

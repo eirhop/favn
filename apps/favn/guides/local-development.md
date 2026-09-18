@@ -119,9 +119,13 @@ runner. Use `FAVN_LOG_LEVEL=debug mix favn.dev` for verbose troubleshooting or
 `FAVN_LOG_LEVEL=warning mix favn.dev` for quieter output. The startup milestones
 and final View URL remain visible at every supported log level.
 
-Runner registration and initial manifest deployment share one startup deadline.
-If either stalls, startup returns its phase and stops the child processes it
-owns. Repeated claim failures retain backoff across registration and wakeups.
+Runner registration has a 30-second budget, configurable with
+`FAVN_DEV_RUNNER_START_TIMEOUT_MS`. Once the runner registers, initial manifest
+deployment receives a separate budget: the five-minute inspection window plus
+30 seconds for publication and activation overhead. The overall startup wait
+covers both phases, including an increased registration budget. If either phase
+times out, startup returns its phase and stops the child processes it owns.
+Repeated claim failures retain backoff across registration and wakeups.
 
 After changing assets, pipelines, SQL, or ordinary Elixir runner code:
 
