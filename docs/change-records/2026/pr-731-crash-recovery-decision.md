@@ -806,7 +806,11 @@ not remove the requirement to prove those outcomes.
 Fault-injection stores now intercept compound admission, so lost-reply and
 history-contention tests still inject failures at the actual runtime boundary.
 An invalid task no longer leaves a failed provisional claim: the claim and task
-both roll back. Successful replay continues remaining healthy siblings.
+both roll back. Successful replay continues remaining healthy siblings. The old
+paused-lock test constructed an acquisition phase that no longer exists. Its
+replacement uses the real atomic admission command and verifies that a competing
+claim prevents admission without leaving a lock or task. Unused standalone
+acquire/claim/enqueue retry dispatch clauses are removed as well.
 
 The fresh-process drill kills the OS BEAM after `step_finished`, restarts and
 kills it after `step_settled`, then restarts again to finish the pipeline. The
@@ -825,11 +829,12 @@ CI for the integrated head remain outstanding.
 
 ### Complexity deviation requiring final review
 
-The integration exceeds the revised production estimate. At the first complete
-count it was **+3,393/-1,353 production lines** (net +2,040), **+2,142/-1,172 test
-lines**, and +726 lines in this record. These exclude the separately merged #732.
-Subsequent regression coverage and documentation will change those figures;
-report the final diff in review.
+The integration exceeds the revised production estimate. Against current main,
+the code diff is **+3,436/-1,540 production lines** (net +1,896), and
+**+2,960/-1,330 supporting lines** (tests, fixtures and canonical documentation).
+The record itself is reported separately (about 840 lines). Production additions
+are roughly 49% over the revised +2,300 upper estimate. Final review must accept
+or reject this overrun; test additions do not justify production complexity.
 
 The main additions are the atomic admission owner, validated intent/progress
 contracts, bounded restoration and terminal/live task reconciliation. The old

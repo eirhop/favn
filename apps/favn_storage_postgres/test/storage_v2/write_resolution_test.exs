@@ -13,19 +13,19 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   alias FavnStoragePostgres.Materialization.Store, as: Materialization
   alias FavnStoragePostgres.TestSupport.TaskManifest
 
-  defmodule HistoryConflictMaterializationStore do
-    @behaviour FavnOrchestrator.Persistence.MaterializationStore
+  defmodule HistoryConflictAdmissionStore do
+    @behaviour FavnOrchestrator.Persistence.RunnerTaskStore
     for {operation, arity} <-
-          FavnOrchestrator.Persistence.MaterializationStore.behaviour_info(:callbacks) --
-            [claim: 1] do
+          FavnOrchestrator.Persistence.RunnerTaskStore.behaviour_info(:callbacks) --
+            [admit: 1] do
       args = Macro.generate_arguments(arity, __MODULE__)
       @impl true
       def unquote(operation)(unquote_splicing(args)),
-        do: apply(FavnStoragePostgres.Materialization.Store, unquote(operation), unquote(args))
+        do: apply(FavnStoragePostgres.RunnerTasks.Store, unquote(operation), unquote(args))
     end
 
     @impl true
-    def claim(command) do
+    def admit(command) do
       if Process.delete({__MODULE__, :reject_once}) do
         {:error,
          FavnOrchestrator.Persistence.Error.new(:conflict, "history owner busy",
@@ -33,8 +33,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
            details: %{reason_code: "execution_history_owner_busy"}
          )}
       else
-        Process.get({__MODULE__, :result}) ||
-          FavnStoragePostgres.Materialization.Store.claim(command)
+        FavnStoragePostgres.RunnerTasks.Store.admit(command)
       end
     end
   end
@@ -174,7 +173,6 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
                run_id: state.run.id
              })
 
-    assert {:ok, :resume} = FavnOrchestrator.RunServer.Recovery.disposition(persisted)
     persisted_retry = persisted.metadata.retry_state.retry
     assert persisted_retry.admission_deadline_ms == retry.admission_deadline_ms
 
@@ -190,12 +188,19 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     [second_timer] = Map.values(waiting_again.retry_timers)
     assert second_timer.payload.admission_deadline_ms == retry.admission_deadline_ms
     RunExecutionState.cancel_timers(waiting_again)
-    # Inject expiry at the existing resume boundary; the healthy writer stays running.
-    assert {:terminal, timed_out} =
-             Sequential.resume_retry(
-               waiting_again,
-               %{persisted_retry | admission_deadline_ms: System.system_time(:millisecond) - 1}
-             )
+    # Wait on the same UTC clock as the runtime deadline guard. A monotonic
+    # sleep does not prove a wall-clock deadline expired after clock correction.
+    assert Enum.any?(1..200, fn _ ->
+             if DateTime.to_unix(DateTime.utc_now(), :millisecond) >
+                  persisted_retry.admission_deadline_ms do
+               true
+             else
+               Process.sleep(100)
+               false
+             end
+           end)
+
+    assert {:terminal, timed_out} = Sequential.resume_retry(waiting_again, persisted_retry)
 
     assert timed_out.status == :timed_out
 
@@ -259,7 +264,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     alias FavnOrchestrator.RunServer.Execution
     alias FavnOrchestrator.RunServer.Execution.RunExecutionState
     alias FavnOrchestrator.RunServer.Execution.FreshnessContext
-    state = sequential_state(f, 5_000)
+    state = sequential_state(f, 5_000, dependencies: :all)
     task = start(f)
     {:ok, context} = FreshnessContext.initialize(state.run, state.manifest_index)
 
@@ -271,13 +276,13 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     }
 
     install_history_conflict_store()
-    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
+    Process.put({HistoryConflictAdmissionStore, :reject_once}, true)
 
     assert {:persist_retry, paused, retry,
             %{details: %{reason_code: "execution_history_owner_busy"}}} =
              Execution.handle_event(state, :continue)
 
-    assert retry.event_type == :materialization_claim
+    assert retry.event_type == :runner_admission
     assert {:cont, waiting} = Execution.retry_persistence(paused, retry)
     assert waiting.paused_admission == nil
     assert waiting.terminal_failure == nil
@@ -309,70 +314,54 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     RunExecutionState.cancel_timers(admitted)
   end
 
-  test "a resolved non-owned claim never renews its released combined-window lock", f do
-    alias FavnOrchestrator.RunServer.Execution
-    alias FavnOrchestrator.RunServer.Execution.StageAdmission
-    alias FavnOrchestrator.RunServer.PersistenceRetry
-    alias FavnOrchestrator.Persistence.Results.MaterializationDecision
-    alias FavnStoragePostgres.TargetOperationLocks.Store, as: Locks
+  test "a competing claim prevents admission without leaving a target lock", f do
+    alias FavnOrchestrator.RunServer.Execution.Sequential
     state = sequential_state(f, 5_000)
     install_history_conflict_store()
+    Process.put({HistoryConflictAdmissionStore, :reject_once}, true)
+    assert {:persist_retry, _paused, retry, _reason} = Sequential.continue(state)
+    command = retry.command
+    operation_id = "combined:" <> state.run.id
+    claim = %{command.claim | operation_id: operation_id}
 
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.materialization_claims SET status='released' WHERE workspace_id=$1",
-      [f.workspace_id]
-    )
+    assert {:ok, _} =
+             Materialization.claim(%{
+               claim
+               | command_id: claim.command_id <> ":competing",
+                 owner_id: "competing-owner",
+                 operation_id: nil
+             })
 
-    for status <- [:competing, :materialized] do
-      assert {:ok, [lock]} =
-               Locks.acquire_many(%C.AcquireTargetOperationLocks{
-                 workspace_context: f.workspace_context,
-                 command_id: "combined-#{status}",
-                 target_ids: [f.work.logical_target_id],
-                 operation_id: "combined-#{status}",
-                 operation_type: :materialization,
-                 lease_owner: state.run.storage_owner_id,
-                 lease_duration_ms: 60_000,
-                 occurred_at: DateTime.utc_now()
-               })
+    lock = %C.AcquireTargetOperationLocks{
+      workspace_context: f.workspace_context,
+      command_id: operation_id,
+      target_ids: [claim.target_id],
+      operation_id: operation_id,
+      operation_type: :materialization,
+      lease_owner: state.run.storage_owner_id,
+      lease_duration_ms: 60_000,
+      occurred_at: DateTime.utc_now()
+    }
 
-      prepared = Map.put(f.claim, :target_operation_lock, lock)
+    command = %{command | claim: claim, target_lock: lock}
 
-      pause = %{
-        phase: :materialization_claim,
-        entries: [],
-        ctx: %{prepared_claim: prepared, current_run: state.run, waiters: [], work: f.work}
-      }
+    for _ <- 1..2 do
+      assert {:error, %{details: %{reason_code: "target_operation_in_progress"}}} =
+               Store.admit(command)
 
-      decision = %MaterializationDecision{
-        status: status,
-        claim_key: f.claim.claim_key,
-        claim: f.claim
-      }
+      assert %{rows: [[0]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT count(*) FROM favn_control.target_operation_locks WHERE workspace_id=$1",
+                 [f.workspace_id]
+               )
 
-      Process.put({HistoryConflictMaterializationStore, :result}, {:ok, decision})
-
-      retry =
-        PersistenceRetry.command(
-          state.run,
-          :materialization_claim,
-          claim_command(f),
-          %{},
-          {:stage_operation, pause}
-        )
-
-      assert {:ownership_gate, gated, replay} = Execution.retry_persistence(state, retry)
-      assert replay.resume == {:stage_operation, gated.paused_admission}
-      # This is the same paused-lock renewal called by RunServer's ownership gate.
-      assert :ok = StageAdmission.renew_paused_claim(gated.paused_admission)
-      assert {:error, _} = FavnOrchestrator.MaterializationClaims.renew_operation_lock(prepared)
-
-      assert SQL.query!(
-               Repo,
-               "SELECT count(*) FROM favn_control.target_operation_locks WHERE workspace_id=$1",
-               [f.workspace_id]
-             ).rows == [[0]]
+      assert %{rows: [[0]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT count(*) FROM favn_control.runner_tasks WHERE workspace_id=$1 AND run_id=$2",
+                 [f.workspace_id, state.run.id]
+               )
     end
   end
 
@@ -857,13 +846,13 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     alias FavnOrchestrator.RunServer.Execution.Sequential
 
     install_history_conflict_store()
-    Process.put({HistoryConflictMaterializationStore, :reject_once}, true)
+    Process.put({HistoryConflictAdmissionStore, :reject_once}, true)
 
     assert {:persist_retry, paused, retry,
             %{details: %{reason_code: "execution_history_owner_busy"}}} =
              Sequential.continue(state)
 
-    assert retry.event_type == :materialization_claim
+    assert retry.event_type == :runner_admission
     Execution.retry_persistence(paused, retry)
   end
 
@@ -876,12 +865,12 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
        %Runtime{
          backend: Backend,
          options: [],
-         stores: %{Backend.stores() | materialization: HistoryConflictMaterializationStore}
+         stores: %{Backend.stores() | runner_tasks: HistoryConflictAdmissionStore}
        }}
     )
   end
 
-  defp sequential_state(f, timeout_ms) do
+  defp sequential_state(f, timeout_ms, opts \\ []) do
     ref = f.work.asset_ref
     key = {ref, nil}
 
@@ -905,7 +894,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     }
 
     plan = %Favn.Plan{
-      dependencies: :none,
+      dependencies: Keyword.get(opts, :dependencies, :none),
       target_refs: [ref],
       target_node_keys: [key],
       nodes: %{key => node},

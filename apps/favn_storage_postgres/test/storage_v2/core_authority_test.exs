@@ -7925,7 +7925,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
       monitor = Process.monitor(pid)
       assert [task_id] = await_runner_task_ids!(fixture.workspace_id, run.id, 1)
-      # Synchronize with authoritative reconciliation, not just the committed insert.
+      # A committed insert precedes reconciliation of the deliberately lost reply.
+      await_runner_task_waiter!(%{workspace_id: fixture.workspace_id, task_id: task_id}, 500)
       assert task_id in ActiveTaskSet.task_ids(:sys.get_state(pid).execution_state.work_set)
 
       case fixture.disposition do

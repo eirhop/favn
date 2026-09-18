@@ -536,25 +536,6 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp handle_persistence_retry_failure(
-         state,
-         %PersistenceRetry{event_type: :runner_enqueue} = retry,
-         reason
-       ) do
-    if match?(
-         %FavnOrchestrator.Persistence.Error{
-           details: %{reason_code: "execution_history_owner_busy"}
-         },
-         reason
-       ) do
-      {:persist_retry, state, retry, reason}
-    else
-      # Preserve the intent and write claim: a failed reply does not establish absence.
-      {:recovery_required, %{state | paused_admission: nil},
-       {:runner_enqueue_replay_uncertain, reason}}
-    end
-  end
-
   defp handle_persistence_retry_failure(state, retry, reason) do
     if reason in [:fenced, :cancellation_race] or PersistenceRetry.replayable?(reason),
       do: {:persist_retry, state, retry, reason},

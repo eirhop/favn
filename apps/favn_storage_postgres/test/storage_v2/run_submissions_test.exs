@@ -2123,6 +2123,8 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
                  }
                )
 
+      late = %{late | occurred_at: DateTime.utc_now()}
+
       assert {:ok, _} =
                FavnStoragePostgres.ResourceCircuits.Store.record_outcomes(
                  %FavnOrchestrator.Persistence.Commands.RecordResourceOutcomes{
@@ -2140,7 +2142,7 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
                      )
                    ],
                    recovery_candidates: [late],
-                   occurred_at: DateTime.utc_now()
+                   occurred_at: late.occurred_at
                  }
                )
 
