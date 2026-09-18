@@ -280,3 +280,17 @@ defmodule FavnOrchestrator.Persistence.Results.CapacityRelease do
           freed_scope_ids: [String.t()]
         }
 end
+
+defmodule FavnOrchestrator.Persistence.Commands.ReleaseCompletedExecution do
+  @moduledoc "Releases capacity for a terminal asset task under current run ownership."
+  @enforce_keys [:workspace_context, :run_id, :task_id, :owner_id, :owner_generation]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          run_id: String.t(),
+          task_id: String.t(),
+          owner_id: String.t(),
+          owner_generation: pos_integer()
+        }
+end

@@ -4,6 +4,10 @@ defmodule FavnOrchestrator.RunManager do
 
   Run producers enqueue through `FavnOrchestrator.RunSubmissions`; only its
   fenced preparation workers call the internal admission entrypoint here.
+
+  A crashed run server releases local tracking and memory capacity only.
+  `FavnOrchestrator.RunRecovery` resumes its durable work after ownership is
+  released or expires. A process exit is not an instruction to cancel its tasks.
   """
 
   use GenServer
@@ -16,7 +20,6 @@ defmodule FavnOrchestrator.RunManager do
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Redaction
-  alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunCancellation
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.PlanCapacity
@@ -76,19 +79,6 @@ defmodule FavnOrchestrator.RunManager do
       continue_cancellation(context, run_key, committed, safe_reason, opts)
     else
       {:error, %Error{} = error} -> {:error, normalize_cancellation_error(error)}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc false
-  @spec recover_run(WorkspaceContext.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def recover_run(%WorkspaceContext{} = context, run_id) when is_binary(run_id) do
-    with {:ok, %RunState{} = run} <- Runs.get(context, run_id),
-         true <- retry_wait?(run),
-         {:ok, version} <- load_run_manifest(context, run) do
-      call_manager({:recover_prepared_run, context, run, version})
-    else
-      false -> {:error, :run_not_recoverable}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -220,17 +210,6 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   def handle_call(
-        {:recover_prepared_run, %WorkspaceContext{} = context, %RunState{} = run, version},
-        _from,
-        state
-      ) do
-    case recover_prepared_run_server(context, run, version, state) do
-      {{:ok, run_id}, next_state} -> {:reply, {:ok, run_id}, next_state}
-      {:error, reason} -> {:reply, {:error, reason}, state}
-    end
-  end
-
-  def handle_call(
         {:recover_prepared_claimed_run, %WorkspaceContext{} = context, %Ownership{} = ownership,
          %RunState{} = run, version},
         _from,
@@ -243,36 +222,40 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     case Map.pop(state.monitors, ref) do
       {nil, monitors} ->
         {:noreply, %{state | monitors: monitors}}
 
       {run_key, monitors} ->
-        next_state = %{
-          state
-          | monitors: monitors,
-            run_pids: Map.delete(state.run_pids, run_key),
-            plan_capacity: PlanCapacity.release(state.plan_capacity, run_key)
-        }
+        next_state =
+          if Map.get(state.run_pids, run_key) == pid do
+            %{
+              state
+              | monitors: monitors,
+                run_pids: Map.delete(state.run_pids, run_key),
+                plan_capacity: PlanCapacity.release(state.plan_capacity, run_key)
+            }
+          else
+            %{state | monitors: monitors}
+          end
 
-        if reason != :normal and Lifecycle.ensure_accepting() == :ok,
-          do: schedule_crash_recovery(run_key, run_server_down_error(reason), 1)
+        if reason != :normal and Lifecycle.ensure_accepting() == :ok do
+          OperationalEvents.emit(
+            :run_crash_recovery_deferred,
+            %{},
+            %{
+              workspace_id: elem(run_key, 0),
+              run_id: elem(run_key, 1),
+              reason: JsonSafe.error(reason),
+              recovery: :ownership_sweep
+            },
+            level: :warning
+          )
+        end
 
         {:noreply, next_state}
     end
-  end
-
-  def handle_info({:retry_run_crash_recovery, run_key, error, attempt}, state) do
-    if not active_run_server?(state, run_key) and Lifecycle.ensure_accepting() == :ok do
-      Task.Supervisor.start_child(FavnOrchestrator.RunManagerTaskSupervisor, fn ->
-        Lifecycle.with_admission(fn ->
-          recover_or_terminalize_crashed_run(run_key, error, attempt)
-        end)
-      end)
-    end
-
-    {:noreply, state}
   end
 
   defp call_manager(message), do: call_manager(message, run_manager_call_timeout())
@@ -382,26 +365,6 @@ defmodule FavnOrchestrator.RunManager do
     {{:ok, run_id}, next_state}
   end
 
-  defp recover_prepared_run_server(
-         %WorkspaceContext{} = context,
-         %RunState{} = run,
-         version,
-         state
-       ) do
-    key = {context.workspace_id, run.id}
-
-    with false <- active_run_server?(state, key),
-         true <- retry_wait?(run),
-         {:ok, reserved_state} <- reserve_run_plan(state, run),
-         {:ok, pid} <- start_run_server(run, version, recovering?: true) do
-      track_run_server(reserved_state, key, run.id, pid)
-    else
-      true -> {:error, {:run_already_active, run.id}}
-      false -> {:error, :run_not_recoverable}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   defp recover_prepared_claimed_run_server(
          %WorkspaceContext{} = context,
          %Ownership{} = ownership,
@@ -448,13 +411,6 @@ defmodule FavnOrchestrator.RunManager do
       {:ok, version}
     end
   end
-
-  defp retry_wait?(%RunState{status: status, metadata: metadata})
-       when status in [:pending, :running] and is_map(metadata) do
-    is_map(Map.get(metadata, :retry_state, Map.get(metadata, "retry_state")))
-  end
-
-  defp retry_wait?(%RunState{}), do: false
 
   defp compensate_run_server_start(%RunState{} = run, reason) do
     diagnostic = JsonSafe.error(reason)
@@ -523,83 +479,11 @@ defmodule FavnOrchestrator.RunManager do
     DynamicSupervisor.start_child(FavnOrchestrator.RunSupervisor, child_spec)
   end
 
-  defp terminalize_active_run({workspace_id, run_id}, error) when is_map(error) do
-    context = SystemContext.workspace(workspace_id, :run_recovery)
-
-    with {:ok, %RunState{} = run} <- Runs.get(context, run_id),
-         false <- RunState.finalized?(run),
-         owner_id = RunOwnership.owner_id(run_id),
-         {:ok, ownership} <- RunOwnership.claim(context, run_id, owner_id),
-         owned_run <-
-           RunState.with_storage_fence(run, ownership.owner_id, ownership.fencing_token) do
-      cleanup_statuses =
-        RunExecutionCleanup.cancel_active(owned_run, %{kind: :run_server_down, error: error})
-
-      result = terminalize_run(owned_run, error, cleanup_statuses)
-      _release = RunOwnership.release(context, ownership)
-      result
-    else
-      true ->
-        :ok
-
-      {:error, reason} ->
-        {:retry, reason}
-    end
-  end
-
-  defp recover_or_terminalize_crashed_run({workspace_id, run_id} = run_key, error, attempt) do
-    context = SystemContext.workspace(workspace_id, :run_recovery)
-
-    case recover_run(context, run_id) do
-      {:ok, ^run_id} ->
-        :ok
-
-      {:error, capacity_error} when is_run_plan_capacity_error(capacity_error) ->
-        schedule_crash_recovery(run_key, error, attempt)
-
-      {:error, _recovery_error} ->
-        terminalize_or_schedule(run_key, error, attempt)
-    end
-  end
-
-  defp terminalize_or_schedule(run_key, error, attempt) do
-    case terminalize_active_run(run_key, error) do
-      {:retry, reason} when is_tuple(run_key) and attempt < 3 ->
-        Process.send_after(
-          __MODULE__,
-          {:retry_run_crash_recovery, run_key, error, attempt + 1},
-          RunOwnership.default_lease_duration_ms() + 1_000
-        )
-
-        OperationalEvents.emit(
-          :run_crash_recovery_deferred,
-          %{},
-          %{run_key: run_key, attempt: attempt, reason: reason},
-          level: :warning
-        )
-
-      {:retry, reason} ->
-        OperationalEvents.emit(
-          :run_crash_terminalization_failed,
-          %{},
-          %{run_key: run_key, reason: reason},
-          level: :error
-        )
-
-      _result ->
-        :ok
-    end
-  end
-
   defp reserve_run_plan(state, %RunState{} = run) do
     case PlanCapacity.reserve(state.plan_capacity, run_key(run), run) do
       {:ok, plan_capacity} -> {:ok, %{state | plan_capacity: plan_capacity}}
       {:error, reason} -> {:error, reason}
     end
-  end
-
-  defp schedule_crash_recovery(run_key, error, attempt) do
-    Process.send_after(__MODULE__, {:retry_run_crash_recovery, run_key, error, attempt}, 1_000)
   end
 
   defp emit_run_plan_capacity_deferred(
@@ -651,14 +535,6 @@ defmodule FavnOrchestrator.RunManager do
   defp run_key(%RunState{workspace_id: workspace_id, id: run_id})
        when is_binary(workspace_id),
        do: {workspace_id, run_id}
-
-  defp run_server_down_error(reason) do
-    %{
-      type: :run_server_down,
-      exit_reason: JsonSafe.error(reason),
-      crashed_at: DateTime.utc_now()
-    }
-  end
 
   defp sanitize_cancel_reason(value) when is_map(value),
     do: {:ok, Redaction.redact_operational_bounded(value)}

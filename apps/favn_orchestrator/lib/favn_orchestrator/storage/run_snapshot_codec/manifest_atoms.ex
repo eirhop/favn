@@ -68,6 +68,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
       manifest_atom(Map.get(asset, "name")),
       manifest_atom(Map.get(asset, "execution_pool")),
       manifest_atom(Map.get(asset, "runner_pool")),
+      relation_atoms(Map.get(asset, "relation")),
       settings_atoms(Map.get(asset, "settings")),
       ref_atoms(Map.get(asset, "ref")),
       refs_atoms(Map.get(asset, "depends_on")),
@@ -76,6 +77,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
   end
 
   defp asset_atoms(_asset), do: {:ok, []}
+
+  defp relation_atoms(%{"connection" => connection}), do: manifest_atom(connection)
+  defp relation_atoms(_relation), do: {:ok, []}
 
   defp pipeline_atoms(%{} = pipeline) do
     collect_groups([
@@ -227,8 +231,10 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms do
       else: {:error, :manifest_atom_limit_exceeded}
   end
 
-  defp valid_persisted_atom?(value) when is_binary(value),
-    do: byte_size(value) in 1..@max_module_length
+  defp valid_persisted_atom?(value) when is_binary(value) do
+    match?({:ok, [_]}, module_atom(value)) or
+      match?({:ok, [_]}, manifest_atom(value))
+  end
 
   defp valid_persisted_atom?(_value), do: false
 end

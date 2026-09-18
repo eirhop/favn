@@ -814,8 +814,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp relation_from_dto(relation, _allowed_atom_strings, false) when is_map(relation),
     do: {:ok, relation}
 
-  defp relation_from_dto(relation, _allowed_atom_strings, true) when is_map(relation) do
-    with {:ok, connection} <- optional_existing_atom(field(relation, :connection)) do
+  defp relation_from_dto(relation, allowed_atom_strings, true) when is_map(relation) do
+    with {:ok, connection} <-
+           optional_atom_from_dto(field(relation, :connection), allowed_atom_strings) do
       {:ok,
        RelationRef.new!(
          connection: connection,
@@ -830,10 +831,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp relation_from_dto(relation, _allowed_atom_strings, _struct?),
     do: {:error, {:invalid_plan_relation, relation}}
-
-  defp optional_existing_atom(nil), do: {:ok, nil}
-  defp optional_existing_atom(value) when is_binary(value), do: existing_atom(value)
-  defp optional_existing_atom(value), do: {:error, {:invalid_atom_dto, value}}
 
   defp retry_policy_to_dto(nil), do: nil
 
@@ -1077,7 +1074,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp atom_from_dto(value, allowed_atom_strings) when is_binary(value) do
     if MapSet.member?(allowed_atom_strings, value) do
-      existing_atom(value)
+      # Only pinned manifest identifiers and fixed framework names reach this
+      # branch. Recovery must work before consumer modules have been loaded.
+      {:ok, String.to_atom(value)}
     else
       {:error, {:unknown_atom, value}}
     end
@@ -1089,12 +1088,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp optional_atom_from_dto(value, allowed_atom_strings),
     do: atom_from_dto(value, allowed_atom_strings)
-
-  defp existing_atom(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> {:error, {:atom_not_loaded, value}}
-  end
 
   defp status_from_dto("pending"), do: {:ok, :pending}
   defp status_from_dto("running"), do: {:ok, :running}

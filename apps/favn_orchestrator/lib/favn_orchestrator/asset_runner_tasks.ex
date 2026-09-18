@@ -126,7 +126,8 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
     "rt_" <> digest
   end
 
-  defp domain_identity(run, work, node_key, attempt) do
+  @doc false
+  def domain_identity(run, work, node_key, attempt) do
     digest =
       :crypto.hash(
         :sha256,

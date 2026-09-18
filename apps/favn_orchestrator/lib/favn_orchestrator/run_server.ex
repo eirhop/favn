@@ -7,9 +7,9 @@ defmodule FavnOrchestrator.RunServer do
   persistence is retried in-process so transient storage failures do not
   discard the final outcome. A write rejected by the run-ownership fence on the
   run-start, step, or terminal path is never retried: the process stops with
-  `run_ownership_lost` and recovery proceeds under the newer owner. Stage
-  admission handles its own fenced writes as ordinary failures before the
-  following step write stops the process.
+  `run_ownership_lost` and recovery proceeds under the newer owner. Admission
+  and bookkeeping preserve their original commands for safe persistence replay;
+  a process exit leaves durable tasks for the ownership recovery sweep.
   """
 
   use GenServer
@@ -27,7 +27,6 @@ defmodule FavnOrchestrator.RunServer do
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.PersistenceRetry
-  alias FavnOrchestrator.RunServer.Recovery
   alias FavnOrchestrator.RunServer.Snapshots
   alias FavnOrchestrator.RunState
   alias FavnOrchestrator.Runs
@@ -69,56 +68,33 @@ defmodule FavnOrchestrator.RunServer do
     end
   end
 
-  defp continue_start(%{recovering?: true} = state, %RunState{} = run_state, %Version{} = version) do
-    case Recovery.disposition(run_state) do
-      {:ok, :resume} when run_state.status == :pending ->
-        running = RunState.transition(run_state, status: :running)
-        persist_run_start(state, running, version)
+  defp continue_start(%{recovering?: true} = state, %RunState{} = claimed, version) do
+    context = SystemContext.workspace(claimed.workspace_id, :run_worker)
 
-      {:ok, :resume} ->
-        start_execution(state, run_state, version)
+    case Runs.get(context, claimed.id) do
+      {:ok, saved} ->
+        run = copy_storage_fence(saved, claimed)
+        state = %{state | run_state: run}
 
-      {:ok, {:uncertain, details}} ->
-        :ok = Execution.release_manifest_lease(run_state)
-        terminalize_uncertain_recovery(state, run_state, details)
+        cond do
+          RunState.finalized?(run) ->
+            stop_normally(state, run)
+
+          run.status == :pending ->
+            persist_run_start(state, RunState.transition(run, status: :running), version)
+
+          true ->
+            start_execution(state, run, version)
+        end
 
       {:error, reason} ->
-        {:stop, {:shutdown, {:runner_execution_recovery_unavailable, reason}}, state}
+        {:stop, {:shutdown, {:run_recovery_snapshot_unavailable, reason}}, state}
     end
   end
 
   defp continue_start(state, %RunState{} = run_state, %Version{} = version) do
     running = RunState.transition(run_state, status: :running)
     persist_run_start(state, running, version)
-  end
-
-  defp terminalize_uncertain_recovery(state, %RunState{} = run_state, details) do
-    cleanup =
-      RunExecutionCleanup.cancel_active(run_state, %{
-        kind: :uncertain_runner_recovery,
-        details: details
-      })
-
-    confirmed_task_ids =
-      cleanup
-      |> Enum.filter(&(Map.get(&1, :status) in [:acknowledged, :already_completed]))
-      |> Enum.map(&Map.get(&1, :runner_task_id))
-
-    run_state = Snapshots.clear_inflight_tasks(run_state, confirmed_task_ids)
-
-    terminal =
-      Snapshots.snapshot_update(run_state,
-        status: :error,
-        runner_task_id: nil,
-        error: %{
-          "kind" => "uncertain_runner_recovery",
-          "type" => "uncertain_runner_recovery",
-          "message" => "runner execution outcome is uncertain after recovery",
-          "reason" => %{details: details, runner_cleanup: cleanup}
-        }
-      )
-
-    finalize_terminal(state, terminal)
   end
 
   @impl true
@@ -433,6 +409,17 @@ defmodule FavnOrchestrator.RunServer do
             {:stop, {:shutdown, reason}, state}
         end
 
+      {:recovery_required, reason} ->
+        OperationalEvents.emit(
+          :run_execution_recovery_required,
+          %{},
+          %{run_id: running.id, reason: reason, operation: :restore_execution_inputs},
+          level: :error
+        )
+
+        {:stop, {:shutdown, :run_execution_recovery_required},
+         Map.put(state, :run_state, running)}
+
       {:terminal, terminal} ->
         :ok = Execution.release_manifest_lease(running)
         finalize_terminal(state, terminal)
@@ -488,7 +475,20 @@ defmodule FavnOrchestrator.RunServer do
       |> Map.put(:execution_state, execution_state)
       |> replay_deferred_execution_events()
 
-    {:noreply, next}
+    if get_in(state, [:execution_state, Access.key(:recovery)]) do
+      case resize_execution_memory(next, execution_state.run, execution_state) do
+        :ok ->
+          {:noreply, next}
+
+        {:error, reason} ->
+          handle_execution_result(
+            next,
+            {:recovery_required, execution_state, {:recovery_memory_limit, reason}}
+          )
+      end
+    else
+      {:noreply, next}
+    end
   end
 
   defp handle_execution_result(state, {:terminal, %RunState{} = terminal}) do

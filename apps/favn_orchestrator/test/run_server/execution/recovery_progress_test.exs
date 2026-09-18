@@ -23,12 +23,18 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgressTest do
     assert progress.failure == nil
 
     assert {:ok, settled} =
-             RecoveryProgress.apply_event(progress, event(run, 3, :step_settled, :first, %{}))
+             RecoveryProgress.apply_event(
+               progress,
+               event(run, 3, :step_settled, :first, %{runner_task_id: "task-first"})
+             )
 
     assert settled.steps[step_id(run, :first)].phase == :settled
 
     assert {:error, :invalid_recovery_step} =
-             RecoveryProgress.apply_event(settled, event(run, 4, :step_settled, :second, %{}))
+             RecoveryProgress.apply_event(
+               settled,
+               event(run, 4, :step_settled, :second, %{runner_task_id: "second"})
+             )
   end
 
   test "records earlier terminal failure separately from a later successful sibling" do
@@ -37,8 +43,9 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgressTest do
     assert {:ok, progress} =
              RecoveryProgress.fold(RecoveryProgress.new(run), [
                event(run, 1, :step_failed, :first, %{retryable?: false}),
-               event(run, 2, :step_finished, :second, %{}),
-               event(run, 3, :step_settled, :second, %{})
+               event(run, 2, :step_started, :second, %{runner_task_id: "second"}),
+               event(run, 3, :step_finished, :second, %{}),
+               event(run, 4, :step_settled, :second, %{runner_task_id: "second"})
              ])
 
     assert progress.failure == %{sequence: 1, status: :error}
@@ -101,15 +108,22 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgressTest do
 
   test "result payload size does not grow reconstructed progress" do
     run = run()
-    small = event(run, 1, :step_finished, :first, %{node_result: %{meta: %{}}})
+
+    {:ok, progress} =
+      RecoveryProgress.apply_event(
+        RecoveryProgress.new(run),
+        event(run, 1, :step_started, :first, %{runner_task_id: "first"})
+      )
+
+    small = event(run, 2, :step_finished, :first, %{node_result: %{meta: %{}}})
 
     large =
-      event(run, 1, :step_finished, :first, %{
+      event(run, 2, :step_finished, :first, %{
         node_result: %{meta: %{application_data: String.duplicate("x", 200_000)}}
       })
 
-    assert RecoveryProgress.apply_event(RecoveryProgress.new(run), small) ==
-             RecoveryProgress.apply_event(RecoveryProgress.new(run), large)
+    assert RecoveryProgress.apply_event(progress, small) ==
+             RecoveryProgress.apply_event(progress, large)
   end
 
   test "malformed events and altered planned stages are rejected without crashing" do
@@ -149,6 +163,44 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgressTest do
     end
   end
 
+  test "a settlement cannot authorize replay of a terminal or unknown outcome" do
+    run = run()
+
+    {:ok, progress} =
+      RecoveryProgress.fold(RecoveryProgress.new(run), [
+        event(run, 1, :step_started, :first, %{runner_task_id: "unknown-write"}),
+        event(run, 2, :step_failed, :first, %{retryable?: false})
+      ])
+
+    for data <- [
+          %{status: :error, retryable?: true, retry_after_ms: 0, runner_task_id: "unknown-write"},
+          %{status: :ok, runner_task_id: "unknown-write"},
+          %{status: :error, runner_task_id: "other-task"},
+          %{status: :error},
+          %{status: %{malformed: true}, runner_task_id: "unknown-write"}
+        ] do
+      assert {:error, :invalid_recovery_step} =
+               RecoveryProgress.apply_event(
+                 progress,
+                 event(run, 3, :step_settled, :first, data)
+               )
+    end
+  end
+
+  test "a position cannot skip unfinished work or cross the pinned plan bounds" do
+    run = run()
+    progress = RecoveryProgress.new(run)
+
+    for position <- [
+          %{version: 1, mode: "pipeline", phase: "admit", index: 99, attempt: 1},
+          %{version: 1, mode: "sequential", phase: "admit", index: 0, attempt: 1},
+          %{version: 1, mode: "pipeline", phase: "advance", index: 0, attempt: 1}
+        ] do
+      e = %{event(run, 1, :run_execution_position, :first, %{}) | data: %{position: position}}
+      assert {:error, :invalid_recovery_position} = RecoveryProgress.apply_event(progress, e)
+    end
+  end
+
   defp run do
     nodes = Map.new([:first, :second], &{key(&1), %{ref: {__MODULE__, &1}, stage: 0}})
 
@@ -156,7 +208,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgressTest do
       id: "recovery-progress",
       manifest_version_id: "manifest-progress",
       manifest_content_hash: String.duplicate("a", 64),
-      plan: struct(Favn.Plan, nodes: nodes)
+      plan: struct(Favn.Plan, nodes: nodes, node_stages: [[key(:first), key(:second)]])
     }
   end
 
@@ -166,6 +218,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgressTest do
     do: AssetStepIdentity.asset_step_id(run.id, key(name), {__MODULE__, name})
 
   defp event(run, sequence, kind, name, data) do
+    data = if kind == :step_settled, do: Map.put_new(data, :status, :ok), else: data
+
     event = %{
       run_id: run.id,
       sequence: sequence,

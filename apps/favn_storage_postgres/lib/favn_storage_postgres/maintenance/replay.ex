@@ -5,12 +5,13 @@ defmodule FavnStoragePostgres.Maintenance.Replay do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
 
-  def validate_timestamp!(timestamp) do
+  def validate_timestamp!(timestamp, opts \\ []) do
     %{rows: [[now]]} = SQL.query!(Repo, "SELECT clock_timestamp()", [])
     window = FavnOrchestrator.Retention.Policy.command_window_seconds()
 
     if not match?(%DateTime{}, timestamp) or
-         DateTime.compare(timestamp, DateTime.add(now, -window, :second)) == :lt or
+         (not Keyword.get(opts, :retained_history?, false) and
+            DateTime.compare(timestamp, DateTime.add(now, -window, :second)) == :lt) or
          DateTime.compare(timestamp, DateTime.add(now, 300, :second)) == :gt do
       Repo.rollback(Error.new(:invalid, "command is outside the replay window"))
     end

@@ -22,6 +22,8 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   alias FavnOrchestrator.RunState
 
   defmodule FakeStore do
+    defdelegate get(query), to: FavnOrchestrator.TestRunnerTaskStore
+    defdelegate request_cancellation(command), to: FavnOrchestrator.TestRunnerTaskStore
     def get_execution_package(_query), do: {:ok, Process.get(:native_package)}
 
     def claim(command) do
@@ -134,21 +136,17 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     end
 
     def admit(command) do
-      send(self(), {:admit_execution, command})
+      send(self(), {:runner_admission, command})
       {:error, :forced_refill_stop}
     end
   end
 
-  setup context do
+  setup do
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
       run_submissions: FakeStore,
-      runner_tasks:
-        if(context[:native_publication],
-          do: FakeStore,
-          else: FavnOrchestrator.TestRunnerTaskStore
-        ),
+      runner_tasks: FakeStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -224,6 +222,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     key = {ref, nil}
 
     plan = %Plan{
+      dependencies: :none,
       target_refs: [ref],
       target_node_keys: [key],
       topo_order: [ref],
@@ -271,8 +270,8 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       sequential_refs: [{ref, key, 0}]
     }
 
-    assert {:await, _, _} = Sequential.continue(state)
-    assert_receive {:native_work_enqueued, command}
+    assert {:terminal, _} = Sequential.continue(state)
+    assert_receive {:runner_admission, %{enqueue: command}}
 
     assert {:ok, work} =
              Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
@@ -546,14 +545,16 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       RunState.new(
         id: "run-persistence-retry-refill",
         workspace_id: "workspace-persistence-retry-refill",
+        deployment_id: "deployment-persistence-retry-refill",
         manifest_version_id: "manifest-persistence-retry-refill",
-        manifest_content_hash: "sha256:persistence-retry-refill",
+        manifest_content_hash: String.duplicate("a", 64),
         runner_releases: %{"default" => release_id},
         asset_ref: completed_ref,
         target_refs: [completed_ref, deferred_ref],
         plan: plan,
         metadata: %{pipeline_execution_policy: %{max_concurrency: 1}}
       )
+      |> RunState.transition(status: :running)
       |> RunState.with_storage_fence("run-owner", 1)
 
     version = %Version{
@@ -625,7 +626,14 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       stage_attempt: 1,
       stage_state:
         StageAttemptState.new(run, [], [entry], [deferred_key], MapSet.new(), nil, :blocked),
-      stage_decisions: %{deferred_key => %{decision: :run, freshness_key: "latest"}},
+      stage_decisions: %{
+        deferred_key => %{
+          decision: :run,
+          reason: :forced,
+          node_key: deferred_key,
+          freshness_key: "latest"
+        }
+      },
       freshness_context: freshness_context,
       stage_freshness_context: freshness_context,
       freshness_checkpoint: %{
@@ -670,7 +678,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
     assert {:terminal, failed} = Execution.retry_persistence(retry_state, retry)
     assert failed.status == :error
-    assert_receive {:admit_execution, %{run_id: "run-persistence-retry-refill"}}
+    assert_receive {:runner_admission, %{enqueue: %{run_id: "run-persistence-retry-refill"}}}
     refute_receive {:release_execution_lease, _duplicate}
   end
 
@@ -887,6 +895,8 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       stage: 0,
       execution_pool: nil,
       evidence_generation_id: evidence_generation_id,
+      target_id: Favn.TargetIdentity.for_asset(ref),
+      target_generation_id: nil,
       action: :run,
       retry_policy: Favn.Retry.Policy.default(),
       retry_policy_source: :default

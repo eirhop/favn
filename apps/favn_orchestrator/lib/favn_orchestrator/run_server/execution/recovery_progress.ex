@@ -11,7 +11,18 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgress do
   alias FavnOrchestrator.RunState
 
   @enforce_keys [:run_id, :manifest_version_id, :manifest_content_hash, :nodes]
-  defstruct @enforce_keys ++ [sequence: 0, steps: %{}, position: nil, failure: nil]
+  defstruct @enforce_keys ++
+              [
+                mode: nil,
+                stages: [],
+                sequence: 0,
+                steps: %{},
+                position: nil,
+                position_sequence: nil,
+                failure: nil,
+                details: [],
+                result_count: 0
+              ]
 
   @type step :: %{
           required(:node_key) => Favn.Plan.node_key(),
@@ -59,6 +70,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgress do
 
     %__MODULE__{
       run_id: run.id,
+      mode: RunState.execution_mode(run),
+      stages: run.plan.node_stages,
       manifest_version_id: run.manifest_version_id,
       manifest_content_hash: run.manifest_content_hash,
       nodes: nodes
@@ -107,8 +120,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgress do
   defp reduce(progress, "run_execution_position", event) do
     position = field(field(event, :data), :position)
 
-    if valid_position?(position),
-      do: {:ok, %{progress | position: position}},
+    if valid_position?(progress, position),
+      do: {:ok, %{progress | position: position, position_sequence: field(event, :sequence)}},
       else: {:error, :invalid_recovery_position}
   end
 
@@ -126,6 +139,18 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgress do
          {:ok, step} <-
            step(Map.get(progress.steps, id), key, stage, attempt, kind, event) do
       next = %{progress | steps: Map.put(progress.steps, id, step)}
+
+      next =
+        if kind in @outcome_events do
+          %{
+            next
+            | details: Enum.take([{id, event.sequence} | next.details], 128),
+              result_count: next.result_count + 1
+          }
+        else
+          next
+        end
+
       {:ok, remember_failure(next, kind, event, step)}
     else
       _invalid -> {:error, :invalid_recovery_step}
@@ -182,52 +207,113 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgress do
     end
   end
 
-  defp update_step(%{phase: :outcome} = step, "step_settled", _event),
-    do: {:ok, %{step | phase: :settled}}
+  defp update_step(%{phase: :outcome} = step, "step_settled", event) do
+    status = field(event.data, :status)
+
+    status =
+      Enum.find([:ok, :error, :timed_out, :cancelled], &(status in [&1, Atom.to_string(&1)]))
+
+    retry = field(event.data, :retry_after_ms)
+
+    retryable? = field(event.data, :retryable?, false)
+
+    task_id = field(event.data, :runner_task_id)
+
+    compatible? =
+      task_id == step.task_id and
+        (status != :ok or step.status == :ok) and
+        (not retryable? or (step.retry_allowed? and status in [:error, :timed_out]))
+
+    if status && compatible? &&
+         ((retryable? and is_integer(retry) and retry >= 0) or
+            (not retryable? and is_nil(retry))) do
+      {:ok,
+       Map.merge(step, %{
+         phase: :settled,
+         settlement_status: status,
+         retry_at: if(retry, do: DateTime.add(event.occurred_at, retry, :millisecond)),
+         retry_allowed?: field(event.data, :retryable?, false)
+       })}
+    else
+      {:error, :invalid_recovery_settlement}
+    end
+  end
 
   defp update_step(_step, "step_settled", _event),
     do: {:error, :recovery_settlement_without_outcome}
 
   defp update_step(step, kind, event) do
     status = Map.fetch!(@outcomes, kind)
-    phase = if status in [:skipped_fresh, :blocked], do: :settled, else: :outcome
 
-    {:ok,
-     Map.merge(step, %{
-       phase: phase,
-       status: status,
-       retry_allowed?:
-         status in [:error, :timed_out] and
-           field(event.data, :retryable?, false) and
-           not field(event.data, :retry_exhausted?, false),
-       outcome_sequence: event.sequence
-     })}
+    if status == :ok and not Map.has_key?(step, :task_id) do
+      {:error, :recovery_outcome_without_task}
+    else
+      phase =
+        if status in [:skipped_fresh, :blocked] or
+             (status != :ok and not Map.has_key?(step, :task_id)), do: :settled, else: :outcome
+
+      {:ok,
+       Map.merge(step, %{
+         phase: phase,
+         status: status,
+         retry_allowed?:
+           status in [:error, :timed_out] and
+             field(event.data, :retryable?, false) and
+             not field(event.data, :retry_exhausted?, false),
+         outcome_sequence: event.sequence
+       })}
+    end
   end
 
   defp remember_failure(%{failure: nil} = progress, kind, event, step)
-       when kind in ["step_failed", "step_timed_out", "step_cancelled", "step_blocked"] do
-    if step.retry_allowed?,
+       when kind in [
+              "step_failed",
+              "step_timed_out",
+              "step_cancelled",
+              "step_blocked",
+              "step_settled"
+            ] do
+    status = Map.get(step, :settlement_status, step.status)
+
+    if step.retry_allowed? or status == :ok,
       do: progress,
       else: %{
         progress
         | failure: %{
             sequence: event.sequence,
-            status: if(step.status == :blocked, do: :error, else: step.status)
+            status: if(status == :blocked, do: :error, else: status)
           }
       }
   end
 
   defp remember_failure(progress, _kind, _event, _step), do: progress
 
-  defp valid_position?(position) when is_map(position) do
+  defp valid_position?(progress, position) when is_map(position) do
     map_size(position) == 5 and field(position, :version) == 1 and
-      field(position, :mode) in ["pipeline", "sequential"] and
+      field(position, :mode) == Atom.to_string(progress.mode) and
       field(position, :phase) in ["classify", "admit", "retry", "advance", "finish"] and
       is_integer(field(position, :index)) and field(position, :index) >= 0 and
-      is_integer(field(position, :attempt)) and field(position, :attempt) > 0
+      is_integer(field(position, :attempt)) and field(position, :attempt) > 0 and
+      field(position, :index) < length(progress.stages) and
+      completed_before_position?(progress, position)
   end
 
-  defp valid_position?(_position), do: false
+  defp valid_position?(_progress, _position), do: false
+
+  defp completed_before_position?(progress, position) do
+    count = field(position, :index) + if(field(position, :phase) == "advance", do: 1, else: 0)
+
+    completed =
+      progress.steps
+      |> Map.values()
+      |> Enum.filter(&(&1.phase == :settled and not &1.retry_allowed?))
+      |> MapSet.new(& &1.node_key)
+
+    progress.stages
+    |> Enum.take(count)
+    |> List.flatten()
+    |> Enum.all?(&MapSet.member?(completed, &1))
+  end
 
   defp field(map, key, default \\ nil)
 

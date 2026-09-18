@@ -1152,6 +1152,56 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert [%NodeResult{status: :retrying}] = restored.result.node_results
   end
 
+  test "restores only approved cold manifest identifiers without loading consumer code" do
+    version = manifest_version("mv_cold_snapshot", __MODULE__.Asset)
+    run = run_state("run_cold_snapshot", version, __MODULE__.Asset)
+    {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    {:ok, record} = ManifestCodec.to_record(version)
+    cold = "Elixir.ColdSnapshotAsset" <> Integer.to_string(System.unique_integer([:positive]))
+    unknown = cold <> "Unknown"
+    assert_raise ArgumentError, fn -> String.to_existing_atom(cold) end
+
+    manifest_json =
+      String.replace(record.manifest_index_json, Atom.to_string(__MODULE__.Asset), cold)
+
+    {:ok, hash} = Favn.Manifest.Identity.hash_manifest(Jason.decode!(manifest_json))
+    record = %{record | manifest_index_json: manifest_json, content_hash: hash}
+    {:ok, atoms} = ManifestAtoms.extract(record)
+
+    record =
+      record |> Map.delete(:manifest_index_json) |> Map.put(:atom_strings, MapSet.to_list(atoms))
+
+    payload =
+      payload
+      |> String.replace(Atom.to_string(__MODULE__.Asset), cold)
+      |> String.replace(version.content_hash, hash)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               record
+             )
+
+    assert Atom.to_string(elem(restored.asset_ref, 0)) == cold
+
+    assert {:error, {:unknown_atom, ^unknown}} =
+             RunSnapshotCodec.decode_run(
+               %{
+                 run_blob: String.replace(payload, cold, unknown),
+                 manifest_version_id: version.manifest_version_id
+               },
+               record
+             )
+
+    assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
+
+    assert {:error, :invalid_manifest_atom_inventory} =
+             ManifestAtoms.extract(%{
+               content_hash: hash,
+               atom_strings: ["invalid atom with spaces"]
+             })
+  end
+
   test "rejects refs that are not present in the associated manifest" do
     version = manifest_version("mv_run_snapshot_bad_ref", __MODULE__.Asset)
     run = run_state("run_snapshot_bad_ref", version, __MODULE__.Asset)

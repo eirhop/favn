@@ -315,6 +315,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
       manifest_index: manifest_index,
       materialization_claim: %{
         claim_key: "claim-1",
+        run_id: "run-1",
         workspace_id: "workspace-1",
         target_generation_id: @generation_id
       }

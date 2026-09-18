@@ -45,7 +45,33 @@ defmodule FavnOrchestrator.MaterializationClaims do
           RunnerWork.t()
         ) ::
           {:ok, map(), ClaimMaterialization.t()} | {:already_claimed, map()} | {:error, term()}
-  def prepare_acquire(
+  def prepare_acquire(run, version, index, node_key, decisions, freshness, work) do
+    with {:ok, claim, command, lock_command} <-
+           prepare_admission(run, version, index, node_key, decisions, freshness, work),
+         {:ok, lock} <- acquire_prepared_lock(lock_command) do
+      {:ok, %{claim | target_operation_lock: lock}, command}
+    else
+      {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
+        {:already_claimed, %{claim_key: "target:" <> TargetIdentity.for_asset(work.asset_ref)}}
+
+      error ->
+        error
+    end
+  end
+
+  @doc "Prepares claim and optional combined-window lock without acquiring either."
+  @spec prepare_admission(
+          RunState.t(),
+          Version.t(),
+          Index.t(),
+          node_key(),
+          map(),
+          map(),
+          RunnerWork.t()
+        ) ::
+          {:ok, claim(), ClaimMaterialization.t(), AcquireTargetOperationLocks.t() | nil}
+          | {:error, term()}
+  def prepare_admission(
         %RunState{} = run_state,
         %Version{} = version,
         %Index{} = manifest_index,
@@ -74,7 +100,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            }),
          :ok <- validate_authority(run_state),
          {:ok, generation} <- pinned_generation(node, asset),
-         {:ok, operation_lock} <- acquire_operation_lock(run_state, node, work),
+         lock_command <- prepare_operation_lock(run_state, node, work),
          producer_identity <-
            producer_identity(run_state, version, node_key, decisions) <>
              ":" <> generation.evidence_generation_id,
@@ -100,7 +126,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            logical_window_range: logical_window_range(node),
            empty_generation: work.rebuild_empty_generation,
            target_operation: work.target_operation,
-           target_operation_lock: operation_lock,
+           target_operation_lock: nil,
            target_generation_id: generation.target_generation_id,
            evidence_generation_id: generation.evidence_generation_id,
            owner_id: run_state.storage_owner_id,
@@ -117,7 +143,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            deployment_id: run_state.deployment_id,
            target_kind: :asset,
            target_id: TargetIdentity.for_asset(node.ref),
-           operation_id: operation_id(work, operation_lock),
+           operation_id: operation_id(work, lock_command),
            target_generation_id: generation.target_generation_id,
            evidence_generation_id: generation.evidence_generation_id,
            partition_key: freshness_key,
@@ -126,13 +152,7 @@ defmodule FavnOrchestrator.MaterializationClaims do
            lease_duration_ms: ttl_ms(run_state),
            occurred_at: now
          } do
-      {:ok, claim, command}
-    else
-      {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
-        {:already_claimed, %{claim_key: "target:" <> TargetIdentity.for_asset(work.asset_ref)}}
-
-      error ->
-        error
+      {:ok, claim, command, lock_command}
     end
   end
 
@@ -311,22 +331,30 @@ defmodule FavnOrchestrator.MaterializationClaims do
     })
   end
 
-  defp classify_claim(
-         %MaterializationDecision{status: :claimed, claim: persisted},
-         requested
-       ),
-       do: {:ok, merge_claim(requested, persisted)}
+  @doc false
+  @spec classify_claim(MaterializationDecision.t(), claim()) ::
+          {:ok, claim()}
+          | {:already_claimed, claim()}
+          | {:already_succeeded, claim()}
+          | {:error, term()}
+  def classify_claim(decision, requested)
 
-  defp classify_claim(
-         %MaterializationDecision{status: :competing, claim: persisted},
-         requested
-       ),
-       do: {:already_claimed, merge_claim(requested, persisted)}
+  def classify_claim(
+        %MaterializationDecision{status: :claimed, claim: persisted},
+        requested
+      ),
+      do: {:ok, merge_claim(requested, persisted)}
 
-  defp classify_claim(%MaterializationDecision{status: :materialized}, requested),
+  def classify_claim(
+        %MaterializationDecision{status: :competing, claim: persisted},
+        requested
+      ),
+      do: {:already_claimed, merge_claim(requested, persisted)}
+
+  def classify_claim(%MaterializationDecision{status: :materialized}, requested),
     do: {:already_succeeded, Map.put(requested, :status, :succeeded)}
 
-  defp classify_claim(%MaterializationDecision{status: status}, _requested),
+  def classify_claim(%MaterializationDecision{status: status}, _requested),
     do: {:error, {:unexpected_materialization_decision, status}}
 
   defp merge_claim(requested, persisted) do
@@ -392,27 +420,32 @@ defmodule FavnOrchestrator.MaterializationClaims do
     end
   end
 
-  defp acquire_operation_lock(run_state, %{window: %{logical_window_count: count}} = node, work)
+  defp prepare_operation_lock(run_state, %{window: %{logical_window_count: count}} = node, work)
        when is_integer(count) and count > 1 and is_nil(work.rebuild_operation_id) do
     operation_id = combined_operation_id(run_state, node)
 
-    case Persistence.stores().target_operation_locks.acquire_many(%AcquireTargetOperationLocks{
-           workspace_context:
-             SystemContext.workspace(run_state.workspace_id, :materialization_lock),
-           command_id: command_id("acquire-lock", operation_id, node.target_id),
-           target_ids: [node.target_id],
-           operation_id: operation_id,
-           operation_type: :materialization,
-           lease_owner: run_state.storage_owner_id,
-           lease_duration_ms: @combined_lock_lease_ms,
-           occurred_at: DateTime.utc_now()
-         }) do
+    %AcquireTargetOperationLocks{
+      workspace_context: SystemContext.workspace(run_state.workspace_id, :materialization_lock),
+      command_id: command_id("acquire-lock", operation_id, node.target_id),
+      target_ids: [node.target_id],
+      operation_id: operation_id,
+      operation_type: :materialization,
+      lease_owner: run_state.storage_owner_id,
+      lease_duration_ms: @combined_lock_lease_ms,
+      occurred_at: DateTime.utc_now()
+    }
+  end
+
+  defp prepare_operation_lock(_run_state, _node, _work), do: nil
+
+  defp acquire_prepared_lock(nil), do: {:ok, nil}
+
+  defp acquire_prepared_lock(command) do
+    case Persistence.stores().target_operation_locks.acquire_many(command) do
       {:ok, [lock]} -> {:ok, lock}
       {:error, reason} -> {:error, reason}
     end
   end
-
-  defp acquire_operation_lock(_run_state, _node, _work), do: {:ok, nil}
 
   defp operation_id(%{rebuild_operation_id: operation_id}, _lock)
        when is_binary(operation_id),

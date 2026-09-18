@@ -60,6 +60,23 @@ defmodule FavnOrchestrator.RunnerTaskContext do
     _invalid -> {:error, :invalid_runner_task_orchestration_context}
   end
 
+  @doc false
+  @spec decode_admission_intent(map(), Version.t(), Favn.Contracts.RunnerWork.t()) ::
+          {:ok, map()} | {:error, atom()}
+  def decode_admission_intent(envelope, version, work) do
+    {module, name} = Favn.Contracts.RunnerWork.asset_ref(work)
+
+    with {:ok, context} <-
+           PersistenceData.decode(envelope, @limit, version, [module, name | @atoms]),
+         true <- valid?(context),
+         nil <- context.materialization_claim,
+         [] <- Map.get(context, :resource_circuit_permits, []) do
+      {:ok, context}
+    else
+      _invalid -> {:error, :invalid_runner_task_orchestration_context}
+    end
+  end
+
   defp valid?(context) when context == %{}, do: true
 
   defp valid?(%{kind: :sequential, materialization_claim: claim} = context),

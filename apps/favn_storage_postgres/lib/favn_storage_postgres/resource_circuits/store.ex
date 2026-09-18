@@ -32,6 +32,7 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.Schemas.Run
   alias FavnStoragePostgres.Schemas.ResourceCircuit
   alias FavnStoragePostgres.Schemas.ResourceCircuitOutcome
   alias FavnStoragePostgres.Schemas.ResourceRecoveryCandidate
@@ -194,6 +195,19 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
     end
   end
 
+  # Admission locks policy before capacity, matching deployment lock order.
+  def lock_admission_policy!(workspace_id) do
+    Repo.one(
+      from(state in WorkspaceRuntimeState,
+        where: state.workspace_id == ^workspace_id,
+        select: state.workspace_id,
+        lock: "FOR SHARE"
+      )
+    )
+
+    :ok
+  end
+
   defp active_execution_pool_policy!(workspace_id) do
     query =
       from(state in WorkspaceRuntimeState,
@@ -292,12 +306,11 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
   defp retry_at(%ResourceCircuit{state: "half_open", probe_expires_at: value}), do: value
 
   defp record_outcomes!(command) do
-    FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
-
     workspace_id = command.workspace_context.workspace_id
     candidate_runs = Enum.map(command.recovery_candidates, & &1.source_run_id)
     Enum.each(candidate_runs, &CancellationOwnership.owner!(workspace_id, &1))
     CancellationOwnership.lock_new_many!(workspace_id, [command.run_id | candidate_runs])
+    validate_retained_outcome_time!(workspace_id, command.run_id, command.occurred_at)
 
     permits = Map.new(command.permits, &{resource_identity(&1.resource), &1})
 
@@ -311,9 +324,24 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
         end
       end)
 
-    insert_open_recovery_candidate!(command.recovery_candidates, open_resources)
+    insert_open_recovery_candidate!(
+      command.recovery_candidates,
+      open_resources,
+      command.occurred_at
+    )
 
     %ResourceCircuitUpdate{closed_resources: Enum.reverse(closed_resources)}
+  end
+
+  defp validate_retained_outcome_time!(workspace_id, run_id, occurred_at) do
+    retained? =
+      Repo.exists?(from(r in Run, where: r.workspace_id == ^workspace_id and r.run_id == ^run_id))
+
+    # The caller holds cancellation and shared history locks; retirement cannot
+    # remove this parent's outcome receipts while a late settlement is replayed.
+    FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(occurred_at,
+      retained_history?: retained?
+    )
   end
 
   defp release_permits!(command) do
@@ -368,7 +396,10 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
       transitions
     else
       circuit = lock_circuit!(workspace_id, outcome.resource)
-      apply_outcome!(circuit, permit, outcome, command.occurred_at, transitions)
+      # A delayed observation is evidence, but cannot undo newer health or probe decisions.
+      if DateTime.compare(command.occurred_at, circuit.updated_at) == :lt,
+        do: transitions,
+        else: apply_outcome!(circuit, permit, outcome, command.occurred_at, transitions)
     end
   end
 
@@ -483,7 +514,7 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
     circuit |> Ecto.Changeset.change(attrs) |> Repo.update!()
   end
 
-  defp insert_open_recovery_candidate!(candidates, open_resources) do
+  defp insert_open_recovery_candidate!(candidates, open_resources, occurred_at) do
     open_identities = MapSet.new(open_resources, &resource_identity/1)
 
     candidates
@@ -492,14 +523,33 @@ defmodule FavnStoragePostgres.ResourceCircuits.Store do
       MapSet.member?(open_identities, resource_identity(candidate.resource))
     end)
     |> case do
-      %RecordResourceRecoveryCandidate{} = candidate -> insert_recovery_candidate!(candidate)
-      nil -> :ok
+      %RecordResourceRecoveryCandidate{} = candidate ->
+        if candidate.occurred_at != occurred_at,
+          do: Repo.rollback(Error.new(:invalid, "recovery candidate outcome timestamp mismatch"))
+
+        expires_at = DateTime.add(occurred_at, candidate.max_age_ms, :millisecond)
+
+        if DateTime.compare(expires_at, DateTime.utc_now()) == :gt do
+          validate_retained_outcome_time!(
+            candidate.workspace_context.workspace_id,
+            candidate.source_run_id,
+            occurred_at
+          )
+
+          insert_authorized_recovery_candidate!(candidate)
+        end
+
+      nil ->
+        :ok
     end
   end
 
   defp insert_recovery_candidate!(command) do
     FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.occurred_at)
+    insert_authorized_recovery_candidate!(command)
+  end
 
+  defp insert_authorized_recovery_candidate!(command) do
     workspace = command.workspace_context.workspace_id
     CancellationOwnership.lock!(workspace, command.source_run_id)
     {:ok, node_key} = PayloadCodec.encode(command.node_key)

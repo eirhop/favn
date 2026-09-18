@@ -69,6 +69,14 @@ defmodule FavnOrchestrator.RunServer.Execution.AdmissionIntentTest do
       later_work = %{f.work | deadline_at: ~U[2026-09-17 12:05:00Z]}
 
       assert {:ok, ^intent} = AdmissionIntent.load(persisted, later_work, f.version)
+
+      assert {:ok, ^intent} =
+               AdmissionIntent.load(
+                 persisted,
+                 later_work,
+                 Favn.Manifest.Version.identity(f.version)
+               )
+
       assert intent.deadline_at == f.work.deadline_at
       assert {:ok, ^metadata} = AdmissionIntent.put(metadata, intent)
       assert {:ok, %{}} = AdmissionIntent.clear(metadata, intent)

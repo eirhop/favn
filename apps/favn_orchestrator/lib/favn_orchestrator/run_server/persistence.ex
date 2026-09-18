@@ -20,7 +20,16 @@ defmodule FavnOrchestrator.RunServer.Persistence do
   def persist_run_step(%RunState{} = run_state, event_type, data) do
     durable_run = RunState.for_step_persistence(run_state)
 
-    case persist_transition(durable_run, event_type, data) do
+    normalize_result(run_state, persist_transition(durable_run, event_type, data))
+  end
+
+  @doc false
+  @spec normalize_result(RunState.t(), term()) :: term()
+  def normalize_result(run_state, result) do
+    case result do
+      {:ok, _} = accepted ->
+        accepted
+
       :ok ->
         :ok
 

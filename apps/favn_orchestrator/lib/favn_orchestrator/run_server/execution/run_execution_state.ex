@@ -25,8 +25,8 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   @type await :: %{
           required(:pid) => pid() | nil,
           required(:monitor_ref) => reference() | nil,
-          required(:timeout_token) => reference(),
-          required(:timeout_ref) => reference(),
+          required(:timeout_token) => reference() | nil,
+          required(:timeout_ref) => reference() | nil,
           required(:entry) => map(),
           required(:kind) => :sequential | :pipeline,
           optional(:started_persisted?) => boolean()
@@ -78,6 +78,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           freshness_checkpoint: map() | nil,
           terminal_failure: map() | nil,
           pipeline_continuation: map() | nil,
+          recovery: map() | nil,
           paused_admission: map() | nil
         }
 
@@ -109,6 +110,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             freshness_checkpoint: nil,
             terminal_failure: nil,
             pipeline_continuation: nil,
+            recovery: nil,
             paused_admission: nil
 
   @doc "Creates base execution state for a run."
@@ -158,7 +160,11 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
       state
       | awaits: Map.put(state.awaits, task_id, await),
         await_monitors: await_monitors,
-        await_timers: Map.put(state.await_timers, await.timeout_token, task_id)
+        await_timers:
+          if(is_reference(await.timeout_token),
+            do: Map.put(state.await_timers, await.timeout_token, task_id),
+            else: state.await_timers
+          )
     }
   end
 

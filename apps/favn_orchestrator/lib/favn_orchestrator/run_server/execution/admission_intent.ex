@@ -104,6 +104,14 @@ defmodule FavnOrchestrator.RunServer.Execution.AdmissionIntent do
     _ -> {:error, :invalid_admission_intent}
   end
 
+  @doc false
+  @spec fingerprint(t()) :: {:ok, String.t()} | {:error, term()}
+  def fingerprint(intent) do
+    with {:ok, encoded} <- encode(intent),
+         {:ok, hash} <- Favn.Contracts.RunnerTask.PersistenceCodec.payload_hash(encoded),
+         do: {:ok, Base.encode16(hash, case: :lower)}
+  end
+
   @doc "Loads the original intent, verifying it belongs to the same pinned attempt."
   @spec load(RunState.t(), RunnerWork.t(), Version.t()) ::
           {:ok, t() | nil} | {:error, term()}
@@ -151,11 +159,13 @@ defmodule FavnOrchestrator.RunServer.Execution.AdmissionIntent do
              AssetRunnerTasks.task_id(run, work, RunnerWork.node_key(work), work.attempt),
          {:ok, deadline, 0} <- DateTime.from_iso8601(encoded["deadline_at"]),
          {:ok, occurred_at, 0} <- DateTime.from_iso8601(encoded["occurred_at"]),
-         {:ok, context} <- RunnerTaskContext.decode(encoded["context"], version),
+         {:ok, context} <-
+           RunnerTaskContext.decode_admission_intent(encoded["context"], version, work),
          {:ok, intent} <- new(run, %{work | deadline_at: deadline}, context, occurred_at) do
       {:ok, intent}
     else
-      _ -> {:error, :invalid_admission_intent}
+      _ ->
+        {:error, :invalid_admission_intent}
     end
   rescue
     _ -> {:error, :invalid_admission_intent}

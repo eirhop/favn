@@ -7,9 +7,14 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   coordinator and are requested through an `:await` directive.
   """
 
+  alias FavnOrchestrator.RunServer.Execution.RecoveredTask
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerWork
+  alias FavnOrchestrator.Persistence.Commands.AdmitRunnerTask
+  alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.Runs
+  alias FavnOrchestrator.RunServer.Execution.AdmissionIntent
   alias FavnOrchestrator.AssetRunnerTasks
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.AssetStepIdentity
@@ -24,7 +29,6 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.PersistenceRetry
   alias FavnOrchestrator.RunServer.Snapshots
-  alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.RunState
 
   @type directive ::
@@ -65,23 +69,34 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   def handle_result(%RunExecutionState{} = state, entry, {:ok, %RunnerResult{} = result}) do
     result = ResultSanitizer.sanitize(result)
     asset_results = ResultSanitizer.sanitize_asset_results(result.asset_results)
-    step_status = StepAttemptLifecycle.map_runner_status(result.status)
-    {event_type, retryable?} = StepAttemptLifecycle.step_outcome(step_status)
-    retryable? = retryable? and StepAttemptLifecycle.runner_result_retryable?(result)
+
+    {step_status, retryable?, outcome_error, post_step_value} =
+      RecoveredTask.settlement(entry, result)
+
+    {event_type, _retryable?} = StepAttemptLifecycle.step_outcome(step_status)
     metadata = ResultSanitizer.merge_metadata(state.run.metadata, result.metadata)
 
+    retry_delay =
+      if retryable? and
+           StepAttemptLifecycle.retry_allowed?(state.run, entry.node_key, entry.attempt) do
+        if entry[:recovered_outcome],
+          do: Map.get(entry.recovered_outcome.data, "retry_after_ms"),
+          else:
+            StepAttemptLifecycle.retry_delay_ms(state.run, entry.node_key, entry.attempt, result)
+      end
+
+    attrs = [status: step_status, runner_task_id: nil, error: outcome_error, metadata: metadata]
+
     step_finished =
-      RunState.transition(state.run,
-        status: step_status,
-        runner_task_id: nil,
-        error: result.error,
-        metadata: metadata
-      )
+      if entry[:recovered_outcome],
+        do: Snapshots.snapshot_update(state.run, attrs),
+        else: RunState.transition(state.run, attrs)
 
     data = %{
       asset_ref: entry.asset_ref,
       result_status: result.status,
-      error: result.error,
+      runner_task_id: entry.task_id,
+      error: outcome_error,
       node_key: entry.node_key,
       asset_step_id: entry.asset_step_id,
       window: entry.window,
@@ -89,6 +104,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       attempt: entry.attempt,
       max_attempts: StepAttemptLifecycle.retry_policy(state.run, entry.node_key).max_attempts,
       retryable?: retryable?,
+      retry_after_ms: retry_delay,
       retry_exhausted?:
         retryable? and
           not StepAttemptLifecycle.retry_allowed?(state.run, entry.node_key, entry.attempt),
@@ -101,11 +117,14 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       entry: entry,
       status: step_status,
       retryable?: retryable?,
-      failure: result,
+      failure: post_step_value,
+      retry_after_ms: retry_delay,
       asset_results: asset_results
     }
 
-    persist_or_retry(state, step_finished, event_type, data, resume)
+    if entry[:recovered_outcome],
+      do: resume_persisted(state, resume),
+      else: persist_or_retry(state, step_finished, event_type, data, resume)
   end
 
   def handle_result(%RunExecutionState{} = state, entry, {:error, :timeout}) do
@@ -150,6 +169,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   end
 
   def handle_result(%RunExecutionState{} = state, entry, {:error, reason}) do
+    reason = RecoveredTask.await_failure_reason(reason)
+
     state =
       cancel_work(state, [entry.task_id], %{
         kind: :await_error,
@@ -194,6 +215,34 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @doc false
   @spec resume_persisted(RunExecutionState.t(), map()) :: directive()
   def resume_persisted(%RunExecutionState{} = state, %{kind: :step_result} = resume) do
+    settled = RunState.transition(resume.run, [])
+
+    retryable? =
+      resume.retryable? and
+        StepAttemptLifecycle.retry_allowed?(settled, resume.entry.node_key, resume.entry.attempt)
+
+    data = %{
+      asset_ref: resume.entry.asset_ref,
+      asset_step_id: resume.entry.asset_step_id,
+      node_key: resume.entry.node_key,
+      runner_task_id: resume.entry.task_id,
+      stage: resume.entry.stage,
+      attempt: resume.entry.attempt,
+      status: resume.status,
+      error: resume.run.error,
+      retryable?: retryable?,
+      retry_after_ms: Map.get(resume, :retry_after_ms)
+    }
+
+    persist_or_retry(state, settled, :step_settled, data, %{
+      resume
+      | kind: :settled,
+        run: settled,
+        retryable?: retryable?
+    })
+  end
+
+  def resume_persisted(%RunExecutionState{} = state, %{kind: :settled} = resume) do
     state = %{state | run: resume.run}
 
     cond do
@@ -215,15 +264,21 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
         })
 
       resume.retryable? ->
-        maybe_schedule_retry(
-          state,
-          resume.entry.asset_ref,
-          resume.entry.node_key,
-          resume.entry.stage,
-          resume.entry.attempt,
-          resume.asset_results,
-          Map.get(resume, :failure)
-        )
+        lifecycle =
+          StepAttemptLifecycle.new(
+            state.run,
+            state.version,
+            resume.entry.node_key,
+            resume.entry.stage,
+            resume.entry.attempt
+          )
+
+        retry = StepAttemptLifecycle.retry(lifecycle, Map.get(resume, :failure))
+
+        schedule_retry(state, %{
+          retry
+          | retry_after_ms: Map.get(resume, :retry_after_ms) || retry.retry_after_ms
+        })
 
       true ->
         terminalize_error(state, resume.asset_results)
@@ -257,34 +312,44 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   def resume_retry(%RunExecutionState{} = state, retry) do
     deadline = Map.get(retry, :admission_deadline_ms)
 
-    if is_integer(deadline) and deadline <= System.system_time(:millisecond) do
-      persist_pre_submit_failure(
-        state,
-        retry.asset_ref,
-        retry.node_key,
-        retry.stage,
-        retry.next_attempt,
-        :target_write_admission_timeout,
-        retry.asset_step_id
-      )
-    else
-      run =
-        if is_integer(deadline),
-          do: state.run,
-          else:
-            state.run
-            |> Map.put(:metadata, clear_retry_state(state.run.metadata))
-            |> RunState.with_snapshot_hash()
+    run =
+      if is_integer(deadline),
+        do: state.run,
+        else:
+          state.run
+          |> Map.put(:metadata, clear_retry_state(state.run.metadata))
+          |> RunState.with_snapshot_hash()
 
-      submit_attempt(
-        %{state | run: run},
-        retry.asset_ref,
-        retry.node_key,
-        retry.stage,
-        retry.next_attempt,
-        deadline
-      )
-    end
+    submit_attempt(
+      %{state | run: run},
+      retry.asset_ref,
+      retry.node_key,
+      retry.stage,
+      retry.next_attempt,
+      deadline
+    )
+  end
+
+  @doc false
+  @spec restore_retry(RunExecutionState.t(), map()) :: directive()
+  def restore_retry(state, step) do
+    lifecycle =
+      StepAttemptLifecycle.new(state.run, state.version, step.node_key, step.stage, step.attempt)
+
+    retry = StepAttemptLifecycle.retry(lifecycle)
+
+    delay =
+      if step[:retry_at],
+        do: max(DateTime.diff(step.retry_at, DateTime.utc_now(), :millisecond), 0),
+        else: 0
+
+    schedule_retry(state, %{retry | retry_after_ms: delay})
+  end
+
+  @doc false
+  def restore_intent(state, step) do
+    node = Map.fetch!(state.run.plan.nodes, step.node_key)
+    submit_attempt(state, node.ref, step.node_key, step.stage, step.attempt)
   end
 
   @doc "Returns sequential work refs with their plan stage."
@@ -326,17 +391,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
          work <-
            work
            |> StepAttemptLifecycle.attach_deadline(state.run)
-           |> Map.put(:manifest_lease_id, state.manifest_lease_id),
-         package_context <-
-           SystemContext.workspace(state.run.workspace_id, :execution_package_fetch),
-         {:ok, work} <-
-           ExecutionPackages.attach(
-             package_context,
-             state.run.deployment_id,
-             work,
-             state.version,
-             state.manifest_index
-           ) do
+           |> Map.put(:manifest_lease_id, state.manifest_lease_id) do
       work =
         if is_integer(admission_deadline_ms),
           do: %{
@@ -345,7 +400,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
           },
           else: work
 
-      enqueue_attempt(state, lifecycle, work)
+      prepare_intent(state, lifecycle, work)
     else
       {:error, reason} ->
         persist_pre_submit_failure(
@@ -359,54 +414,153 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     end
   end
 
-  defp enqueue_attempt(state, lifecycle, work) do
-    if work.deadline_at && DateTime.compare(work.deadline_at, DateTime.utc_now()) != :gt do
-      persist_pre_submit_failure(
-        state,
-        lifecycle.asset_ref,
-        lifecycle.node_key,
-        lifecycle.stage,
-        lifecycle.attempt,
-        :target_write_admission_timeout,
-        work.asset_step_id
-      )
-    else
-      acquire_attempt(state, lifecycle, work)
+  defp prepare_intent(state, lifecycle, work) do
+    case AdmissionIntent.load(state.run, work, state.version) do
+      {:ok, nil} ->
+        with {:ok, intent} <-
+               AdmissionIntent.new(
+                 state.run,
+                 work,
+                 %{kind: :sequential, materialization_claim: nil},
+                 DateTime.utc_now()
+               ),
+             {:ok, metadata} <- AdmissionIntent.put(state.run.metadata, intent) do
+          running = RunState.transition(state.run, metadata: metadata)
+
+          pause =
+            sequential_pause(state.run, lifecycle, work, nil, :intent)
+            |> Map.merge(%{intent: intent, intent_run: running})
+
+          retry =
+            PersistenceRetry.new(
+              running,
+              :step_intended,
+              intent_data(lifecycle, work, intent),
+              {:sequential_operation, pause}
+            )
+
+          persist_operation(state, retry, pause)
+        else
+          {:error, reason} -> {:recovery_required, state, reason}
+        end
+
+      {:ok, intent} ->
+        admit_intent(state, lifecycle, %{work | deadline_at: intent.deadline_at}, intent)
+
+      {:error, reason} ->
+        {:recovery_required, state, reason}
     end
   end
 
-  defp acquire_attempt(state, lifecycle, work) do
-    with {:ok, command} <- MaterializationClaims.prepare_sequential(state.run, work) do
-      if command do
-        pause = sequential_pause(state.run, lifecycle, work, nil, :claim)
+  defp admit_intent(state, lifecycle, work, intent) do
+    if DateTime.compare(work.deadline_at, DateTime.utc_now()) != :gt do
+      fail_before_enqueue(state, lifecycle, work, nil, :target_write_admission_timeout)
+    else
+      context = SystemContext.workspace(state.run.workspace_id, :execution_package_fetch)
 
-        retry =
-          PersistenceRetry.command(
-            state.run,
-            :materialization_claim,
-            command,
-            %{asset_ref: work.asset_ref, asset_step_id: work.asset_step_id},
-            {:sequential_operation, pause}
-          )
+      case ExecutionPackages.attach(
+             context,
+             state.run.deployment_id,
+             work,
+             state.version,
+             state.manifest_index
+           ) do
+        {:ok, work} ->
+          prepare_admission(state, lifecycle, work, intent)
 
-        persist_operation(state, retry, pause)
-      else
-        handle_acquired_claim(state, lifecycle, work, {:ok, nil})
+        {:error, %FavnOrchestrator.Persistence.Error{retryable?: true} = reason} ->
+          {:recovery_required, state, reason}
+
+        {:error, reason} ->
+          fail_before_enqueue(state, lifecycle, work, nil, reason)
       end
     end
   end
 
+  defp prepare_admission(state, lifecycle, work, intent) do
+    with {:ok, claim} <- MaterializationClaims.prepare_sequential(state.run, work),
+         {:ok, enqueue, work} <-
+           AssetRunnerTasks.prepare(
+             state.run,
+             work,
+             lifecycle.node_key,
+             lifecycle.attempt,
+             intent.context
+           ),
+         {:ok, metadata} <- AdmissionIntent.clear(state.run.metadata, intent) do
+      admitted =
+        RunState.transition(state.run,
+          runner_task_id: nil,
+          metadata:
+            metadata
+            |> clear_retry_state()
+            |> Map.merge(RunnerWork.lifecycle_metadata(work))
+            |> Map.update(
+              :active_runner_task_ids,
+              [intent.task_id],
+              &Enum.uniq(&1 ++ [intent.task_id])
+            )
+        )
+
+      durable = RunState.for_step_persistence(admitted)
+
+      event =
+        Projector.run_event(
+          durable,
+          attempt_start_event(lifecycle.attempt),
+          intent_data(lifecycle, work, intent)
+        )
+
+      {:ok, transition} =
+        Runs.prepare_commit(enqueue.workspace_context, durable, event,
+          owner_id: admitted.storage_owner_id,
+          fencing_token: admitted.storage_fencing_token
+        )
+
+      command = %AdmitRunnerTask{
+        intent: intent,
+        enqueue: enqueue,
+        transition: transition,
+        claim: claim
+      }
+
+      pause =
+        sequential_pause(state.run, lifecycle, work, nil, :admission)
+        |> Map.merge(%{intent: intent, admitted_run: admitted})
+
+      retry =
+        PersistenceRetry.command(
+          state.run,
+          :runner_admission,
+          command,
+          intent_data(lifecycle, work, intent),
+          {:sequential_operation, pause}
+        )
+
+      persist_operation(state, retry, pause)
+    else
+      {:error, reason} -> fail_before_enqueue(state, lifecycle, work, nil, reason)
+    end
+  end
+
+  defp intent_data(lifecycle, work, intent) do
+    {:ok, fingerprint} = AdmissionIntent.fingerprint(intent)
+
+    %{
+      asset_ref: lifecycle.asset_ref,
+      runner_task_id: intent.task_id,
+      node_key: lifecycle.node_key,
+      asset_step_id: work.asset_step_id,
+      window: RunnerWork.window(work),
+      stage: lifecycle.stage,
+      attempt: lifecycle.attempt,
+      max_attempts: lifecycle.max_attempts,
+      admission_intent_hash: fingerprint
+    }
+  end
+
   defp handle_acquired_claim(state, lifecycle, work, result) do
     case result do
-      {:ok, claim} ->
-        work = %{work | metadata: clear_retry_state(work.metadata)}
-
-        run =
-          %{state.run | metadata: clear_retry_state(state.run.metadata)}
-          |> RunState.with_snapshot_hash()
-
-        enqueue_claimed_attempt(%{state | run: run}, lifecycle, work, claim)
-
       {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
         deadline = work.deadline_at || DateTime.add(DateTime.utc_now(), 300_000, :millisecond)
 
@@ -436,50 +590,6 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     end
   end
 
-  defp enqueue_claimed_attempt(state, lifecycle, work, claim) do
-    task_id =
-      AssetRunnerTasks.task_id(
-        state.run,
-        work,
-        lifecycle.node_key,
-        lifecycle.attempt
-      )
-
-    running =
-      RunState.transition(state.run,
-        runner_task_id: nil,
-        metadata:
-          state.run.metadata
-          |> Map.merge(RunnerWork.lifecycle_metadata(work))
-          |> Map.update(:active_runner_task_ids, [task_id], fn ids ->
-            Enum.uniq(ids ++ [task_id])
-          end)
-      )
-
-    intent = %{
-      asset_ref: lifecycle.asset_ref,
-      runner_task_id: task_id,
-      node_key: lifecycle.node_key,
-      asset_step_id: work.asset_step_id,
-      window: RunnerWork.window(work),
-      stage: lifecycle.stage,
-      attempt: lifecycle.attempt,
-      max_attempts: lifecycle.max_attempts
-    }
-
-    pause = sequential_pause(running, lifecycle, work, claim, :started)
-
-    retry =
-      PersistenceRetry.new(
-        running,
-        attempt_start_event(lifecycle.attempt),
-        intent,
-        {:sequential_operation, pause}
-      )
-
-    persist_operation(state, retry, pause)
-  end
-
   defp sequential_pause(run, lifecycle, work, claim, phase),
     do: %{
       kind: :sequential,
@@ -499,44 +609,50 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       {:ok, result} ->
         resume_operation(state, pause, result)
 
-      {:error, %{details: %{reason_code: "target_write_in_progress"}}} = result
-      when pause.phase == :claim ->
+      {:error, %{details: %{reason_code: "target_write_in_progress"}}} = result ->
         handle_acquired_claim(state, pause.lifecycle, pause.work, result)
 
+      {:error, reason} when reason in [:fenced, :external_cancel, :cancellation_race] ->
+        {:persist_retry, %{state | paused_admission: pause}, retry, reason}
+
       {:error, reason} ->
-        if PersistenceRetry.replayable?(reason) and
-             (pause.phase != :enqueue or
-                match?(%{details: %{reason_code: "execution_history_owner_busy"}}, reason)) do
-          {:persist_retry, %{state | run: pause.ctx.current_run, paused_admission: pause}, retry,
-           reason}
+        if PersistenceRetry.replayable?(reason) do
+          {:persist_retry, %{state | paused_admission: pause}, retry, reason}
         else
-          if pause.phase == :enqueue,
-            do: fail_enqueue(state, pause.lifecycle, pause.work, pause.claim, reason),
-            else: fail_before_enqueue(state, pause.lifecycle, pause.work, pause.claim, reason)
+          fail_before_enqueue(state, pause.lifecycle, pause.work, nil, reason)
         end
     end
   end
 
   @doc false
-  def reject_operation(state, %{phase: :claim} = pause, reason) do
+  def reject_operation(state, %{phase: :admission} = pause, reason) do
     state = %{state | run: pause.ctx.current_run, paused_admission: nil}
     handle_acquired_claim(state, pause.lifecycle, pause.work, {:error, reason})
   end
 
   @doc false
   @spec adopt_operation(RunExecutionState.t(), map(), term()) :: RunExecutionState.t()
-  def adopt_operation(state, %{phase: :claim} = pause, %{status: :claimed} = result) do
-    {:ok, claim} = MaterializationClaims.resolve_sequential(result)
-    pause = %{pause | claim: claim, ctx: Map.put(pause.ctx, :materialization_claim, claim)}
-    %{state | paused_admission: pause}
+  def adopt_operation(state, %{phase: :intent} = pause, :ok) do
+    pause = %{pause | ctx: %{pause.ctx | current_run: pause.intent_run}}
+    %{state | run: pause.intent_run, paused_admission: pause}
   end
 
-  def adopt_operation(state, %{phase: :enqueue} = pause, task) do
+  def adopt_operation(state, %{phase: :admission} = pause, %{status: :admitted} = result) do
     entry =
-      sequential_entry(state, pause.lifecycle, pause.work, task)
-      |> Map.put(:materialization_claim, pause.claim)
+      sequential_entry(state, pause.lifecycle, pause.work, result.task)
+      |> Map.put(:materialization_claim, result.context.materialization_claim)
 
-    %{state | paused_admission: Map.put(pause, :submitted_entry, entry)}
+    pause = Map.put(pause, :submitted_entry, entry)
+
+    %{
+      state
+      | run:
+          if(state.run.event_seq > pause.admitted_run.event_seq,
+            do: state.run,
+            else: pause.admitted_run
+          ),
+        paused_admission: pause
+    }
     |> RunExecutionState.add_work(entry)
   end
 
@@ -544,44 +660,45 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   @doc false
   @spec resume_operation(RunExecutionState.t(), map(), term()) :: directive()
-  def resume_operation(state, pause, result) do
-    state = %{state | run: pause.ctx.current_run, paused_admission: nil}
+  def resume_operation(state, %{phase: :intent} = pause, :ok) do
+    state = %{state | run: pause.intent_run, paused_admission: nil}
+    admit_intent(state, pause.lifecycle, pause.work, pause.intent)
+  end
 
-    cond do
-      pause.phase == :enqueue ->
-        accept_enqueued_attempt(state, pause.lifecycle, pause.work, pause.claim, result)
+  def resume_operation(state, %{phase: :admission} = pause, %{status: :admitted} = result) do
+    run =
+      if state.run.event_seq > pause.admitted_run.event_seq,
+        do: state.run,
+        else: pause.admitted_run
 
-      pause.work.deadline_at &&
-          DateTime.compare(pause.work.deadline_at, DateTime.utc_now()) != :gt ->
-        claim =
-          if pause.phase == :claim do
-            case MaterializationClaims.resolve_sequential(result) do
-              {:ok, claim} -> claim
-              _ -> pause.claim
-            end
-          else
-            pause.claim
-          end
+    state = %{state | run: run, paused_admission: nil}
 
-        fail_before_enqueue(
-          state,
-          pause.lifecycle,
-          pause.work,
-          claim,
-          :target_write_admission_timeout
-        )
+    {:await, state, entry} =
+      accept_enqueued_attempt(
+        state,
+        pause.lifecycle,
+        pause.work,
+        result.context.materialization_claim,
+        result.task
+      )
 
-      pause.phase == :claim ->
-        handle_acquired_claim(
-          state,
-          pause.lifecycle,
-          pause.work,
-          MaterializationClaims.resolve_sequential(result)
-        )
-
-      true ->
-        enqueue_persisted_attempt(state, pause.lifecycle, pause.work, pause.claim)
+    if result.replayed? do
+      case FavnOrchestrator.RunServer.Execution.RecoveredTask.reconcile(run, result.task, entry) do
+        {:ok, entry} -> {:await, RunExecutionState.add_work(state, entry), entry}
+        {:error, reason} -> {:recovery_required, state, reason}
+      end
+    else
+      {:await, state, entry}
     end
+  end
+
+  def resume_operation(state, %{phase: :admission} = pause, %{status: :already_claimed}) do
+    handle_acquired_claim(
+      %{state | paused_admission: nil},
+      pause.lifecycle,
+      pause.work,
+      {:error, %{details: %{reason_code: "target_write_in_progress"}}}
+    )
   end
 
   @doc false
@@ -589,49 +706,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   def cleanup_paused(%{paused_admission: %{kind: :sequential, submitted_entry: _}} = state),
     do: %{state | paused_admission: nil}
 
-  def cleanup_paused(%{paused_admission: %{kind: :sequential} = pause} = state) do
-    :ok = MaterializationClaims.abandon_sequential(pause.claim)
-
-    task_id =
-      AssetRunnerTasks.task_id(
-        state.run,
-        pause.work,
-        pause.lifecycle.node_key,
-        pause.lifecycle.attempt
-      )
-
-    run =
-      Snapshots.snapshot_update(state.run,
-        metadata:
-          Map.update(state.run.metadata, :active_runner_task_ids, [], &List.delete(&1, task_id))
-      )
-
-    %{state | run: run, paused_admission: nil}
-  end
-
-  defp enqueue_persisted_attempt(state, lifecycle, work, claim) do
-    case AssetRunnerTasks.prepare(state.run, work, lifecycle.node_key, lifecycle.attempt, %{
-           kind: :sequential,
-           materialization_claim: claim
-         }) do
-      {:ok, command, work} ->
-        pause = sequential_pause(state.run, lifecycle, work, claim, :enqueue)
-
-        retry =
-          PersistenceRetry.command(
-            state.run,
-            :runner_enqueue,
-            command,
-            %{asset_ref: work.asset_ref, asset_step_id: work.asset_step_id},
-            {:sequential_operation, pause}
-          )
-
-        persist_operation(state, retry, pause)
-
-      {:error, reason} ->
-        fail_enqueue(state, lifecycle, work, claim, reason)
-    end
-  end
+  def cleanup_paused(%{paused_admission: %{kind: :sequential}} = state),
+    do: %{state | paused_admission: nil}
 
   defp accept_enqueued_attempt(state, lifecycle, work, claim, task) do
     entry =
@@ -640,22 +716,18 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     {:await, RunExecutionState.add_work(state, entry), entry}
   end
 
-  defp fail_enqueue(state, lifecycle, work, claim, reason) do
-    task_id = AssetRunnerTasks.task_id(state.run, work, lifecycle.node_key, lifecycle.attempt)
-
-    if AssetRunnerTasks.rejected_without_task?(state.run, task_id, reason) do
-      fail_before_enqueue(state, lifecycle, work, claim, reason)
-    else
-      case RunnerTasks.fetch(state.run.workspace_id, task_id) do
-        {:ok, task} -> accept_enqueued_attempt(state, lifecycle, work, claim, task)
-        {:error, _} -> {:recovery_required, state, {:runner_enqueue_uncertain, reason}}
-      end
-    end
-  end
-
   defp fail_before_enqueue(%RunExecutionState{} = state, lifecycle, work, claim, reason) do
     pause = sequential_pause(state.run, lifecycle, work, claim, :started)
     state = cleanup_paused(struct(state, paused_admission: pause))
+    {:ok, intent} = AdmissionIntent.load(state.run, work, state.version)
+
+    state =
+      if intent do
+        {:ok, metadata} = AdmissionIntent.clear(state.run.metadata, intent)
+        %{state | run: Snapshots.snapshot_update(state.run, metadata: metadata)}
+      else
+        state
+      end
 
     persist_pre_submit_failure(
       state,
@@ -715,6 +787,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
       node_key: lifecycle.node_key,
       window: RunnerWork.window(work),
       task_id: task.task_id,
+      deadline_at: work.deadline_at,
       assignment_generation: task.assignment_generation,
       runner_pool: task.runner_pool,
       required_runner_release_id: task.required_runner_release_id,

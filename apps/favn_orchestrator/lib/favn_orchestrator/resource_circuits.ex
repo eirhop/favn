@@ -41,25 +41,30 @@ defmodule FavnOrchestrator.ResourceCircuits do
   @doc "Checks all configured circuits used by one planned node."
   @spec acquire(RunState.t(), RunnerWork.t(), Index.t()) :: admission()
   def acquire(%RunState{} = run, %RunnerWork{} = work, %Index{} = index) do
-    with {:ok, requests} <- requests(run, work, index) do
-      case requests do
-        [] ->
-          {:ok, []}
+    with {:ok, command} <- prepare_acquire(run, work, index) do
+      if command do
+        case Persistence.stores().resource_circuits.acquire(command) do
+          {:ok, %ResourceCircuitAdmission{status: :allowed, permits: permits}} ->
+            {:ok, permits}
 
-        [_ | _] ->
-          command = acquire_command(run, work, requests)
+          {:ok, %ResourceCircuitAdmission{status: :blocked, blockers: blockers}} ->
+            {:blocked, blockers}
 
-          case Persistence.stores().resource_circuits.acquire(command) do
-            {:ok, %ResourceCircuitAdmission{status: :allowed, permits: permits}} ->
-              {:ok, permits}
-
-            {:ok, %ResourceCircuitAdmission{status: :blocked, blockers: blockers}} ->
-              {:blocked, blockers}
-
-            {:error, reason} ->
-              {:error, reason}
-          end
+          {:error, reason} ->
+            {:error, reason}
+        end
+      else
+        {:ok, []}
       end
+    end
+  end
+
+  @doc "Prepares circuit admission without acquiring permits or changing circuit state."
+  @spec prepare_acquire(RunState.t(), RunnerWork.t(), Index.t()) ::
+          {:ok, AcquireResourceCircuits.t() | nil} | {:error, term()}
+  def prepare_acquire(%RunState{} = run, %RunnerWork{} = work, %Index{} = index) do
+    with {:ok, requests} <- requests(run, work, index) do
+      {:ok, if(requests == [], do: nil, else: acquire_command(run, work, requests))}
     end
   end
 
@@ -250,8 +255,11 @@ defmodule FavnOrchestrator.ResourceCircuits do
       attempt: entry.attempt,
       permits: permits,
       outcomes: outcomes,
-      recovery_candidates: safe_failure_candidates(run, entry, outcomes),
-      occurred_at: DateTime.utc_now()
+      recovery_candidates:
+        Enum.map(safe_failure_candidates(run, entry, outcomes), fn candidate ->
+          %{candidate | occurred_at: Map.get(entry, :settlement_at) || candidate.occurred_at}
+        end),
+      occurred_at: Map.get(entry, :settlement_at) || DateTime.utc_now()
     }
   end
 
@@ -334,7 +342,8 @@ defmodule FavnOrchestrator.ResourceCircuits do
   defp first_blocker([%ResourceCircuitBlocker{} = blocker | _rest]), do: blocker
   defp first_blocker(_blockers), do: nil
 
-  defp permit_owner_id(run, work),
+  @doc false
+  def permit_owner_id(run, work),
     do: "resource-circuit-owner:#{short_hash({run.id, work.asset_step_id})}"
 
   defp probe_lease_ms(%RunState{timeout_ms: timeout_ms}) when is_integer(timeout_ms),

@@ -23,6 +23,7 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
 
   @type operation ::
           :admission
+          | :runner_admission
           | :materialization_claim
           | :runner_enqueue
           | :resource_outcomes
@@ -58,6 +59,9 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
 
   def persist(%__MODULE__{event_type: :materialization_claim, command: command}),
     do: Stores.stores().materialization.claim(command)
+
+  def persist(%__MODULE__{event_type: :runner_admission, command: command, run: run}),
+    do: Persistence.normalize_result(run, RunnerTasks.admit(command))
 
   def persist(%__MODULE__{event_type: :runner_enqueue, command: command}),
     do: RunnerTasks.enqueue(command)

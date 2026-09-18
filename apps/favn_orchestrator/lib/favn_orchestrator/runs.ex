@@ -60,20 +60,29 @@ defmodule FavnOrchestrator.Runs do
           | {:error, FavnOrchestrator.Persistence.Error.t() | term()}
   def commit(%WorkspaceContext{} = context, %RunState{} = run, event, opts \\ [])
       when is_list(opts) do
+    with {:ok, command} <- prepare_commit(context, run, event, opts),
+         do: Persistence.stores().runs.commit_transition(command)
+  end
+
+  @doc false
+  @spec prepare_commit(WorkspaceContext.t(), RunState.t(), RunEvent.t() | map(), keyword()) ::
+          {:ok, CommitRunTransition.t()} | {:error, term()}
+  def prepare_commit(context, run, event, opts) do
     with :ok <- validate_opts(opts, [:command_id, :idempotency, :owner_id, :fencing_token]),
          true <- run.workspace_id == context.workspace_id,
          true <- run.event_seq > 1,
          {:ok, event} <- event_map(event) do
-      Persistence.stores().runs.commit_transition(%CommitRunTransition{
-        workspace_context: context,
-        command_id: Keyword.get(opts, :command_id) || command_id("transition", run),
-        expected_sequence: run.event_seq - 1,
-        owner_id: Keyword.get(opts, :owner_id),
-        fencing_token: Keyword.get(opts, :fencing_token),
-        run: run,
-        event: event,
-        idempotency: Keyword.get(opts, :idempotency)
-      })
+      {:ok,
+       %CommitRunTransition{
+         workspace_context: context,
+         command_id: Keyword.get(opts, :command_id) || command_id("transition", run),
+         expected_sequence: run.event_seq - 1,
+         owner_id: Keyword.get(opts, :owner_id),
+         fencing_token: Keyword.get(opts, :fencing_token),
+         run: run,
+         event: event,
+         idempotency: Keyword.get(opts, :idempotency)
+       }}
     else
       false -> {:error, :invalid_run_transition}
       {:error, _reason} = error -> error

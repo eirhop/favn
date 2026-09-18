@@ -26,6 +26,20 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
           :error ->
             task = %RunnerTask{
               workspace_id: command.workspace_context.workspace_id,
+              data_state: :available,
+              manifest_version_id: command.manifest_version_id,
+              manifest_content_hash: command.manifest_content_hash,
+              run_id: command.run_id,
+              operation_id: command.operation_id,
+              asset_step_id: command.asset_step_id,
+              write_target_id: command.write_target_id,
+              write_operation_id: command.write_operation_id,
+              payload_version: Favn.Contracts.RunnerTask.PersistenceCodec.payload_version(),
+              orchestration_context_hash:
+                :crypto.hash(
+                  :sha256,
+                  :erlang.term_to_binary(command.orchestration_context, [:deterministic])
+                ),
               task_id: command.task_id,
               domain_identity: command.domain_identity,
               task_kind: command.task_kind,
@@ -76,6 +90,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
       end)
     end
 
+    def admit(_command), do: unavailable()
     def close_session(_command), do: unavailable()
     def open_session(_command), do: unavailable()
     def page_session_tasks(_command), do: unavailable()
@@ -223,7 +238,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
     assert first.required_runner_release_id == fixture.version.runner_releases["duckdb_image"]
 
     commands = Agent.get(fixture.agent, & &1.commands)
-    assert length(commands) == 2
+    assert length(commands) == 1
     assert Enum.uniq_by(commands, & &1.task_id) |> length() == 1
     assert Enum.all?(commands, &(&1.runner_pool == "duckdb_image"))
   end
@@ -258,9 +273,9 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
     assert replay.task_id == first.task_id
     assert replay.deadline_at == first_deadline
 
-    assert [replay_command, first_command] = Agent.get(fixture.agent, & &1.commands)
-    assert replay_command.deadline_at == first_command.deadline_at
-    assert replay_command.occurred_at == first_command.occurred_at
+    assert [first_command] = Agent.get(fixture.agent, & &1.commands)
+    assert replay.deadline_at == first_command.deadline_at
+    assert replay.enqueued_at == first_command.occurred_at
   end
 
   test "a transient replay lookup failure does not submit a conflicting enqueue", fixture do

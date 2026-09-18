@@ -152,6 +152,23 @@ defmodule FavnOrchestrator.ExecutionAdmission do
     end
   end
 
+  @doc false
+  @spec release_completed(RunState.t(), String.t()) :: :ok | {:error, term()}
+  def release_completed(run, task_id) do
+    command = %FavnOrchestrator.Persistence.Commands.ReleaseCompletedExecution{
+      workspace_context: SystemContext.workspace(run.workspace_id, :admission_release_completed),
+      run_id: run.id,
+      task_id: task_id,
+      owner_id: run.storage_owner_id,
+      owner_generation: run.storage_fencing_token
+    }
+
+    case Persistence.stores().admission.release_completed(command) do
+      {:ok, %CapacityRelease{} = release} -> notify_scope_ids(release.freed_scope_ids)
+      {:error, _} = error -> error
+    end
+  end
+
   @spec release(lease() | nil) :: :ok | {:error, term()}
   def release(nil), do: :ok
 

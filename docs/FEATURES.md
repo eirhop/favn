@@ -271,7 +271,10 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - Durable runner-task queues and elastic multi-runner execution are implemented.
   Pipeline tasks retain bounded task-local continuation data and reference one
   shared, fenced freshness checkpoint per run; immutable manifest
-  definitions are reconstructed only by the orchestrator.
+  definitions are reconstructed only by the orchestrator. Interrupted runs
+  restore settled siblings and retry selection, finish saved-result bookkeeping,
+  and reuse atomic admission evidence without replaying successful callbacks.
+  See [run recovery](architecture/elastic-runners.md#resuming-an-interrupted-run).
   Live managed-platform scale, restore/load, and cold-start evidence remain
   production release gates.
 - The operator UI shows durable pre-admission run states and provides a Runners

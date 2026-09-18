@@ -10,7 +10,7 @@
 | Inspected baseline | Main at 97ac8657cc668d3d7faad441a813c545650c4464, including merged #726 |
 | Affected areas | Orchestrator run recovery and execution; PostgreSQL run transitions; runner result and ownership contracts; release qualification |
 | Approved plan commit | 57c64fcb; design direction accepted, field/replay qualification gate retained |
-| Last updated | 2026-09-17 |
+| Last updated | 2026-09-18 |
 
 ## One-minute explanation
 
@@ -23,9 +23,10 @@ events already stored in PostgreSQL, adding only the missing intent and
 bookkeeping information. Do not restart completed asset callbacks, serialize
 the entire running process, or introduce a second workflow engine.
 
-This is analysis and a proposal, not an implemented fix or proof of production
-readiness. The maintainer has authorized a new worktree and this decision record;
-implementation follows a separately accepted plan.
+Implementation is now integrated in the draft branch and under qualification.
+The baseline proposal and its review are preserved below; the implementation
+outcome section records changes and proof boundaries. This is not yet a
+production-readiness verdict.
 
 ## Three examples
 
@@ -120,7 +121,7 @@ flowchart TD
 | Immutable per-assignment outcome history used by task receipts | Safe operation retry can clear the current task row's result; recovery needs a validated lookup of the referenced historical outcome | [Task store: persist_task_outcome!, retry and load_task_outcome!](../../../apps/favn_storage_postgres/lib/favn_storage_postgres/runner_tasks/store.ex) |
 | Step outcome event, including node result | Restore does not fold these events back into completed sibling state | [StageResult](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/stage_result.ex), [Execution](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution.ex) |
 | Active task IDs in the run snapshot | Completed siblings disappear from that active set; an empty set does not mean a new run | [ActiveTaskSet](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/active_task_set.ex) |
-| Marker that an active stage has recorded an outcome | Marker says recovery is unsafe; it does not describe how to finish safely | [RecoveryPosition](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/recovery_position.ex) |
+| Marker that an active stage has recorded an outcome | Marker says recovery is unsafe; it does not describe how to finish safely | [RecoveryPosition](https://github.com/eirhop/favn/blob/57c64fcb/apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/recovery_position.ex) |
 | Shared freshness checkpoint with completed-node and upstream-status information | It advances at stage boundaries, not every partial settlement; it is not a complete pipeline continuation | [PipelineFreshnessCheckpoint](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/pipeline_freshness_checkpoint.ex) |
 | Earlier-stage step events | Later-stage restore starts with empty accumulated results and no restored first failure; a complete prior result/failure history must be reconstructed | [Execution.restore_task_waits](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution.ex), [RunExecutionState](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/run_execution_state.ex) |
 | Run events and current snapshot | Nonterminal snapshots intentionally remove accumulated results; event-to-execution reconstruction is absent | [RunState.for_step_persistence](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_state.ex), [Persistence](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/persistence.ex) |
@@ -128,7 +129,7 @@ flowchart TD
 | Admission, materialization, and target locks | Current pipeline restore tries to adopt a live capacity lease even when loading a terminal task; expired leases are rejected | [Execution.restore_entry](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution.ex), [admission store](../../../apps/favn_storage_postgres/lib/favn_storage_postgres/admission/store.ex) |
 | Live retry command, reply, phase and 30-second retry budget | These fields are process-owned and disappear on process death | [PersistenceRetry](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/persistence_retry.ex) |
 
-The guard is deliberate: [Recovery.disposition](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server/recovery.ex)
+The guard is deliberate: [Recovery.disposition at the approved baseline](https://github.com/eirhop/favn/blob/57c64fcb/apps/favn_orchestrator/lib/favn_orchestrator/run_server/recovery.ex)
 rejects active stages with the outcome marker before inspecting their task rows.
 With no active tasks, it accepts only explicit retry checkpoints or a fresh run.
 [RunServer](../../../apps/favn_orchestrator/lib/favn_orchestrator/run_server.ex)
@@ -692,3 +693,146 @@ fresh-process decodes and stripping a previous intent from a new rerun. This
 still does not qualify runtime admission, exact event persistence, checkpoint
 transaction consistency, whole-run restore or crash behavior. Those integration
 gates remain required before this draft can be made ready.
+
+
+### Reviewed integration correction (2026-09-18)
+
+The original size estimate omitted the work needed to make permission acquisition
+and task creation atomic. Astra xhigh reviewed a revised whole-PR estimate of
+1,800–2,300 production additions and 600–900 deletions, plus 1,000–1,600 supporting
+lines, excluding the separately merged marker fix and this record. These are
+review limits, not targets. The implementation must replace the old separate
+admission/recovery paths, rather than retain two mechanisms. Actual counts and
+any further deviation must be reported before final review.
+
+Admission will lock cancellation authority, validate run ownership, lock the
+target, and lock the active runtime policy before capacity and circuit rows.
+This matches deployment's target/policy/capacity order. It must check the original
+deadline and current owner again after blocking locks. Ordinary enqueue must
+also lock cancellation authority before its task receipt lock to avoid an
+inversion with composed admission.
+
+A committed task and its matching admission event are replay evidence even if
+later sibling events have advanced the run snapshot. Replay must precede new
+acquisitions and must not depend on the enqueue receipt's age. Waiting decisions
+may be reevaluated with a new command under the same persisted intent, exact
+scope requirements and current run fence; same-command changed content remains
+an error. Acquisition expiry uses current database time, while the task retains
+its original deadline. Every non-runnable acquisition branch rolls back its
+provisional handles; a capacity waiter alone may commit.
+
+Required composed PostgreSQL checks include deployment/admission lock order,
+ordinary/composed enqueue races, waiter takeover, expiry during lock waits,
+rollback after acquisitions, and replay after later sibling progress. These
+supplement, and do not replace, the original whole-run crash qualification.
+
+
+## Runtime integration outcome (qualification in progress)
+
+The localized initial-marker parent fix shipped separately as #732 and is on
+main. This draft implements the original interrupted-run recovery, rather than
+stopping at the intent/reducer foundation. The current contract is documented
+once in [run recovery](../../architecture/elastic-runners.md#resuming-an-interrupted-run).
+
+In plain terms: the task stores the callback result, the step outcome says what
+happened, and a small settlement receipt says the remaining control-plane work
+finished. A restart reads those facts and resumes only the unfinished part.
+It never treats an unknown external write as safe to repeat.
+
+### Changes from the approved baseline
+
+- Admission uses one PostgreSQL transaction after the saved intent. This replaces
+  separate acquire/enqueue/start phases, removing the unrecorded-handle crash
+  window. A waiting capacity request may remain; other provisional acquisitions
+  roll back together. Independent siblings are retained.
+- `step_settled` is the bookkeeping receipt. There is no serialized process,
+  second progress table, generic workflow engine or new payload ceiling.
+- Restoration scans the retained event history in 50-event pages instead of
+  introducing a separately compacted event suffix. It keeps one compact fact per
+  planned node and bounded result references. Full payloads are refetched one at
+  a time, never accumulated in restart state or mailbox messages. This favors
+  fewer durable authorities; recovery time remains proportional to retained
+  run history and needs deployment load measurements.
+- Asset attempts already have distinct task IDs; successful operation tasks
+  cannot be retried. Accepted failure/retry decisions are retained in step
+  evidence. These contracts make a new historical-outcome API unnecessary.
+  Operation tasks required by first registration now retain their run owner.
+- Terminal tasks release their exact old reservation without adopting new
+  execution capacity. Live tasks still require current ownership, the original
+  deadline and valid capacity authority. Expiry does not prove a writer stopped.
+- Saved resource outcomes can be reconciled after the ordinary receipt-age
+  window only under retained run ownership. Old outcomes cannot overwrite newer
+  circuit health or create already-expired recovery candidates.
+- There is no legacy recovery reader. Old in-flight runs must be drained before
+  format adoption; no development database was reset or rewritten for adoption.
+
+### Review findings addressed during implementation
+
+Astra xhigh reviewed the foundation, atomic-admission design and integration in
+several bounded passes. Corrections include exact task/result identity checks,
+retaining successful evidence after await failures, canonical failure replay,
+unknown marker observation, safe terminal-capacity cleanup, compact task reads,
+and binding the recovery position to the atomic checkpoint. A damaged terminal
+reread now suspends recovery rather than recording a new asset failure.
+
+Composed tests also exposed an ordering defect: retry selection follows
+completion order, which can differ from plan order. Recovery must resume the
+single persisted intent first. The regression now deliberately reverses that
+order instead of relying on scheduler timing.
+
+A further integration audit found a competing crash handler in `RunManager`:
+it only recovered retry-wait runs and terminalized other crashed runs, cancelling
+their tasks. Direct `RunServer` restart tests bypassed that production path.
+The handler is removed; the existing fenced ownership sweep is the single
+recovery entrypoint after either a process or node crash. The new manager test
+checks a monitored crash and a failed manifest restoration without cancellation,
+then recovery with a newer fence. Late monitor notifications cannot remove the
+replacement owner's local tracking or memory allocation. The separate-BEAM drill also uses the production
+batch-claim and manager entrypoint. This is a correction within the planned whole
+run recovery scope, with fewer competing lifecycle paths.
+
+The requested broader final Astra review stopped at the account usage limit.
+Earlier slice reviews do not count as final approval. The PR must remain draft
+until that review and final-head checks complete.
+
+### Test migration and evidence boundaries
+
+Old admission tests substituted separate acquisition phases that no longer
+exist. Their replacement uses the compound admission boundary for unit-level
+classification and real PostgreSQL for rollback, replay, waiter takeover, stale
+fences, deadline expiry and lock ordering. Removing obsolete phase mocks does
+not remove the requirement to prove those outcomes.
+
+Fault-injection stores now intercept compound admission, so lost-reply and
+history-contention tests still inject failures at the actual runtime boundary.
+An invalid task no longer leaves a failed provisional claim: the claim and task
+both roll back. Successful replay continues remaining healthy siblings.
+
+The fresh-process drill kills the OS BEAM after `step_finished`, restarts and
+kills it after `step_settled`, then restarts again to finish the pipeline. The
+asset runs through `FavnRunner.Worker`; its callback increments a PostgreSQL
+counter on every invocation and returns Landing-style metadata. Assertions
+require one write per node, all descendants completed, and no remaining capacity.
+This qualifies the disposable callback and control-plane persistence path, not
+an actual Landing adapter or the deployed distributed runner transport.
+
+Current local evidence: the complete fast orchestrator suite passes **902 checks
+(896 tests and six doctests; two excluded)**, compilation with warnings as errors
+passes, and the CI tag guard passes. The manager recovery and independent-branch
+PostgreSQL regressions pass. The expanded PostgreSQL suite and revised
+fresh-process drill are still being completed. Final independent review and
+CI for the integrated head remain outstanding.
+
+### Complexity deviation requiring final review
+
+The integration exceeds the revised production estimate. At the first complete
+count it was **+3,393/-1,353 production lines** (net +2,040), **+2,142/-1,172 test
+lines**, and +726 lines in this record. These exclude the separately merged #732.
+Subsequent regression coverage and documentation will change those figures;
+report the final diff in review.
+
+The main additions are the atomic admission owner, validated intent/progress
+contracts, bounded restoration and terminal/live task reconciliation. The old
+multi-phase admission and fail-closed recovery modules are removed. The overrun
+is not approved merely because these pieces have tests: final review must check
+whether the same safety can be expressed more simply and reject unrelated scope.

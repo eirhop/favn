@@ -109,9 +109,20 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   }
 
   @impl true
-  def enqueue(%C.EnqueueRunnerTask{} = command) do
+  defdelegate admit(command), to: FavnStoragePostgres.RunnerTasks.Admission
+
+  # Internal decoding in an existing write transaction; the public get uses a
+  # read-only snapshot transaction and must not be nested in admission.
+  def admission_task(row), do: to_result(row)
+
+  @impl true
+  def enqueue(%C.EnqueueRunnerTask{} = command), do: enqueue_prepared(command, nil)
+
+  def enqueue_admitted(command, admission), do: enqueue_prepared(command, admission)
+
+  defp enqueue_prepared(command, admission) do
     idempotent_transact(command, "enqueue", fn ->
-      validate_enqueue!(command)
+      validate_enqueue!(command, admission)
 
       DeploymentOwnership.admit!(
         DeploymentOwnership.lock!(
@@ -1890,7 +1901,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :ok
   end
 
-  defp validate_enqueue!(command) do
+  defp validate_enqueue!(command, admission) do
     with :ok <- bounded_id(command.task_id),
          true <- Regex.match?(~r/^rt_[A-Za-z0-9_-]{1,252}$/, command.task_id),
          :ok <- bounded_id(command.domain_identity),
@@ -1916,6 +1927,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
          true <- authorized_payload?(decoded, version),
          true <- write_link_matches?(command, decoded),
          true <- payload_task_identity?(command, decoded),
+         true <-
+           is_nil(admission) or
+             FavnStoragePostgres.RunnerTasks.Admission.matches_work?(admission, decoded),
          {:ok, context} <-
            Codec.decode_orchestration_context(command.orchestration_context, version, packages),
          true <- context_matches_payload?(context, decoded),
@@ -2247,14 +2261,43 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         Repo.rollback(Error.new(:invalid, "invalid runner task command identity"))
       end
 
+      if operation == "enqueue" and command.run_id,
+        do:
+          CancellationOwnership.lock_new!(command.workspace_context.workspace_id, command.run_id)
+
       now = database_now!()
-      validate_command_window!(command.issued_at, now)
+      validate_command_time!(command, operation, now)
       command = canonicalize_enqueue_issued_at!(command, operation, scope_id)
 
-      validate_command_window!(command.issued_at, now)
+      validate_command_time!(command, operation, now)
       execute_command(command, operation, scope_id, now, fun)
     end)
   end
+
+  defp validate_command_time!(%C.RetryRunnerTask{} = command, "retry", now) do
+    lock_cancellation_owner!(command)
+    workspace = command.workspace_context.workspace_id
+    WriteOwnership.lock_task_target!(workspace, command.task_id)
+    task = lock_task!(workspace, command.task_id)
+
+    retained? =
+      is_binary(task.run_id) and
+        Repo.exists?(
+          from(r in Run,
+            where: r.workspace_id == ^workspace and r.run_id == ^task.run_id
+          )
+        )
+
+    if retained?,
+      do:
+        FavnStoragePostgres.Maintenance.Replay.validate_timestamp!(command.issued_at,
+          retained_history?: true
+        ),
+      else: validate_command_window!(command.issued_at, now)
+  end
+
+  defp validate_command_time!(command, _operation, now),
+    do: validate_command_window!(command.issued_at, now)
 
   defp execute_command(%C.RecoverRunnerTasks{} = command, operation, scope_id, now, fun) do
     validate_recovery!(command)

@@ -8,7 +8,7 @@ defmodule FavnStoragePostgres.TestSupport.RunFixture do
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
 
-  def create(workspace_id, run_ids) do
+  def create(workspace_id, run_ids, opts \\ []) do
     {:ok, platform} =
       FavnOrchestrator.Persistence.PlatformContext.new("run-fixture", "run-fixture", [
         :platform_admin
@@ -23,7 +23,14 @@ defmodule FavnStoragePostgres.TestSupport.RunFixture do
 
     manifest = %Manifest{
       metadata: %{"fixture" => workspace_id},
-      assets: [%Favn.Manifest.Asset{ref: {__MODULE__, :asset}, module: __MODULE__, name: :asset}],
+      assets: [
+        %Favn.Manifest.Asset{
+          ref: {__MODULE__, :asset},
+          module: __MODULE__,
+          name: :asset,
+          runner_pool: Keyword.get(opts, :runner_pool, :default)
+        }
+      ],
       pipelines: []
     }
 

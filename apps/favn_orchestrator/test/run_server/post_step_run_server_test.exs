@@ -75,6 +75,41 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
     def get_run(_query), do: {:ok, latest_run()}
 
+    def page_events(query) do
+      run = latest_run()
+
+      step_id =
+        FavnOrchestrator.AssetStepIdentity.asset_step_id(
+          run.id,
+          {run.asset_ref, nil},
+          run.asset_ref
+        )
+
+      events =
+        for {kind, sequence} <- [
+              run_submitted: 1,
+              run_started: 2,
+              run_execution_position: 3,
+              step_started: 4
+            ] do
+          FavnOrchestrator.Projector.run_event(%{run | event_seq: sequence}, kind, %{
+            asset_step_id: step_id,
+            stage: 0,
+            attempt: 1,
+            runner_task_id: "rt-asset",
+            position: %{
+              "version" => 1,
+              "mode" => "pipeline",
+              "index" => 0,
+              "attempt" => 1,
+              "phase" => "admit"
+            }
+          })
+        end
+
+      {:ok, %{items: Enum.filter(events, &(&1.sequence > query.after_sequence))}}
+    end
+
     def commit_transition(command) do
       event_type = command.event.event_type
 
@@ -747,7 +782,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       fencing_token: @fencing_token,
       checkpoint_version: 1,
       checkpoint_revision: 1,
-      checkpoint_sequence: fixture.run.event_seq,
+      checkpoint_sequence: 3,
       stage: 0,
       attempt: 1,
       payload: payload,
@@ -762,7 +797,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       task_id: @asset_task_id,
       task_kind: :asset_attempt,
       run_id: fixture.run.id,
-      asset_step_id: "step-asset",
+      asset_step_id: step_id(fixture.run),
       runner_pool: "default",
       required_runner_release_id: fixture.release_id,
       retry_class: :terminal,
@@ -772,8 +807,9 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         manifest_version_id: fixture.run.manifest_version_id,
         manifest_content_hash: fixture.run.manifest_content_hash,
         required_runner_release_id: fixture.release_id,
-        asset_step_id: "step-asset",
+        asset_step_id: step_id(fixture.run),
         asset_ref: @ref,
+        deadline_at: DateTime.add(DateTime.utc_now(), 120, :second),
         attempt: 1,
         stage: 0,
         metadata: %{node_key: @node_key}
@@ -789,7 +825,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         freshness_checkpoint: %{
           version: 1,
           revision: 1,
-          sequence: fixture.run.event_seq,
+          sequence: 3,
           stage: 0,
           attempt: 1,
           payload_hash: checkpoint(fixture).payload_hash
@@ -802,6 +838,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       inserted_at: DateTime.utc_now()
     }
   end
+
+  defp step_id(run), do: FavnOrchestrator.AssetStepIdentity.asset_step_id(run.id, @node_key, @ref)
 
   defp fixture do
     version = version()
@@ -844,7 +882,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         plan: plan,
         metadata: %{active_runner_task_ids: [@asset_task_id]}
       )
-      |> Map.put(:event_seq, 3)
+      |> Map.put(:event_seq, 4)
       |> Map.put(:status, :running)
       |> RunState.with_snapshot_hash()
 
@@ -854,7 +892,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       deployment_id: run.deployment_id,
       expires_at: DateTime.add(DateTime.utc_now(), 60, :second),
       run_id: run.id,
-      asset_step_id: "step-asset",
+      asset_step_id: step_id(run),
       node_key: @node_key,
       owner_id: "run-owner",
       fencing_token: @fencing_token,

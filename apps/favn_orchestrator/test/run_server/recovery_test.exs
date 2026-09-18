@@ -1,33 +1,16 @@
-defmodule FavnOrchestrator.RunServer.RecoveryTest do
+defmodule FavnOrchestrator.RunServer.RetryCheckpointRecoveryTest do
   use ExUnit.Case, async: true
 
-  alias FavnOrchestrator.RunServer.Recovery
-  alias FavnOrchestrator.RunServer.Execution.RecoveryPosition
+  alias FavnOrchestrator.RunServer.RetryCheckpoint
   alias FavnOrchestrator.RunState
-
-  test "resumes only fresh runs or explicit retry checkpoints" do
-    fresh = run_state(event_seq: 2)
-    assert {:ok, :resume} = Recovery.disposition(fresh)
-
-    progressed = run_state(event_seq: 3)
-
-    assert {:ok, {:uncertain, %{reason: :continuation_position_not_durable}}} =
-             Recovery.disposition(progressed)
-
-    retrying =
-      run_state(
-        event_seq: 4,
-        metadata: %{retry_state: sequential_retry_checkpoint()}
-      )
-
-    assert {:ok, :resume} = Recovery.disposition(retrying)
-  end
 
   test "sequential admission cannot reset a malformed persisted deadline" do
     checkpoint = sequential_retry_checkpoint()
     checkpoint = put_in(checkpoint, [:retry, :admission_deadline_ms], "invalid")
     run = run_state(event_seq: 4, metadata: %{retry_state: checkpoint})
-    assert {:ok, {:uncertain, %{reason: :invalid_retry_checkpoint}}} = Recovery.disposition(run)
+
+    assert {:error, :invalid_retry_checkpoint} =
+             RetryCheckpoint.validate(run.metadata, RunState.execution_mode(run))
   end
 
   test "malformed retry metadata never authorizes recovery" do
@@ -39,8 +22,8 @@ defmodule FavnOrchestrator.RunServer.RecoveryTest do
         ] do
       run = run_state(event_seq: 4, metadata: %{retry_state: retry_state})
 
-      assert {:ok, {:uncertain, %{reason: :invalid_retry_checkpoint}}} =
-               Recovery.disposition(run)
+      assert {:error, :invalid_retry_checkpoint} =
+               RetryCheckpoint.validate(run.metadata, RunState.execution_mode(run))
     end
   end
 
@@ -52,8 +35,8 @@ defmodule FavnOrchestrator.RunServer.RecoveryTest do
         metadata: %{retry_state: sequential_retry_checkpoint()}
       )
 
-    assert {:ok, {:uncertain, %{reason: :invalid_retry_checkpoint}}} =
-             Recovery.disposition(pipeline_with_sequential)
+    assert {:error, :invalid_retry_checkpoint} =
+             RetryCheckpoint.validate(pipeline_with_sequential.metadata, :pipeline)
 
     sequential_with_pipeline =
       run_state(
@@ -61,28 +44,8 @@ defmodule FavnOrchestrator.RunServer.RecoveryTest do
         metadata: %{retry_state: pipeline_retry_checkpoint()}
       )
 
-    assert {:ok, {:uncertain, %{reason: :invalid_retry_checkpoint}}} =
-             Recovery.disposition(sequential_with_pipeline)
-  end
-
-  test "active recovery fails closed once any node outcome is durable" do
-    run =
-      run_state(
-        metadata: %{active_runner_task_ids: ["rt_active"]},
-        result: %{node_results: [%{node_key: {{__MODULE__, :asset}, nil}, status: :ok}]}
-      )
-      |> RecoveryPosition.record_outcome(0, 1)
-      |> RunState.for_step_persistence()
-
-    assert run.result == nil
-
-    assert {:ok,
-            {:uncertain,
-             %{
-               reason: :active_stage_outcomes_not_resumable,
-               active_runner_task_count: 1,
-               runner_tasks: ["rt_active"]
-             }}} = Recovery.disposition(run)
+    assert {:error, :invalid_retry_checkpoint} =
+             RetryCheckpoint.validate(sequential_with_pipeline.metadata, :sequential)
   end
 
   defp run_state(overrides) do
