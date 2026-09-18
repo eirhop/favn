@@ -841,3 +841,48 @@ contracts, bounded restoration and terminal/live task reconciliation. The old
 multi-phase admission and fail-closed recovery modules are removed. The overrun
 is not approved merely because these pieces have tests: final review must check
 whether the same safety can be expressed more simply and reject unrelated scope.
+
+### Requested extension: issue #736 (plan reviewed by Astra xhigh)
+
+The user explicitly requested [#736](https://github.com/eirhop/favn/issues/736)
+be fixed in this PR. A failed SQL data check can roll back successfully and still
+be classified as an unknown write because the worker currently equates
+non-retryable with unknown. The ownership guard correctly refuses to release an
+unknown write, but the resulting bookkeeping error hides the original check
+failure and incorrectly says the write succeeded.
+
+The proposed correction preserves two separate facts: whether repeating the
+asset is allowed, and whether its write outcome is known. The SQL transaction
+owner will carry explicit no-write/rollback evidence into the SQL asset error;
+both worker normalization paths will use that evidence independently of retry
+policy. An error type or a before-materialize phase alone is not evidence.
+Missing proof, rollback failure, commit ambiguity, and lost results remain
+unknown. Existing runner error/task wire shapes already support this distinction;
+no compatibility layer or new task lifecycle is required.
+
+Post-step settlement will retain the original failed asset error as primary and
+record the secondary bookkeeping error with asset, operation and outcome context.
+For a successful asset, registration failure remains the primary failure, with
+accurate wording. Existing unknown claims require the supported write-resolution
+workflow and authoritative evidence; neither blind replay nor database edits are
+a recovery procedure.
+
+Verification will compose PostgreSQL control-plane persistence, an actual SQL
+transaction/check failure with confirmed rollback, the runner worker, task
+completion and run settlement. A dependent must block, an independent sibling
+must finish, the original error must survive, and corrected work must acquire
+ownership normally. Contrasting rollback/commit/result ambiguity cases remain
+held. Existing unit tests asserted diagnostic rollback metadata but did not assert
+its task/claim ownership consequence; this is the missing boundary coverage.
+
+Additional budget: production +80–180/-20–60 lines; tests/fixtures/canonical docs
++250–550/-0–30. Reuse existing contracts and fixtures; challenge any larger design.
+This extension is distinct from, and does not rewrite, the approved crash-recovery
+baseline. Independent review must evaluate this plan and the integrated outcome.
+
+Astra approved the extension with two required safety constraints: only a body
+failure followed by rollback confirmed by the actual adapter can prove no write;
+a commit error stays unknown even when later rollback succeeds. Unknown outcome
+or failed rollback anywhere in the transaction cause takes precedence over
+nested begin/body tags. A generic SQL asset error is not no-write proof. These
+constraints are accepted before implementation.
