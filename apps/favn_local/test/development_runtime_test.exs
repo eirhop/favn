@@ -1,8 +1,51 @@
 defmodule FavnLocal.DevelopmentRuntimeTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Favn.Manifest.Publication
   alias FavnLocal.DevelopmentRuntime
+  alias FavnOrchestrator.RunnerRegistry
+
+  setup do
+    previous = System.get_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS")
+    System.delete_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS", previous),
+        else: System.delete_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS")
+    end)
+  end
+
+  test "the default caller wait covers deployment and an increased registration budget" do
+    assert DevelopmentRuntime.startup_timeout_ms() == 360_000
+    System.put_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS", "120000")
+    assert DevelopmentRuntime.startup_timeout_ms() == 450_000
+  end
+
+  test "registered startup gives deployment a fresh budget and ignores the old phase timer" do
+    state = registered_startup()
+    started_at = System.monotonic_time(:millisecond)
+
+    assert {:noreply, deploying} = DevelopmentRuntime.handle_info(:probe_runner, state)
+    assert deploying.deadline >= started_at + 330_000
+    assert deploying.deadline < started_at + 331_000
+    assert {:noreply, ^deploying} = DevelopmentRuntime.handle_info(:startup_deadline, deploying)
+    assert {:error, _invalid_workspace} = Task.await(deploying.task)
+  end
+
+  test "deployment preserves an explicit caller deadline across registration" do
+    state = registered_startup()
+    deadline = System.monotonic_time(:millisecond) + 10_000
+    from = {self(), make_ref()}
+
+    assert {:noreply, waiting} =
+             DevelopmentRuntime.handle_call({:await_ready, deadline}, from, state)
+
+    assert {:noreply, deploying} = DevelopmentRuntime.handle_info(:probe_runner, waiting)
+    assert deploying.deadline == deadline
+    assert deploying.startup_wait_deadline == deadline
+    assert {:error, _invalid_workspace} = Task.await(deploying.task)
+  end
 
   test "startup deadline stops owned deployment work and runners and replies with the phase" do
     task =
@@ -43,7 +86,14 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
 
   test "a shorter caller deadline applies to the existing startup budget" do
     now = System.monotonic_time(:millisecond)
-    state = %{status: :starting, deadline: now + 2_000, ready_waiters: []}
+
+    state = %{
+      status: :starting,
+      deadline: now + 2_000,
+      startup_wait_deadline: nil,
+      ready_waiters: []
+    }
+
     from = {self(), make_ref()}
 
     assert {:noreply, waiting} =
@@ -55,6 +105,7 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
              DevelopmentRuntime.handle_call({:await_ready, now + 3_000}, from, waiting)
 
     assert same.deadline == waiting.deadline
+    assert same.startup_wait_deadline == now + 1_000
 
     expired =
       Map.merge(same, %{
@@ -74,6 +125,35 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
   defp child do
     port = Port.open({:spawn_executable, System.find_executable("cat")}, [:binary, :exit_status])
     %{port: port, node: nil, release_id: "local-deadline-fixture", runner_instance_id: "fixture"}
+  end
+
+  defp registered_startup do
+    start_supervised!(RunnerRegistry)
+    start_supervised!({Task.Supervisor, name: FavnLocal.TaskSupervisor})
+
+    session = %{
+      required_runner_release_id: "local-deadline-fixture",
+      runner_pool: "default",
+      lifecycle_mode: :resident,
+      agent_pid: self()
+    }
+
+    :sys.replace_state(RunnerRegistry, &%{&1 | sessions: %{"fixture" => session}})
+
+    %{
+      status: :starting,
+      startup_action: :deploy,
+      retiring: nil,
+      runner: %{release_id: "local-deadline-fixture", runner_instance_id: "fixture", node: nil},
+      deadline: System.monotonic_time(:millisecond) - 1,
+      startup_wait_deadline: nil,
+      ready_waiters: [],
+      request: nil,
+      task: nil,
+      publication: %Publication{version: nil, execution_packages: []},
+      # Validation rejects the empty workspace before any database access.
+      config: %{workspace_id: ""}
+    }
   end
 
   test "the runner restart budget fails the stack after repeated fast exits" do
@@ -209,6 +289,7 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
       ready_waiters: [],
       ignored_ports: MapSet.new(),
       deadline: 1,
+      startup_wait_deadline: nil,
       failure: nil
     }
 

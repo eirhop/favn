@@ -21,11 +21,13 @@ defmodule FavnLocal.DevelopmentRuntime do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunnerRegistry
+  alias FavnOrchestrator.TargetCompatibilityPlanner
 
   @probe_interval_ms 100
   @runner_drain_probe_interval_ms 50
   @runner_drain_timeout_ms 60_000
   @default_runner_start_timeout_ms 30_000
+  @deployment_overhead_timeout_ms 30_000
   @runner_stop_timeout_ms 15_000
   @request_timeout_ms 120_000
   @runner_crash_window_ms 60_000
@@ -35,7 +37,13 @@ defmodule FavnLocal.DevelopmentRuntime do
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
-  def await_ready(timeout_ms \\ @request_timeout_ms)
+  @doc "Returns the combined runner registration and initial deployment wait budget."
+  @spec startup_timeout_ms() :: pos_integer()
+  def startup_timeout_ms, do: runner_start_timeout_ms() + deployment_timeout_ms()
+
+  @doc "Waits for readiness within the combined startup budget unless overridden."
+  @spec await_ready(pos_integer()) :: {:ok, map()} | {:error, term()}
+  def await_ready(timeout_ms \\ startup_timeout_ms())
       when is_integer(timeout_ms) and timeout_ms > 0 do
     GenServer.call(__MODULE__, {:await_ready, now_ms() + timeout_ms}, timeout_ms + 250)
   catch
@@ -77,6 +85,7 @@ defmodule FavnLocal.DevelopmentRuntime do
          status: :starting,
          startup_action: :deploy,
          deadline: now_ms() + runner_start_timeout_ms(),
+         startup_wait_deadline: nil,
          ready_waiters: [],
          request: nil,
          task: nil,
@@ -97,9 +106,17 @@ defmodule FavnLocal.DevelopmentRuntime do
 
   def handle_call({:await_ready, deadline}, from, %{status: status} = state)
       when status in [:starting, :reloading] do
-    deadline = min(deadline, state.deadline)
-    schedule(:startup_deadline, max(deadline - now_ms(), 0))
-    {:noreply, %{state | deadline: deadline, ready_waiters: [from | state.ready_waiters]}}
+    wait_deadline = min(deadline, state.startup_wait_deadline || deadline)
+    phase_deadline = min(wait_deadline, state.deadline)
+    schedule(:startup_deadline, max(phase_deadline - now_ms(), 0))
+
+    {:noreply,
+     %{
+       state
+       | deadline: phase_deadline,
+         startup_wait_deadline: wait_deadline,
+         ready_waiters: [from | state.ready_waiters]
+     }}
   end
 
   def handle_call({:await_ready, _deadline}, _from, state),
@@ -318,6 +335,14 @@ defmodule FavnLocal.DevelopmentRuntime do
       case state.request do
         {_from, publication, _release_id} -> publication
         _none -> state.publication
+      end
+
+    state =
+      if state.status == :starting do
+        deadline = now_ms() + deployment_timeout_ms()
+        %{state | deadline: min(deadline, state.startup_wait_deadline || deadline)}
+      else
+        state
       end
 
     schedule(:startup_deadline, max(state.deadline - now_ms(), 0))
@@ -541,6 +566,7 @@ defmodule FavnLocal.DevelopmentRuntime do
          ignored_ports: ignored_ports,
          request: nil,
          deadline: nil,
+         startup_wait_deadline: nil,
          ready_waiters: [],
          failure: if(unknown?, do: reason)
      }}
@@ -576,6 +602,7 @@ defmodule FavnLocal.DevelopmentRuntime do
         task: nil,
         pending_deployment: nil,
         deadline: nil,
+        startup_wait_deadline: nil,
         ready_waiters: [],
         failure: nil
     }
@@ -701,6 +728,10 @@ defmodule FavnLocal.DevelopmentRuntime do
       _unset_or_invalid -> @default_runner_start_timeout_ms
     end
   end
+
+  defp deployment_timeout_ms,
+    do:
+      TargetCompatibilityPlanner.default_inspection_timeout_ms() + @deployment_overhead_timeout_ms
 
   # "The runner never registered" has two causes that need different answers, and
   # reporting both as a timeout sent an operator looking for a slow machine when

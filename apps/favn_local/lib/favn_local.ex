@@ -26,6 +26,12 @@ defmodule FavnLocal do
 
   @type progress_fun :: (progress_event() -> term())
 
+  @doc """
+  Starts local development and waits for runner registration and deployment.
+
+  The default wait covers both phase budgets. `:startup_timeout_ms` can set a
+  shorter overall wait; expiration stops the owned local runtime.
+  """
   @spec dev(keyword()) :: {:ok, map()} | {:error, term()}
   def dev(opts \\ []) when is_list(opts) do
     result =
@@ -63,7 +69,11 @@ defmodule FavnLocal do
            {:ok, supervisor} <-
              FavnLocal.Supervisor.start_link(config: config, publication: publication) do
         Process.unlink(supervisor)
-        await_startup(supervisor, Keyword.get(opts, :startup_timeout_ms, 60_000))
+
+        await_startup(
+          supervisor,
+          Keyword.get(opts, :startup_timeout_ms, DevelopmentRuntime.startup_timeout_ms())
+        )
       end
 
     if match?({:error, _reason}, result) do
