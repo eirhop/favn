@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Lifecycle and persistence bug fix |
 | Primary issue | [#733](https://github.com/eirhop/favn/issues/733) |
-| Pull request | Pending |
+| Pull request | [#735](https://github.com/eirhop/favn/pull/735) |
 | Related work | [#734](https://github.com/eirhop/favn/pull/734), merged timeout-budget repair |
 | Affected areas | Local startup/reload, orchestrator deployment operations, PostgreSQL task ownership and activation |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `dcae9eb78a77d66de4d880f066aee3196ce82ed9` |
 | Last updated | 2026-09-18 |
 
 ## One-minute summary
@@ -78,7 +78,8 @@ flowchart TD
 
 ## Approved plan
 
-This section becomes the baseline only after independent approval.
+This section is the independently approved baseline. The record lifecycle
+status means the draft PR exists; implementation has not started.
 
 ```mermaid
 flowchart TD
@@ -343,14 +344,16 @@ Not implemented. This task is limited to the reviewed plan and draft PR.
 
 ## Deviations from the approved plan
 
-No implementation deviations yet; no baseline has been approved.
+No implementation deviations. The approved planning commit is preserved above.
 
 ## Verification evidence
 
 Source and issue inspection completed. All repository-relative links resolve;
 whitespace checks pass. Both diagrams render successfully with Mermaid 11 in
-headless Chrome. Independent plan review accepted the corrected plan. GitHub
-render verification follows draft PR creation.
+headless Chrome. Independent plan review accepted the corrected plan. Both
+GitHub-rendered diagrams were verified in Chrome after draft PR creation: the
+current diagram has eight nodes and the proposed diagram has twelve, with the
+expected labels and no rendering errors.
 No implementation tests, migration, live consumer restart or production
 qualification have been performed for this plan.
 
