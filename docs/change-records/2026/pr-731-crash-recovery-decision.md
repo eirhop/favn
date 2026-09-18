@@ -791,9 +791,11 @@ replacement owner's local tracking or memory allocation. The separate-BEAM drill
 batch-claim and manager entrypoint. This is a correction within the planned whole
 run recovery scope, with fewer competing lifecycle paths.
 
-The requested broader final Astra review stopped at the account usage limit.
-Earlier slice reviews do not count as final approval. The PR must remain draft
-until that review and final-head checks complete.
+The requested broader Astra xhigh review resumed after the account limit was
+fixed. It accepted the atomic-admission architecture and bounded restoration
+approach, subject to the corrections and qualification below. Slice reviews do
+not count as final approval; the PR remains draft until final review and checks
+complete.
 
 ### Test migration and evidence boundaries
 
@@ -886,3 +888,92 @@ a commit error stays unknown even when later rollback succeeds. Unknown outcome
 or failed rollback anywhere in the transaction cause takes precedence over
 nested begin/body tags. A generic SQL asset error is not no-write proof. These
 constraints are accepted before implementation.
+
+
+### Integrated review corrections and issue #736 outcome
+
+The issue #736 fix separates **permission to retry** from **certainty about the
+write**. For example, an invalid customer name must still fail; if the adapter
+confirms that the transaction rolled back, Favn can release that attempt's write
+ownership. If COMMIT or ROLLBACK is uncertain, Favn keeps the hold. A contract
+error name, an early-looking phase, or a nested BEGIN error is never sufficient
+proof. Raised COMMIT exceptions no longer pass through the body-exception rescue.
+
+The original asset error stays primary. Secondary materialization or generation
+registration errors retain their operation and asset context, with wording that
+matches the accepted outcome. Recovery of existing held claims uses the audited
+write-resolution procedure in the canonical runner operations guide.
+
+Astra's integrated review identified additional crash-recovery gaps:
+
+- A materialization-finish reply could be lost after commit. Recovery now retains
+  the accepted result and resumes the remaining bookkeeping; it does not emit a
+  permanent `step_settled` error for a transient or ambiguous response.
+- An asynchronous generation-registration worker can time out or disappear after
+  saving work. Those cases also suspend for reconciliation instead of destroying
+  successful evidence.
+- Cancellation hints arriving while an accepted outcome awaits persistence must
+  wait for that outcome. An already-completed task whose result is temporarily
+  unreadable is likewise retained for recovery.
+- Cold manifest identifiers now share the rehydrator's VM atom headroom guard.
+  Unknown identifiers remain rejected; checking the budget creates no atoms.
+- A run needing recovery saves a bounded `recovery_attention` annotation and an
+  event with its first cause, latest phase/reason, and reporting count. Repeated
+  identical reports within one minute are coalesced. Progress clears both the
+  saved annotation and the recovered process's copy, so later checkpoints cannot
+  restore stale warnings. This diagnostic survives ordinary metadata truncation.
+
+The diagnostic implementation is deliberately smaller than the original proposed
+attempt timeline: the 30-second immediate persistence retry budget is **per run
+owner**, not a global recovery deadline. A subsequent fenced owner can resume
+safe bookkeeping after that budget. Original asset deadlines are unchanged.
+Detailed per-attempt durable history and a dedicated recovery timeline UI are
+not included; the existing metadata/event/log surfaces carry the current cause.
+This is a documented baseline deviation for final review, not an implicit claim
+that a new global retry deadline was implemented.
+
+The composed SQL test exposed an existing timestamp constraint: a completion
+reported before its enqueue timestamp could be rejected even with valid task
+identity and ownership. Stored terminal/cancellation timestamps now respect causal
+order, while issued command identity, assignment fences, leases and executable
+deadlines remain unchanged. Repeated cancellation preserves the first request
+rather than moving it after an existing acknowledgement. Explicit nil resets
+remain intact. Astra reviewed this narrow correction.
+
+New regression evidence includes an actual PostgreSQL SQL transaction/check and
+confirmed rollback through the worker and durable task/claim settlement, an
+independent sibling and blocked dependent; a committed materialization with a
+lost reply followed by recovery; asynchronous cancellation during completion
+persistence; metadata-heavy snapshot round-trips; and clock-skew receipt replay.
+Adapter/runner cases retain unknown outcomes for absent proof, rollback failure,
+and uncertain COMMIT, including raised COMMIT and misleading nested BEGIN tags.
+The PostgreSQL SQL fixture is a small test adapter, not a qualification of a real
+DuckLake deployment. It proves the orchestration boundary with real SQL rollback;
+ADBC transaction behavior is covered separately by adapter tests.
+
+Why earlier tests missed #736: they checked that the SQL diagnostic said rollback,
+but did not follow that error through worker classification, durable ownership
+and final run error selection. The new composed test asserts those consequences.
+Why earlier recovery tests were insufficient: restarting `RunServer` directly did
+not exercise the manager's competing crash handler, and successful persistence
+responses did not prove behavior after a committed-but-lost reply. Both boundaries
+now have explicit regression coverage.
+
+Final-head test counts, scope totals, CI and final review are recorded below after
+qualification; the preceding historical counts are not claims about this head.
+
+Astra xhigh's final source pass also identified five analogous uncertainty guards
+in pipeline/sequential admission, non-running decisions and required package
+reads. Timeout/unavailable errors without a retryable flag now preserve the
+original pause or intent instead of becoming conclusive node failures. Initial
+resource-settlement uncertainty follows the same rule. The new focused matrix
+passes, including preservation of a healthy sibling and the original command.
+
+Astra xhigh granted **conditional source approval** after checking those guards
+against baseline `57c64fcb` and the reviewed #736 extension `4f1deb7d`. It found no
+remaining source blockers and accepted the complexity and documented deviations.
+The reviewer ran no database/tests; this does not replace qualification. At this
+point the 175 core PostgreSQL checks pass together, 911 orchestrator checks passed
+before the last guard matrix, and the final 21 admission/sequential checks pass.
+Credo, Sobelow, warnings-as-errors compilation and Dialyzer pass. Full storage
+order/isolation qualification and final-head CI remain pending.

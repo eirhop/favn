@@ -1313,7 +1313,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   defp no_active_transaction?(_reason), do: false
 
   defp run_transaction(%Conn{} = conn, fun, opts) do
-    case fun.(conn) do
+    case transaction_body(conn, fun) do
       {:ok, value} ->
         case tx_commit(conn) do
           :ok ->
@@ -1340,30 +1340,37 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
 
         finalize_transaction_failure(conn, error)
     end
+  end
+
+  defp transaction_body(conn, fun) do
+    fun.(conn)
   rescue
     error ->
-      raised = %Error{
-        type: :execution_error,
-        message: "transaction body raised exception",
-        retryable?: false,
-        adapter: __MODULE__,
-        operation: :transaction,
-        connection: conn.connection,
-        details: %{
-          classification: :execution,
-          transaction_stage: :body,
-          exception: Exception.format(:error, error, __STACKTRACE__)
-        },
-        cause: error
-      }
-
-      finalize_transaction_failure(conn, raised)
+      {:error,
+       %Error{
+         type: :execution_error,
+         message: "transaction body raised exception",
+         retryable?: false,
+         adapter: __MODULE__,
+         operation: :transaction,
+         connection: conn.connection,
+         details: %{
+           classification: :execution,
+           transaction_stage: :body,
+           exception: Exception.format(:error, error, __STACKTRACE__)
+         },
+         cause: error
+       }}
   end
 
   defp finalize_transaction_failure(%Conn{} = conn, %Error{} = error) do
     case tx_rollback(conn) do
-      :ok -> {:error, error}
-      {:error, reason} -> {:error, ErrorMapper.rollback_failure(error, reason)}
+      :ok ->
+        outcome = if error.details[:transaction_stage] == :body, do: :rolled_back, else: :unknown
+        {:error, %{error | details: Map.put(error.details, :transaction_outcome, outcome)}}
+
+      {:error, reason} ->
+        {:error, ErrorMapper.rollback_failure(error, reason)}
     end
   end
 

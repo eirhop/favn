@@ -170,6 +170,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
       case TestSupport.mode(:commit_mode, :ok) do
         :ok -> :ok
         :error -> {:error, :commit_failed}
+        :raise -> raise "commit reply lost"
       end
     end
 
@@ -246,6 +247,29 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
     assert events() == []
   end
 
+  test "only confirmed body rollback supplies no-write evidence" do
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+    body_error = %Error{type: :execution_error, message: "check failed", operation: :transaction}
+    assert {:error, error} = ADBC.transaction(conn, fn _ -> {:error, body_error} end, [])
+    assert error.details.transaction_stage == :body
+    assert error.details.transaction_outcome == :rolled_back
+    assert Enum.any?(events(), &match?({:rollback, _}, &1))
+
+    TestSupport.put_mode(:rollback_mode, :error)
+    assert {:error, error} = ADBC.transaction(conn, fn _ -> {:error, body_error} end, [])
+    assert error.details.transaction_stage == :rollback
+    refute error.details[:transaction_outcome] == :rolled_back
+  end
+
+  test "a raised commit is never relabeled as a rolled-back body failure" do
+    TestSupport.put_mode(:commit_mode, :raise)
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+    assert_raise RuntimeError, "commit reply lost", fn ->
+      ADBC.transaction(conn, fn _ -> {:ok, :written} end, [])
+    end
+    refute Enum.any?(events(), &match?({:rollback, _}, &1))
+  end
+
   test "commit failure can retain a bounded checked body result" do
     TestSupport.put_mode(:commit_mode, :error)
     {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
@@ -255,6 +279,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
             %Error{
               details: %{
                 transaction_stage: :commit,
+                transaction_outcome: :unknown,
                 transaction_body_result: ^body_result
               }
             }} =

@@ -47,9 +47,17 @@ defmodule FavnOrchestrator.RunServer.Execution.AdmissionIntent do
   @doc false
   @spec validate_submission_metadata(map()) :: :ok | {:error, :reserved_run_metadata}
   def validate_submission_metadata(metadata) when is_map(metadata) do
-    if Enum.any?(Map.keys(metadata), &(&1 in [@metadata_key, :execution_admission_intent])),
-      do: {:error, :reserved_run_metadata},
-      else: :ok
+    if Enum.any?(
+         Map.keys(metadata),
+         &(&1 in [
+             @metadata_key,
+             :execution_admission_intent,
+             "recovery_attention",
+             :recovery_attention
+           ])
+       ),
+       do: {:error, :reserved_run_metadata},
+       else: :ok
   end
 
   @doc "Creates intent from work before any capacity, circuit or claim mutation."

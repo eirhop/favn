@@ -673,6 +673,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   defp rerun_base_metadata(%RunState{metadata: metadata}) when is_map(metadata) do
     Map.drop(metadata, [
       AdmissionIntent.metadata_key(),
+      "recovery_attention",
+      :recovery_attention,
       :terminal_event_type,
       "terminal_event_type",
       :cancelled,

@@ -112,7 +112,14 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
 
     def finish(command) do
       send(test_pid(), {:materialization_finished, command})
-      {:ok, %MaterializationDecision{claim_key: command.claim_key, status: command.status}}
+
+      case Process.get({__MODULE__, :finish_error}) do
+        nil ->
+          {:ok, %MaterializationDecision{claim_key: command.claim_key, status: command.status}}
+
+        error ->
+          {:error, error}
+      end
     end
 
     # Runs inside the worker. Holding here keeps the continuation pending until
@@ -316,12 +323,54 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
             Execution.retry_persistence(paused, retry)
         end
 
-      assert {:terminal, finished} = result
-      assert finished.status == if(disposition == :recover, do: :ok, else: :error)
+      finished =
+        case disposition do
+          :recover ->
+            assert {:terminal, finished} = result
+            assert finished.status == :ok
+            finished
+
+          :exhaust ->
+            assert {:recovery_required, recovering,
+                    %{details: %{reason_code: "persistence_retry_exhausted"}}} = result
+
+            refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
+            recovering.run
+        end
+
       assert ResultBuilder.latest_node_status(finished, fixture.node_keys.a) == :ok
       refute_received {:materialization_finished, _}
       refute_received {:worker_binding_read, _, _}
     end
+  end
+
+  test "an ambiguous initial resource settlement response preserves the accepted result" do
+    fixture = fixture([:a])
+    state = awaiting_state(fixture, [:a])
+    task = task_id(:a)
+
+    permit = %FavnOrchestrator.Persistence.Results.ResourceCircuitPermit{
+      resource: Favn.Resource.Ref.new!(:connection, "warehouse"),
+      owner_id: "owner",
+      probe?: false
+    }
+
+    owned = %{state.awaits[task].entry | resource_circuit_permits: [permit]}
+    state = put_in(state.awaits[task].entry, owned)
+    state = %{state | work_set: ActiveTaskSet.add_entry(state.work_set, owned)}
+    assert {:cont, pending} = deliver_result(state, fixture, :a, :ok)
+    [{ref, %{pid: worker}}] = Map.to_list(pending.post_step_continuations)
+    assert_receive {:worker_binding_read, ^worker, _}
+    release_worker(worker, {:ok, %{active_generation_id: "gen-a"}})
+    assert_receive {^ref, :ok}
+    Process.put({FakeStore, :resource_error}, Error.new(:timeout, "resource outcome reply lost"))
+
+    assert {:recovery_required, recovering,
+            {:resource_outcomes_unavailable, _, %{kind: :timeout}}} =
+             Execution.handle_event(pending, {:post_step_reply, ref, :ok})
+
+    assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
+    refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
   end
 
   test "cancel intent preserves completed siblings and suppresses their post-step workers" do
@@ -439,7 +488,46 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
            } = failed.error
   end
 
-  test "a worker crash settles the node as a post-step failure with a bounded reason" do
+  test "temporary registration failure leaves successful work unsettled for recovery" do
+    fixture = fixture([:a])
+    assert {:cont, pending} = deliver_result(awaiting_state(fixture, [:a]), fixture, :a, :ok)
+    assert_receive {:worker_binding_read, worker, _}
+    [{ref, _}] = Map.to_list(pending.post_step_continuations)
+    release_worker(worker, {:error, Error.new(:unavailable, "registration reply lost")})
+    assert_receive {^ref, {:error, reason}}
+
+    assert {:recovery_required, recovering, {:generation_registration_unavailable, _, _}} =
+             Execution.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+
+    assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
+    refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
+  end
+
+  test "ambiguous materialization finish preserves successful result without settlement" do
+    fixture = fixture([:a])
+    Process.put({FakeStore, :finish_error}, Error.new(:timeout, "finish reply lost"))
+
+    assert {:recovery_required, recovering, {:post_step_bookkeeping_unavailable, _, _}} =
+             deliver_result(awaiting_state(fixture, [:a]), fixture, :a, :ok)
+
+    assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
+    assert_receive {:commit_transition, %{event: %{event_type: :step_finished}}}
+    refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
+  end
+
+  test "secondary failed-claim settlement preserves the original asset error" do
+    fixture = fixture([:a])
+    Process.put({FakeStore, :finish_error}, Error.new(:conflict, "write outcome unresolved"))
+
+    assert {:terminal, failed} =
+             deliver_result(awaiting_state(fixture, [:a]), fixture, :a, :error)
+
+    assert failed.error.type == :forced_failure
+    assert failed.error.details.post_step_failure.operation == :materialization_settlement
+    assert failed.error.details.post_step_failure.message =~ "after the asset failed"
+  end
+
+  test "a worker crash leaves its accepted write unsettled for recovery" do
     fixture = fixture([:a])
     state = awaiting_state(fixture, [:a])
 
@@ -450,13 +538,12 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     release_worker(worker, :crash)
     assert_receive {:DOWN, ^ref, :process, ^worker, {%RuntimeError{}, _stack}}
 
-    assert {:terminal, failed} =
+    assert {:recovery_required, recovering,
+            {:generation_registration_unavailable, _, {:post_step_worker_down, ":forced"}}} =
              Execution.handle_event(pending, {:post_step_worker_down, ref, :forced})
 
-    assert failed.status == :error
-
-    assert %{type: :post_step_persistence_failed, reason: {:post_step_worker_down, ":forced"}} =
-             failed.error
+    assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
+    refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
   end
 
   test "cancel while pending terminates the worker and leaves the completed claim alone" do

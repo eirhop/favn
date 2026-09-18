@@ -510,7 +510,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
               result_version: command.result_version,
               result: command.result,
               error: error,
-              terminal_at: command.occurred_at,
+              terminal_at: lifecycle_time(command.occurred_at, task.enqueued_at),
               assignment_expires_at: nil,
               last_command_id: command.command_id,
               updated_at: command.occurred_at
@@ -1318,6 +1318,23 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp update_task!(task, command, attrs) do
+    attrs =
+      Enum.map(attrs, fn
+        {:terminal_at, value} ->
+          {:terminal_at, lifecycle_time(value, task.enqueued_at)}
+
+        {:cancellation_requested_at, value} when not is_nil(value) ->
+          {:cancellation_requested_at,
+           task.cancellation_requested_at || lifecycle_time(value, task.enqueued_at)}
+
+        {:cancellation_acknowledged_at, value} ->
+          {:cancellation_acknowledged_at,
+           lifecycle_time(value, task.cancellation_requested_at || task.enqueued_at)}
+
+        attr ->
+          attr
+      end)
+
     {1, _} =
       Repo.update_all(task_query(task),
         set: attrs ++ [last_command_id: command.command_id, updated_at: command.occurred_at]
@@ -1327,6 +1344,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
     fetch_task!(task.workspace_id, task.task_id)
   end
+
+  # Persist causal lifecycle order across reporting clocks; command identity,
+  # assignment fencing and executable deadlines retain their original values.
+  defp lifecycle_time(nil, _floor), do: nil
+
+  defp lifecycle_time(value, floor),
+    do: if(DateTime.compare(value, floor) == :lt, do: floor, else: value)
 
   defp transition_values!(task, %C.TransitionRunnerTask{transition: :preparing}),
     do: allowed_transition!(task, ~w(assigned), "preparing", task.assignment_expires_at)

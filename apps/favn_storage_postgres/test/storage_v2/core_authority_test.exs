@@ -540,6 +540,34 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     def commit_transition(command), do: RunStore.commit_transition(command)
   end
 
+  defmodule LostMaterializationReplyStore do
+    @behaviour FavnOrchestrator.Persistence.MaterializationStore
+    for {operation, arity} <-
+          FavnOrchestrator.Persistence.MaterializationStore.behaviour_info(:callbacks) --
+            [finish: 1] do
+      args = Macro.generate_arguments(arity, __MODULE__)
+      @impl true
+      def unquote(operation)(unquote_splicing(args)),
+        do: apply(MaterializationStore, unquote(operation), unquote(args))
+    end
+
+    @impl true
+    def finish(command) do
+      result = MaterializationStore.finish(command)
+      gate = Application.fetch_env!(:favn_storage_postgres, :lifecycle_gate)
+      lose_reply? = Agent.get_and_update(gate, fn lost? -> {not lost?, true} end)
+
+      if lose_reply? and match?({:ok, _}, result),
+        do:
+          {:error,
+           FavnOrchestrator.Persistence.Error.new(
+             :timeout,
+             "committed materialization reply lost"
+           )},
+        else: result
+    end
+  end
+
   defmodule LifecycleCircuitStore do
     @behaviour FavnOrchestrator.Persistence.ResourceCircuitStore
     for {operation, arity} <-
@@ -8779,7 +8807,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, first_pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
     Process.unlink(first_pid)
     monitor = Process.monitor(first_pid)
-    assert_receive {:first_recovery_refill_task_committed, ^first_pid}, 5_000
+
+    receive do
+      {:first_recovery_refill_task_committed, ^first_pid} -> :ok
+    after
+      5_000 ->
+        stack = Process.info(first_pid, :current_stacktrace)
+        state = :sys.get_state(first_pid, 1_000)
+
+        flunk(
+          "admission barrier missing: #{inspect(stack)}; #{inspect(Map.take(state, [:run_state, :execution_state, :run_start_persist_pending]), limit: :infinity)}"
+        )
+    end
+
     assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
 
@@ -9120,6 +9160,77 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert finished.status == :ok, inspect(finished.error)
     assert length(finished.result.asset_results) == 3
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+  end
+
+  @tag recovery_review: true
+  test "a lost materialization finish reply recovers the accepted result without a second task",
+       fixture do
+    gate = start_supervised!({Agent, fn -> false end})
+    Application.put_env(:favn_storage_postgres, :lifecycle_gate, gate)
+    on_exit(fn -> Application.delete_env(:favn_storage_postgres, :lifecycle_gate) end)
+
+    start_supervised!(
+      {Runtime,
+       %Runtime{
+         backend: Backend,
+         options: [],
+         stores: %{Backend.stores() | materialization: LostMaterializationReplyStore}
+       }}
+    )
+
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
+    start_pipeline_runtime!()
+    assert {:ok, first} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    Process.unlink(first)
+    monitor = Process.monitor(first)
+    assert 3 == length(await_runner_task_ids!(fixture.workspace_id, run.id, 3))
+    assert {:ok, task} = claim_asset_task(fixture, "lost-finish-reply")
+    assert :ok = start_runner_task(task)
+    await_runner_task_waiter!(task)
+    assert :ok = complete_asset_task(task, task.payload, false, %{write_receipt: "written-once"})
+
+    assert_receive {:DOWN, ^monitor, :process, ^first,
+                    {:shutdown, :run_execution_recovery_required}},
+                   5_000
+
+    assert run_event_count(fixture.workspace_id, run.id, "step_finished") == 1
+    assert run_event_count(fixture.workspace_id, run.id, "step_settled") == 0
+    assert {:ok, saved} = get_run(fixture, run.id)
+    assert saved.status == :running
+    assert saved.metadata["recovery_attention"]["phase"] == "post_step_bookkeeping_unavailable"
+
+    assert {:ok, recovered} =
+             RunServer.start_link(%{
+               run_state: saved,
+               version: fixture.version,
+               recovering?: true
+             })
+
+    monitor = Process.monitor(recovered)
+
+    for index <- 1..2 do
+      assert {:ok, sibling} = claim_asset_task(fixture, "lost-reply-sibling-#{index}")
+      refute sibling.task_id == task.task_id
+      assert :ok = start_runner_task(sibling)
+      await_runner_task_waiter!(sibling)
+      assert :ok = complete_asset_task(sibling, sibling.payload, false)
+    end
+
+    assert_receive {:DOWN, ^monitor, :process, ^recovered, :normal}, 5_000
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :ok, inspect(finished.error)
+    refute Map.has_key?(finished.metadata, "recovery_attention")
+    assert run_event_count(fixture.workspace_id, run.id, "step_finished") == 3
+    assert run_event_count(fixture.workspace_id, run.id, "step_settled") == 3
+    assert length(runner_task_ids(fixture.workspace_id, run.id)) == 3
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+
+    assert %{rows: [[3]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.materializations WHERE workspace_id=$1 AND run_id=$2",
+               [fixture.workspace_id, run.id]
+             )
   end
 
   test "two crashes across outcome and settlement receipts preserve successful work", fixture do
@@ -9767,6 +9878,361 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert keys.c in submitted
     assert keys.e in submitted
     refute keys.d in submitted
+  end
+
+  defmodule ContractSibling do
+    def asset(context) do
+      Ecto.Adapters.SQL.query!(
+        FavnStoragePostgres.Repo,
+        "INSERT INTO issue736_effects(run_id) VALUES ($1)",
+        [context.run_id]
+      )
+
+      :ok
+    end
+  end
+
+  defmodule ContractDependent do
+    def asset(_), do: raise("blocked dependent executed")
+  end
+
+  @tag sql_rollback: true
+  test "confirmed SQL check rollback settles ownership and preserves independent work" do
+    adapter = FavnStoragePostgres.TestSupport.CheckedSQLAdapter
+    ref = {MyApp.Asset, :asset}
+    sibling = {ContractSibling, :asset}
+    dependent = {ContractDependent, :asset}
+    sql = "SELECT NULL::varchar AS customer_name"
+
+    contract =
+      Favn.SQL.Contract.new!(columns: [%{name: :customer_name, type: :string, null: false}])
+
+    checks =
+      Enum.map(Favn.SQL.Contract.generated_check_specs(contract), fn spec ->
+        Favn.SQL.Check.new!(
+          name: spec.name,
+          at: spec.at,
+          on_violation: spec.on_violation,
+          when: spec.when,
+          message: spec.message,
+          sql: spec.sql,
+          template: Template.compile!(spec.sql, file: "736.sql", line: 1),
+          origin: :contract,
+          claim_id: spec.claim_id,
+          uses_query?: true,
+          uses_target?: false
+        )
+      end)
+
+    {:ok, package} =
+      ExecutionPackage.new(ref, %SQLExecution{
+        sql: sql,
+        template: Template.compile!(sql, file: "736.sql", line: 1),
+        checks: checks,
+        contract: contract
+      })
+
+    sql_asset =
+      %Manifest.Asset{
+        ref: ref,
+        module: MyApp.Asset,
+        name: :asset,
+        type: :sql,
+        relation:
+          Favn.RelationRef.new!(
+            connection: :issue736,
+            schema: "public",
+            name: "issue736_customers"
+          ),
+        materialization: :table,
+        execution_package_hash: package.content_hash
+      }
+      |> FavnTestSupport.with_target_descriptor()
+
+    assets = [
+      sql_asset
+      | Enum.map([sibling, dependent], fn {mod, name} = asset_ref ->
+          %Manifest.Asset{
+            ref: asset_ref,
+            module: mod,
+            name: name,
+            type: :elixir,
+            execution: %{entrypoint: :asset, arity: 1},
+            depends_on: if(asset_ref == dependent, do: [ref], else: [])
+          }
+        end)
+    ]
+
+    manifest =
+      %Manifest{
+        assets: assets,
+        pipelines: [
+          %Manifest.Pipeline{module: MyApp.Pipeline, name: :daily, selectors: [{:asset, ref}]}
+        ]
+      }
+      |> FavnTestSupport.with_manifest_contract()
+      |> FavnTestSupport.with_manifest_graph()
+
+    {:ok, version} = Version.new(manifest)
+
+    extra_targets =
+      Enum.map([sibling, dependent], fn asset_ref ->
+        target_id = Favn.TargetIdentity.for_asset(asset_ref)
+
+        %DeploymentTarget{
+          target_kind: :asset,
+          target_id: target_id,
+          selection_source: :common,
+          customer_visible: true,
+          descriptor: %{"target_id" => target_id, "label" => target_id}
+        }
+      end)
+
+    fixture =
+      provision_deploy_fixture({version, [package]}, extra_targets, [
+        %DeploymentTargetCompatibility{
+          target_id: sql_asset.target_descriptor.target_id,
+          desired_descriptor_hash: sql_asset.target_descriptor.descriptor_hash,
+          expected_binding_version: nil,
+          expected_active_generation_id: nil,
+          active_physical_fingerprint: nil,
+          compatibility_status: :uninitialized,
+          reason_code: "no_active_generation",
+          compatibility_diff: %{}
+        }
+      ])
+
+    for asset_ref <- [sibling, dependent] do
+      asset = Enum.find(version.manifest.assets, &(&1.ref == asset_ref))
+
+      assert {:ok, [binding]} =
+               TargetGenerationStore.get_evidence_bindings(%GetEvidenceBindings{
+                 workspace_context: fixture.workspace_context,
+                 target_ids: [Favn.TargetIdentity.for_asset(asset_ref)]
+               })
+
+      assert binding.evidence_generation_id == asset.semantic_generation_id
+    end
+
+    {:ok, runtime} = FavnOrchestrator.Persistence.Runtime.new(FavnStoragePostgres.Backend, [])
+    start_supervised!({FavnOrchestrator.Persistence.Runtime, runtime})
+    start_pipeline_runtime!()
+
+    if is_nil(Process.whereis(FavnRunner.ConnectionRegistry)) do
+      start_supervised!(
+        {Favn.Connection.Registry, name: FavnRunner.ConnectionRegistry, connections: %{}}
+      )
+    end
+
+    previous_connections =
+      Favn.Connection.Registry.list(registry_name: FavnRunner.ConnectionRegistry)
+      |> Map.new(&{&1.name, &1})
+
+    on_exit(fn ->
+      if Process.whereis(FavnRunner.ConnectionRegistry),
+        do:
+          Favn.Connection.Registry.reload(previous_connections,
+            registry_name: FavnRunner.ConnectionRegistry
+          )
+    end)
+
+    :ok =
+      FavnRunner.ReleaseVerifier.verify_startup(%{
+        "FAVN_RUNNER_RELEASE_ID" => version.runner_releases["default"]
+      })
+
+    :ok =
+      Favn.Connection.Registry.reload(
+        %{
+          issue736: %Favn.Connection.Resolved{
+            name: :issue736,
+            adapter: adapter,
+            module: __MODULE__,
+            config: %{observer: self()}
+          }
+        },
+        registry_name: FavnRunner.ConnectionRegistry
+      )
+
+    SQL.query!(Repo, "CREATE TEMP TABLE issue736_effects(run_id text)", [])
+
+    {:ok, %{generation: generation}} =
+      TargetGenerationStore.ensure_writable(%EnsureWritableTargetGeneration{
+        workspace_context: fixture.workspace_context,
+        command_id: "736-generation",
+        target_id: fixture.target_id,
+        manifest_version_id: version.manifest_version_id,
+        descriptor: sql_asset.target_descriptor,
+        occurred_at: DateTime.utc_now()
+      })
+
+    refs = [ref, sibling, dependent]
+    keys = Enum.map(refs, &{&1, nil})
+
+    nodes =
+      Map.new(Enum.zip(refs, keys), fn {asset_ref, key} ->
+        asset = Enum.find(version.manifest.assets, &(&1.ref == asset_ref))
+
+        {key,
+         %{
+           ref: asset_ref,
+           node_key: key,
+           window: nil,
+           upstream: if(asset_ref == dependent, do: [{ref, nil}], else: []),
+           downstream: if(asset_ref == ref, do: [{dependent, nil}], else: []),
+           stage: if(asset_ref == dependent, do: 1, else: 0),
+           execution_pool: nil,
+           action: :run,
+           retry_policy: Favn.Retry.Policy.default(),
+           retry_policy_source: :default,
+           target_id: Favn.TargetIdentity.for_asset(asset_ref),
+           target_generation_id: if(asset_ref == ref, do: generation.target_generation_id),
+           evidence_generation_id:
+             if(asset_ref == ref,
+               do: generation.target_generation_id,
+               else: asset.semantic_generation_id
+             ),
+           physical_relation: asset.relation,
+           input_generations: []
+         }}
+      end)
+
+    plan = %Favn.Plan{
+      target_refs: refs,
+      target_node_keys: keys,
+      dependencies: :all,
+      nodes: nodes,
+      topo_order: refs,
+      stages: [[ref, sibling], [dependent]],
+      node_stages: [[{ref, nil}, {sibling, nil}], [{dependent, nil}]]
+    }
+
+    {command, original} = pipeline_run_command(fixture)
+
+    run = %{
+      original
+      | plan: plan,
+        plan_hash: RunState.plan_hash(plan),
+        target_refs: refs,
+        metadata: %{pipeline_execution_policy: %{max_concurrency: 2}}
+    }
+
+    targets =
+      Enum.map(refs, fn {mod, name} = asset_ref ->
+        %RunTarget{
+          target_kind: :asset,
+          target_id: Favn.TargetIdentity.for_asset(asset_ref),
+          target_module: Atom.to_string(mod),
+          target_name: Atom.to_string(name),
+          is_primary: asset_ref == ref
+        }
+      end)
+
+    assert {:ok, _} = RunStore.create_run(%{command | run: run, targets: targets})
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: version})
+    monitor = Process.monitor(pid)
+
+    assert [_, _] = await_runner_task_ids!(fixture.workspace_id, run.id, 2)
+
+    results =
+      Enum.map(1..2, fn _ ->
+        await_queued_runner_task!(fixture.workspace_id, run.id)
+        assert {:ok, task} = claim_asset_task(fixture)
+        assert :ok = start_runner_task(task)
+        task_id = task.task_id
+        asset = Enum.find(version.manifest.assets, &(&1.ref == task.payload.asset_ref))
+
+        assert {:ok, _} =
+                 FavnRunner.Worker.start_link(%{
+                   server: self(),
+                   execution_id: task_id,
+                   work: task.payload,
+                   version: version,
+                   asset: asset
+                 })
+
+        assert_receive {:runner_result, ^task_id, result}, 5_000
+
+        {outcome, retry_class} =
+          if result.status == :ok,
+            do: {:succeeded, :terminal},
+            else: Favn.Contracts.RunnerTask.classify_failure(:asset_attempt, result.error)
+
+        assert :ok =
+                 finish_runner_task(task,
+                   outcome: outcome,
+                   retry_class: retry_class,
+                   result: result,
+                   error: result.error
+                 )
+
+        result
+      end)
+
+    assert_receive {:confirmed_sql_rollback, _}
+
+    assert [%{error: %{type: :check_failed, retryable?: false, outcome: :safe_failure}}] =
+             Enum.filter(results, &(&1.status == :error))
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 10_000
+    assert {:ok, failed} = get_run(fixture, run.id)
+    assert failed.status == :error
+    assert failed.error["type"] == "check_failed"
+    assert Enum.any?(failed.result.node_results, &(&1.ref == dependent and &1.status == :blocked))
+
+    assert %{rows: [[1]]} =
+             SQL.query!(Repo, "SELECT count(*) FROM issue736_effects WHERE run_id=$1", [run.id])
+
+    assert %{rows: [["failed", "resolved"]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status,effect_state FROM favn_control.materialization_claims WHERE workspace_id=$1 AND run_id=$2 AND target_id=$3",
+               [fixture.workspace_id, run.id, fixture.target_id]
+             )
+
+    assert %{rows: [["failed"], ["succeeded"]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status FROM favn_control.runner_tasks WHERE workspace_id=$1 AND run_id=$2 ORDER BY status",
+               [fixture.workspace_id, run.id]
+             )
+
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+
+    # Confirmed rollback leaves the target available for corrected subsequent work.
+    {next_command, next_run} = create_run_command(fixture)
+    assert {:ok, _} = RunStore.create_run(next_command)
+
+    acquire = %ClaimMaterialization{
+      workspace_context: fixture.workspace_context,
+      command_id: "736-next-claim",
+      claim_key: "736-next-claim",
+      deployment_id: fixture.deployment_id,
+      target_kind: :asset,
+      target_id: fixture.target_id,
+      target_generation_id: generation.target_generation_id,
+      evidence_generation_id: generation.target_generation_id,
+      partition_key: "latest",
+      run_id: next_run.id,
+      owner_id: "corrected-execution",
+      lease_duration_ms: 30_000,
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, %{status: :claimed, claim: claim}} = MaterializationStore.claim(acquire)
+
+    assert {:ok, _} =
+             MaterializationStore.finish(%FinishMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "736-next-release",
+               claim_key: claim.claim_key,
+               owner_id: claim.owner_id,
+               fencing_token: claim.fencing_token,
+               expected_version: claim.version,
+               status: :failed,
+               error: %{type: :cancelled_before_execution},
+               occurred_at: DateTime.utc_now()
+             })
   end
 
   test "all-runnable second stage advances its checkpoint at the same run sequence", fixture do

@@ -66,6 +66,24 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
 
   def replayable?(_reason), do: false
 
+  @doc false
+  @spec recovery_required?(term()) :: boolean()
+  def recovery_required?(%Error{kind: kind}) when kind in [:unavailable, :timeout], do: true
+  def recovery_required?(%Error{kind: :conflict, retryable?: true}), do: true
+  def recovery_required?(:runner_task_timeout), do: true
+
+  def recovery_required?({kind, _})
+      when kind in [
+             :runner_task_waiter_unavailable,
+             :runner_task_waiter_stopped,
+             :runner_task_data_unavailable,
+             :post_step_worker_down
+           ],
+      do: true
+
+  def recovery_required?({_operation, reason}), do: recovery_required?(reason)
+  def recovery_required?(_reason), do: false
+
   @spec rejected(t(), term()) :: t()
   def rejected(retry, reason),
     do: %{

@@ -85,14 +85,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @typedoc """
   Outcome of submitting a stage's runnable nodes.
 
-  A `:persist_retry` carries either the partial-retry shape or
+  A `:persist_retry` carries the current admission phase or
   `t:node_failure_resume/0` as its resume payload.
   """
   @type result ::
           {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil,
            deferred_refill_cause()}
-          | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
-             MapSet.t(term()), [map()], map() | nil, deferred_refill_cause()}
           | {:error, RunState.t(), [term()], [node_key()], [entry()]}
           | {:persist_retry, PersistenceRetry.t(), term()}
           | {:persist_retry, PersistenceRetry.t(), term(), map()}
@@ -787,7 +785,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         {:persist_retry, retry, reason, pause}
 
       {:error, reason} ->
-        if PersistenceRetry.replayable?(reason),
+        if PersistenceRetry.recovery_required?(reason),
           do: {:persist_retry, retry, reason, pause},
           else: reject_operation(pause, reason)
     end

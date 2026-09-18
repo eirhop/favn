@@ -48,6 +48,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
 
     def get_run(_), do: {:error, :forced_missing}
 
+    def get_execution_package(_),
+      do: {:error, Error.new(:unavailable, "package read unavailable")}
+
     def commit_transition(command) do
       send(self(), {:commit_transition, command})
 
@@ -278,6 +281,35 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     assert RunExecutionState.in_flight_count(awaiting) == 1
   end
 
+  test "a temporary package read failure preserves the healthy sibling", %{fixture: f} do
+    ref = elem(f.f_key, 0)
+
+    index = %{
+      f.state.manifest_index
+      | assets_by_ref:
+          Map.update!(
+            f.state.manifest_index.assets_by_ref,
+            ref,
+            &%{&1 | execution_package_hash: String.duplicate("a", 64)}
+          )
+    }
+
+    state = %{
+      f.state
+      | manifest_index: index,
+        stage_state: %{f.state.stage_state | deferred_node_keys: [f.f_key]}
+    }
+
+    assert {:recovery_required, recovering, %{kind: :unavailable}} =
+             Execution.handle_event(state, :continue)
+
+    assert @held_task_id in ActiveTaskSet.task_ids(recovering.work_set)
+    refute_received {:runner_admission, _}
+    refute_received {:runner_task_cancellation_requested, _}
+    refute_received {:release_execution_lease, _}
+    refute_received {:commit_transition, %{event: %{event_type: :step_failed}}}
+  end
+
   test "retryable admission reuses its command and preserves the healthy sibling", %{fixture: f} do
     busy =
       Error.new(:conflict, "history busy",
@@ -295,6 +327,53 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     assert @held_task_id in ActiveTaskSet.task_ids(paused.work_set)
     refute_received {:runner_task_cancellation_requested, _}
     refute_received {:release_execution_lease, _}
+  end
+
+  for boundary <- [:intent, :admission, :classification] do
+    @tag boundary: boundary
+    test "uncertain #{boundary} persistence remains recoverable without a retryable flag", %{
+      fixture: f,
+      boundary: boundary
+    } do
+      error = Error.new(:timeout, "committed reply may be lost")
+
+      if boundary == :admission,
+        do: Process.put({FakeStore, :admission_error}, error),
+        else: Process.put({FakeStore, :commit_results}, [{:error, error}, {:error, error}])
+
+      {paused, retry} =
+        if boundary == :classification do
+          context = %{
+            f.state.freshness_context
+            | upstream_statuses: %{f.a_key => :error, f.b_key => :ok}
+          }
+
+          assert {:persist_retry, retry, ^error} =
+                   FavnOrchestrator.RunServer.Execution.StageClassifier.classify(
+                     f.run,
+                     f.version,
+                     1,
+                     [f.d_key, f.e_key],
+                     context,
+                     nil
+                   )
+
+          {f.state, retry}
+        else
+          assert {:persist_retry, paused, retry, ^error} =
+                   Execution.handle_event(f.state, :continue)
+
+          {paused, retry}
+        end
+
+      assert {:recovery_required, recovering, _} =
+               Execution.retry_persistence(paused, PersistenceRetry.rejected(retry, error))
+
+      assert @held_task_id in ActiveTaskSet.task_ids(recovering.work_set)
+      refute_received {:runner_task_cancellation_requested, _}
+      refute_received {:release_execution_lease, _}
+      refute_received {:commit_transition, %{event: %{event_type: :step_failed}}}
+    end
   end
 
   test "a lost intent reply replays that exact transition before admission", %{fixture: f} do

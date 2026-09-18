@@ -91,6 +91,14 @@ defmodule Favn.SQL.Adapter do
   @callback sample(conn(), RelationRef.t(), opts()) :: {:ok, Result.t()} | {:error, Error.t()}
   @callback table_metadata(conn(), RelationRef.t(), opts()) :: {:ok, map()} | {:error, Error.t()}
 
+  @doc """
+  Executes one transaction without replaying its body.
+
+  On a body failure, report `details.transaction_outcome: :rolled_back` only
+  after rollback is confirmed. A failed commit remains unknown even if a later
+  rollback succeeds. Report failed rollback with `transaction_stage: :rollback`;
+  absent proof is an unknown outcome, not permission to release write ownership.
+  """
   @callback transaction(conn(), (conn() -> {:ok, term()} | {:error, Error.t()}), opts()) ::
               {:ok, term()} | {:error, Error.t()}
 

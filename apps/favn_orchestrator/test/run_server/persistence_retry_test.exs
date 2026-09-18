@@ -37,9 +37,16 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetryTest do
   end
 
   test "cancellation retains completed bookkeeping at both retry and renewal gates" do
-    retry = PersistenceRetry.new(struct(RunState), :resource_outcomes, %{}, nil)
-
-    for pending <- [
+    for event <- [
+          :resource_outcomes,
+          :step_finished,
+          :step_failed,
+          :step_timed_out,
+          :step_cancelled,
+          :step_settled
+        ],
+        retry = PersistenceRetry.new(struct(RunState), event, %{}, nil),
+        pending <- [
           %{execution_persist_pending: %{retry: retry}},
           %{storage_renewal_pending: %{purpose: {:resume, retry}}}
         ] do

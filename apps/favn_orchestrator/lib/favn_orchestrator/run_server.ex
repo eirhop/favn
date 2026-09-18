@@ -315,19 +315,35 @@ defmodule FavnOrchestrator.RunServer do
 
   def handle_info(
         {:favn_run_cancel_requested, _reason} = message,
-        %{execution_persist_pending: %{retry: %PersistenceRetry{event_type: :resource_outcomes}}} =
+        %{execution_persist_pending: %{retry: %PersistenceRetry{event_type: event_type}}} =
           state
-      ),
+      )
+      when event_type in [
+             :resource_outcomes,
+             :step_finished,
+             :step_failed,
+             :step_timed_out,
+             :step_cancelled,
+             :step_settled
+           ],
       do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info(
         {:favn_run_cancel_requested, _reason} = message,
         %{
           storage_renewal_pending: %{
-            purpose: {:resume, %PersistenceRetry{event_type: :resource_outcomes}}
+            purpose: {:resume, %PersistenceRetry{event_type: event_type}}
           }
         } = state
-      ),
+      )
+      when event_type in [
+             :resource_outcomes,
+             :step_finished,
+             :step_failed,
+             :step_timed_out,
+             :step_cancelled,
+             :step_settled
+           ],
       do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info(
@@ -385,6 +401,13 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp start_execution(state, %RunState{} = running, %Version{} = version) do
+    running =
+      %{
+        running
+        | metadata: Map.drop(running.metadata, [:recovery_attention, "recovery_attention"])
+      }
+      |> RunState.with_snapshot_hash()
+
     case Execution.start_state(running, version) do
       {:ok, execution_state} ->
         case resize_execution_memory(state, running, execution_state) do
@@ -410,11 +433,9 @@ defmodule FavnOrchestrator.RunServer do
         end
 
       {:recovery_required, reason} ->
-        OperationalEvents.emit(
-          :run_execution_recovery_required,
-          %{},
-          %{run_id: running.id, reason: reason, operation: :restore_execution_inputs},
-          level: :error
+        FavnOrchestrator.RunServer.RecoveryAttention.record(
+          running,
+          {:restore_execution_inputs, reason}
         )
 
         {:stop, {:shutdown, :run_execution_recovery_required},
@@ -554,12 +575,7 @@ defmodule FavnOrchestrator.RunServer do
          state,
          {:recovery_required, %RunExecutionState{} = execution_state, reason}
        ) do
-    OperationalEvents.emit(
-      :run_execution_recovery_required,
-      %{},
-      %{run_id: execution_state.run.id, reason: reason},
-      level: :error
-    )
+    FavnOrchestrator.RunServer.RecoveryAttention.record(execution_state.run, reason)
 
     {:stop, {:shutdown, :run_execution_recovery_required},
      state

@@ -318,7 +318,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTaskAdmissionTest do
           receive do
             :release -> :ok
           after
-            5_000 -> raise "lock not released"
+            10_000 -> raise "lock not released"
           end
         end)
       end)
@@ -327,9 +327,20 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTaskAdmissionTest do
     contender = Task.async(fn -> Tasks.admit(command) end)
     assert Task.yield(contender, 30) == nil
 
-    Process.sleep(
-      max(DateTime.diff(command.intent.deadline_at, DateTime.utc_now(), :millisecond) + 20, 1)
-    )
+    # The store checks PostgreSQL's wall clock again after obtaining the lock.
+    assert Enum.any?(1..200, fn _ ->
+             %{rows: [[expired?]]} =
+               SQL.query!(Repo, "SELECT clock_timestamp() > $1::timestamptz", [
+                 command.intent.deadline_at
+               ])
+
+             if expired? do
+               true
+             else
+               Process.sleep(25)
+               false
+             end
+           end)
 
     send(holder.pid, :release)
     assert {:ok, :ok} = Task.await(holder)

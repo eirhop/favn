@@ -34,31 +34,6 @@ defmodule FavnOrchestrator.MaterializationClaims do
   @type claim :: map()
   @type node_key :: Favn.Plan.node_key()
 
-  @doc false
-  @spec prepare_acquire(
-          RunState.t(),
-          Version.t(),
-          Index.t(),
-          node_key(),
-          map(),
-          map(),
-          RunnerWork.t()
-        ) ::
-          {:ok, map(), ClaimMaterialization.t()} | {:already_claimed, map()} | {:error, term()}
-  def prepare_acquire(run, version, index, node_key, decisions, freshness, work) do
-    with {:ok, claim, command, lock_command} <-
-           prepare_admission(run, version, index, node_key, decisions, freshness, work),
-         {:ok, lock} <- acquire_prepared_lock(lock_command) do
-      {:ok, %{claim | target_operation_lock: lock}, command}
-    else
-      {:error, %{details: %{reason_code: "target_write_in_progress"}}} ->
-        {:already_claimed, %{claim_key: "target:" <> TargetIdentity.for_asset(work.asset_ref)}}
-
-      error ->
-        error
-    end
-  end
-
   @doc "Prepares claim and optional combined-window lock without acquiring either."
   @spec prepare_admission(
           RunState.t(),
@@ -437,15 +412,6 @@ defmodule FavnOrchestrator.MaterializationClaims do
   end
 
   defp prepare_operation_lock(_run_state, _node, _work), do: nil
-
-  defp acquire_prepared_lock(nil), do: {:ok, nil}
-
-  defp acquire_prepared_lock(command) do
-    case Persistence.stores().target_operation_locks.acquire_many(command) do
-      {:ok, [lock]} -> {:ok, lock}
-      {:error, reason} -> {:error, reason}
-    end
-  end
 
   defp operation_id(%{rebuild_operation_id: operation_id}, _lock)
        when is_binary(operation_id),

@@ -143,7 +143,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageClassifier do
         {:halt, {:error, Snapshots.cancelled_snapshot(ctx.run)}}
 
       {:error, reason} ->
-        if PersistenceRetry.replayable?(reason),
+        if PersistenceRetry.recovery_required?(reason),
           do: {:halt, {:persist_retry, retry, reason}},
           else:
             {:halt, {:error, Snapshots.snapshot_update(ctx.run, status: :error, error: reason)}}

@@ -60,6 +60,33 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.status == :pending
   end
 
+  test "recovery diagnostics survive metadata beyond the ordinary entry limit" do
+    version = manifest_version("mv_attention", __MODULE__.Asset)
+
+    attention = %{
+      "phase" => "resource_outcomes",
+      "first_reason" => %{"message" => "reply lost"},
+      "fingerprint" => "phase-and-reason",
+      "reports" => 1
+    }
+
+    metadata =
+      Map.new(1..100, &{"ordinary_#{&1}", &1}) |> Map.put("recovery_attention", attention)
+
+    run = %{run_state("run_attention", version, __MODULE__.Asset) | metadata: metadata}
+    assert {:ok, payload} = RunSnapshotCodec.encode_run(run)
+    assert Jason.decode!(payload)["metadata"]["recovery_attention"] == attention
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+
+    assert {:ok, restored} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: payload, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert restored.metadata["recovery_attention"] == attention
+  end
+
   test "round-trips complete policy snapshots outside generic metadata bounds" do
     version = manifest_version("mv_run_policy_snapshot", __MODULE__.Asset)
 

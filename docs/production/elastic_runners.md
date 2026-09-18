@@ -118,3 +118,15 @@ key and issue time. Receipt replay survives later payload corruption. Resolution
 releases only the matching exclusion; it does not change the task/run outcome,
 publish freshness, or start another write. Continue through ordinary target
 recovery only after this command succeeds. Unproved outcomes remain held.
+
+A SQL check failure is not automatically an unknown write. Confirmed body
+rollback settles the task and claim as failed while preserving the original
+check error; it does not make the asset retryable. Failed rollback, uncertain
+commit, or a missing result retains the write hold.
+
+For claims incorrectly held by the former retryability classification, use the
+held-write procedure above with `verified_no_effect` only after establishing
+that the original runner/backend are stopped and authoritative transaction
+records prove no effect. A before-materialize label, contract error, or empty
+table alone is insufficient. The audited resolution releases the hold without
+rewriting history; submit corrected work afterward through the normal API.

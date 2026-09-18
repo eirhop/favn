@@ -39,7 +39,11 @@ defmodule FavnOrchestrator.RunServer.Execution.StageEntry do
           required(:resource_circuit_permits) => [
             FavnOrchestrator.Persistence.Results.ResourceCircuitPermit.t()
           ],
-          required(:freshness_key) => term()
+          required(:freshness_key) => term(),
+          optional(:deadline_at) => DateTime.t() | nil,
+          optional(:recovered_outcome) => map(),
+          optional(:terminal_task?) => boolean(),
+          optional(:terminal_evidence) => map()
         }
 
   @spec new!(map()) :: t()

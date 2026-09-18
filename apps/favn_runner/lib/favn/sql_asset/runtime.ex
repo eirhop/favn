@@ -2057,12 +2057,12 @@ defmodule Favn.SQLAsset.Runtime do
          %Definition{} = definition,
          %Render{} = rendered
        ) do
-    results = complete_check_results(definition, [], :transaction_not_started)
-    emit_check_telemetry(definition, results, :not_started, :not_started)
+    results = complete_check_results(definition, [], :transaction_failed)
+    emit_check_telemetry(definition, results, :unknown, :unknown)
 
     meta =
       rendered
-      |> failed_check_metadata(results, :not_started, :not_started)
+      |> failed_check_metadata(results, :unknown, :unknown)
       |> maybe_put_contract_validation(find_contract_validation(error))
 
     {:error, error, meta}
@@ -2176,39 +2176,18 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp failed_transaction_outcomes(%SQLError{} = error) do
     cond do
-      transaction_not_started?(error) -> {:not_started, :not_started}
       unknown_transaction_outcome?(error) -> {:unknown, :unknown}
-      true -> {:rolled_back, :rolled_back}
+      transaction_not_started?(error) -> {:not_started, :not_started}
+      error.details[:transaction_outcome] == :rolled_back -> {:rolled_back, :rolled_back}
+      true -> {:unknown, :unknown}
     end
   end
 
   defp failed_check_reason(:not_started), do: :transaction_not_started
   defp failed_check_reason(_transaction_outcome), do: :transaction_failed
 
-  defp transaction_not_started?(%SQLError{details: details, cause: cause}) do
-    transaction_not_started?(details || %{}) or transaction_not_started?(cause)
-  end
-
-  defp transaction_not_started?(%Error{details: details, cause: cause}) do
-    transaction_not_started?(details || %{}) or transaction_not_started?(cause)
-  end
-
-  defp transaction_not_started?(%_{}), do: false
-
-  defp transaction_not_started?(value) when is_map(value) do
-    Map.get(value, :transaction_stage) == :begin or
-      Map.get(value, "transaction_stage") == "begin" or
-      Enum.any?(value, fn {_key, child} -> transaction_not_started?(child) end)
-  end
-
-  defp transaction_not_started?(value) when is_list(value),
-    do: Enum.any?(value, &transaction_not_started?/1)
-
-  defp transaction_not_started?(value) when is_tuple(value) do
-    value |> Tuple.to_list() |> Enum.any?(&transaction_not_started?/1)
-  end
-
-  defp transaction_not_started?(_value), do: false
+  defp transaction_not_started?(%SQLError{details: details}),
+    do: Map.get(details || %{}, :transaction_stage) == :begin
 
   defp unknown_transaction_outcome?(%SQLError{details: details, cause: cause}) do
     unknown_transaction_outcome?(details || %{}) or unknown_transaction_outcome?(cause)
@@ -2223,8 +2202,10 @@ defmodule Favn.SQLAsset.Runtime do
   defp unknown_transaction_outcome?(value) when is_map(value) do
     classification = Map.get(value, :classification) || Map.get(value, "classification")
 
-    Map.get(value, :transaction_stage) == :rollback or
-      Map.get(value, "transaction_stage") == "rollback" or
+    Map.get(value, :transaction_stage) in [:commit, :rollback] or
+      Map.get(value, "transaction_stage") in ["commit", "rollback"] or
+      Map.get(value, :transaction_outcome) == :unknown or
+      Map.get(value, "transaction_outcome") == "unknown" or
       Map.get(value, :unknown_outcome?) == true or
       Map.get(value, "unknown_outcome?") == true or
       classification in [
@@ -2530,12 +2511,28 @@ defmodule Favn.SQLAsset.Runtime do
       retryable?: error.retryable? == true,
       classification: classification,
       asset_retryable?: sql_asset_retryable?(phase, error, classification),
+      asset_write_outcome: sql_write_outcome(error),
       resource_failure?: resource_failure?,
       resource_succeeded?:
         not resource_failure? and error.operation not in [nil, :connect, :bootstrap],
       resource_failure_category: classification || error.type,
-      resource_safe_to_repeat?: resource_failure? and error.operation in [:connect, :bootstrap]
+      resource_safe_to_repeat?:
+        resource_failure? and error.operation in [:connect, :bootstrap] and
+          sql_write_outcome(error) in [:not_started, :rolled_back]
     }
+  end
+
+  defp sql_write_outcome(%SQLError{} = error) do
+    cond do
+      unknown_transaction_outcome?(error) ->
+        :unknown
+
+      error.operation in [:connect, :bootstrap] and is_nil(error.details[:transaction_stage]) ->
+        :not_started
+
+      true ->
+        elem(failed_transaction_outcomes(error), 1)
+    end
   end
 
   defp resource_failure?(%SQLError{} = error) do

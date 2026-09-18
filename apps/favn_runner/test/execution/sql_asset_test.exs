@@ -1116,6 +1116,8 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert [asset_result] = result.asset_results
     assert asset_result.evidence.quality_status == :failed
     assert asset_result.evidence.write_outcome == :rolled_back
+    assert %RunnerError{retryable?: false, outcome: :safe_failure} = result.error
+    assert asset_result.error.outcome == :safe_failure
     assert [%{name: :target_valid, outcome: :failed}] = asset_result.evidence.check_results
     assert asset_result.error.type == :check_failed
     assert_received {:checked_materialize, _write_plan}
@@ -1127,6 +1129,37 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert telemetry.outcome == :failed
     assert telemetry.transaction_outcome == :rolled_back
     assert telemetry.write_outcome == :rolled_back
+  end
+
+  for proof <- [:missing, :nested_begin, :commit_with_nested_begin] do
+    @tag proof: proof
+    test "#{proof} transaction evidence cannot release write ownership", %{proof: proof} do
+      reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedExecutionAdapter)
+      Application.put_env(:favn_runner, :checked_failure_proof, proof)
+      on_exit(fn -> Application.delete_env(:favn_runner, :checked_failure_proof) end)
+
+      checks = [
+        checked_check(
+          :valid_customer,
+          :before_materialize,
+          :fail,
+          "select false as passed from query() /* check:fail */"
+        )
+      ]
+
+      ref = {FavnRunner.ExecutionSQLAssetTest.CheckedFailureSQLAsset, :asset}
+      version = register_checked_sql_manifest!(ref, checks)
+
+      assert {:ok, result} =
+               FavnRunner.TestExecution.run(work_for(version, ref, "uncertain-proof"))
+
+      assert %RunnerError{retryable?: false, outcome: :unknown} = result.error
+
+      assert [%{evidence: %{write_outcome: :unknown, transaction_outcome: :unknown}}] =
+               result.asset_results
+
+      refute_received {:checked_materialize, _}
+    end
   end
 
   test "rollback failures retain diagnostics and mark the transaction outcome unknown" do
@@ -1153,6 +1186,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert [%{evidence: meta}] = result.asset_results
     assert meta.transaction_outcome == :unknown
     assert meta.write_outcome == :unknown
+    assert %RunnerError{retryable?: false, outcome: :unknown} = result.error
     assert [%{name: :target_valid, outcome: :failed}] = meta.check_results
     assert_received :checked_transaction_rollback
 
@@ -2626,6 +2660,32 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
                cause: error
              }}
           else
+            error =
+              case Application.get_env(:favn_runner, :checked_failure_proof) do
+                nil ->
+                  %{error | details: Map.put(error.details, :transaction_outcome, :rolled_back)}
+
+                :missing ->
+                  error
+
+                mode ->
+                  %{
+                    error
+                    | details:
+                        Map.put(
+                          error.details,
+                          :transaction_stage,
+                          if(mode == :nested_begin, do: :body, else: :commit)
+                        ),
+                      cause: %Error{
+                        type: :connection_error,
+                        message: "inner begin failed",
+                        operation: :transaction,
+                        details: %{transaction_stage: :begin}
+                      }
+                  }
+              end
+
             {:error, error}
           end
       end

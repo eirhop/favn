@@ -291,6 +291,15 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
           encoded
       end
 
+    encoded =
+      case field(metadata, :recovery_attention) do
+        attention when is_map(attention) ->
+          Map.put(encoded, "recovery_attention", JsonSafe.data(attention))
+
+        _ ->
+          encoded
+      end
+
     case Map.fetch(metadata, AdmissionIntent.metadata_key()) do
       {:ok, intent} -> Map.put(encoded, AdmissionIntent.metadata_key(), intent)
       :error -> encoded
@@ -1072,6 +1081,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp ref_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_ref_dto, value}}
 
+  # Pinned manifest whitelist and global headroom are validated before decoding.
+  # sobelow_skip ["DOS.StringToAtom"]
   defp atom_from_dto(value, allowed_atom_strings) when is_binary(value) do
     if MapSet.member?(allowed_atom_strings, value) do
       # Only pinned manifest identifiers and fixed framework names reach this
@@ -1944,7 +1955,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     do: {:error, {:invalid_manifest_record, record}}
 
   defp allowed_atom_strings(manifest_record) do
-    with {:ok, manifest_atoms} <- ManifestAtoms.extract(manifest_record) do
+    with {:ok, manifest_atoms} <- ManifestAtoms.extract(manifest_record),
+         :ok <- Favn.Manifest.AtomBudget.check_headroom(manifest_atoms) do
       {:ok, Enum.reduce(@internal_atom_strings, manifest_atoms, &MapSet.put(&2, &1))}
     end
   end

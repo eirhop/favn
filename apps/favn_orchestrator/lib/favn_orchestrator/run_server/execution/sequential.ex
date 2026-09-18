@@ -468,7 +468,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
         {:ok, work} ->
           prepare_admission(state, lifecycle, work, intent)
 
-        {:error, %FavnOrchestrator.Persistence.Error{retryable?: true} = reason} ->
+        {:error, %FavnOrchestrator.Persistence.Error{kind: kind, retryable?: retryable?} = reason}
+        when retryable? or kind in [:timeout, :unavailable] ->
           {:recovery_required, state, reason}
 
         {:error, reason} ->
@@ -616,7 +617,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
         {:persist_retry, %{state | paused_admission: pause}, retry, reason}
 
       {:error, reason} ->
-        if PersistenceRetry.replayable?(reason) do
+        if PersistenceRetry.recovery_required?(reason) do
           {:persist_retry, %{state | paused_admission: pause}, retry, reason}
         else
           fail_before_enqueue(state, pause.lifecycle, pause.work, nil, reason)

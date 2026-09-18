@@ -18,7 +18,15 @@ defmodule FavnOrchestrator.RunServer.Persistence do
   @spec persist_run_step(RunState.t(), atom(), map()) ::
           :ok | {:error, :external_cancel | :fenced | term()}
   def persist_run_step(%RunState{} = run_state, event_type, data) do
-    durable_run = RunState.for_step_persistence(run_state)
+    run_state =
+      if event_type == :run_recovery_required,
+        do: run_state,
+        else: %{
+          run_state
+          | metadata: Map.drop(run_state.metadata, [:recovery_attention, "recovery_attention"])
+        }
+
+    durable_run = run_state |> RunState.with_snapshot_hash() |> RunState.for_step_persistence()
 
     normalize_result(run_state, persist_transition(durable_run, event_type, data))
   end

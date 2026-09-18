@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
   alias Favn.Plan
   alias Favn.RelationRef
   alias FavnOrchestrator.Events
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.RunnerTask
   alias FavnOrchestrator.Persistence.Results.RunOwnership, as: Ownership
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
@@ -114,6 +115,15 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       event_type = command.event.event_type
 
       case Agent.get_and_update(agent(), &record_commit(&1, command)) do
+        {:fail, :history_busy} ->
+          notify({:run_transition_held, event_type})
+
+          {:error,
+           Error.new(:conflict, "history busy",
+             retryable?: true,
+             details: %{reason_code: "execution_history_owner_busy"}
+           )}
+
         {:fail, :fenced} ->
           {:error, Error.new(:fenced, "run ownership fencing token is stale")}
 
@@ -507,6 +517,67 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     end
   end
 
+  test "recovery attention is fenced, deduplicated and cleared by real progress", %{
+    fixture: fixture
+  } do
+    alias FavnOrchestrator.RunServer.RecoveryAttention
+    run = HarnessStore.latest_run()
+
+    reason =
+      Error.new(:timeout, "Persistence retry budget exhausted",
+        details: %{
+          operation: :resource_outcomes,
+          original_error: Error.new(:unavailable, "reply lost")
+        }
+      )
+
+    assert :ok = RecoveryAttention.record(run, reason)
+    saved = HarnessStore.latest_run()
+    assert saved.metadata["recovery_attention"]["phase"] == "resource_outcomes"
+    assert saved.event_seq == run.event_seq + 1
+    assert :ok = RecoveryAttention.record(run, reason)
+    assert HarnessStore.latest_run() == saved
+    another_phase = %{reason | details: %{reason.details | operation: :step_finished}}
+    assert :ok = RecoveryAttention.record(saved, another_phase)
+    assert HarnessStore.latest_run().metadata["recovery_attention"]["reports"] == 2
+
+    assert HarnessStore.latest_run().metadata["recovery_attention"]["first_reason"] ==
+             saved.metadata["recovery_attention"]["first_reason"]
+
+    progressing = RunState.transition(HarnessStore.latest_run(), status: :running)
+
+    assert :ok =
+             FavnOrchestrator.RunServer.Persistence.persist_run_step(
+               progressing,
+               :run_started,
+               %{}
+             )
+
+    refute Map.has_key?(HarnessStore.latest_run().metadata, "recovery_attention")
+    assert fixture.run.id == run.id
+  end
+
+  @tag store_opts: [held_task_kinds: []]
+  test "recovered live state cannot restore stale attention after later progress", %{
+    fixture: fixture
+  } do
+    metadata = Map.put(fixture.run.metadata, "recovery_attention", %{"phase" => "prior_failure"})
+    run = %{fixture.run | metadata: metadata} |> RunState.with_snapshot_hash()
+
+    Agent.update(
+      Application.fetch_env!(:favn_orchestrator, :post_step_run_server_agent),
+      &%{&1 | run: run}
+    )
+
+    fixture = %{fixture | run: run}
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert HarnessStore.latest_run().status == :ok
+    refute Map.has_key?(HarnessStore.latest_run().metadata, "recovery_attention")
+    refute Enum.any?(HarnessStore.commits(), &Map.has_key?(&1.run.metadata, "recovery_attention"))
+  end
+
   test "cancellation while the inspection task is held terminates the worker and the run", %{
     fixture: fixture
   } do
@@ -539,6 +610,28 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert HarnessStore.latest_run().metadata[:cancel_requested]
     refute_receive {:run_transition_committed, :run_cancelled}, 20
     refute_receive {:materialization_finished, _, _}, 20
+  end
+
+  @tag store_opts: [held_task_kinds: [], commit_failures: %{step_finished: :history_busy}]
+  test "a cancellation hint after a queued completion retry cannot discard its accepted result",
+       %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:run_transition_held, :step_finished}, 5_000
+    send(pid, {:favn_run_cancel_requested, :operator})
+    pending = :sys.get_state(pid)
+    assert pending.execution_persist_pending.retry.event_type == :step_finished
+    assert {:favn_run_cancel_requested, :operator} in pending.deferred_execution_events
+    refute_received {:run_transition_committed, :run_cancelled}
+
+    Agent.update(
+      Application.fetch_env!(:favn_orchestrator, :post_step_run_server_agent),
+      &%{&1 | commit_failures: %{}}
+    )
+
+    assert_receive {:materialization_finished, :succeeded, "claim-asset"}, 5_000
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    refute_received {:materialization_finished, :failed, _}
   end
 
   @tag store_opts: [commit_failures: %{step_finished: :cancel_once}]
