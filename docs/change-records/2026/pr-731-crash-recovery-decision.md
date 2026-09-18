@@ -1014,3 +1014,56 @@ that barrier, uses the existing completing asset, and waits for result delivery
 and assignment cleanup. No production runner behavior or timeout changed.
 The same failing seed now passes all 278 runner tests. The rebased orchestrator
 suite passes 922 checks (916 tests and six doctests); all 46 ADBC unit tests pass.
+
+The new deployment integration tests also exposed an existing sandbox teardown
+race: their test process owned the database connection while a supervised
+dispatcher could still finish persistence after that process exited. Even a
+passing rerun logged the ownership error. Following Astra's fixture review, this
+synchronous module now uses a separate sandbox owner that survives until
+supervised cleanup completes. A transient generic read error occurred alongside
+the old teardown error; causation was not assumed. Qualification is repeated
+after this fixture correction, without changing production error handling.
+The two dummy runner processes now outlive the test process until explicit
+`on_exit` cleanup, after their registry supervisor stops. This prevents detached
+session-close writes from racing sandbox shutdown. The fresh-database deployment
+suite passes all 32 tests with no owner-exited persistence work; deliberate client
+shutdown during dispatcher teardown can still log connection resets.
+
+### Final implementation verification
+
+Production source is qualified at `6b115a0f`; subsequent edits only correct test
+cleanup and complete this record. Local PostgreSQL tests use disposable databases
+on port 5433, never an application database.
+
+| Check | Evidence |
+| --- | --- |
+| PostgreSQL fast suite | 540 passed, 24 explicitly excluded tiered tests; seed 942594 |
+| Final deployment fixture | 32 passed on a fresh database; seed 971009 |
+| Orchestrator fast suite | 922 passed: 916 tests and six doctests; two excluded |
+| Runner fast suite | 278 passed; formerly failing order seed 889807 |
+| ADBC unit suite | 46 passed; integration cases qualified separately by CI |
+| Compilation and formatting | Warnings-as-errors compilation, formatter and diff checks pass |
+| Static checks | Credo, both Sobelow scans and Dialyzer pass on rebased source |
+| Independent review | Astra xhigh approved source, baseline deviations, #736 integration and deployment replay corrections |
+
+The fast PostgreSQL suite includes actual rollback/claim settlement, real history
+lock contention, lost committed replies and pipeline continuation. It also includes
+the separate-BEAM SIGKILL drill after outcome and settlement, restarted through
+the production manager with durable callback counts. The slow suite adds separate
+runner-task lifecycle crash barriers. Acceptance,
+slow, image and HTTP checks passed on an earlier reviewed revision; they must pass
+again on the final pushed head before this PR leaves draft. Final-head check links
+and outcomes are maintained in the PR, not substituted by those earlier passes.
+
+Final scope against main `8d37a2a2`: production **+3,814/-1,804** (net +2,010);
+tests, fixtures, canonical docs and other files **+4,496/-1,612**. This historical
+record is excluded from those totals. The original budget was exceeded; the
+reviewed reasons and rejected simpler alternatives above remain the baseline
+comparison. No additional compatibility layer was introduced for old progress;
+drain old in-flight runs before adopting this version.
+
+This qualifies the tested recovery boundaries, not every external adapter or
+infrastructure failure. Unknown external outcomes intentionally stay held until
+operator reconciliation. Per-owner retry budgets and the bounded recovery
+annotation remain the documented limitations; this change does not promise a
+global retry deadline or an automatic retry of an uncertain write.

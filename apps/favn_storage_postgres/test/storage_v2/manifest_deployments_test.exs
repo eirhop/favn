@@ -84,7 +84,8 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   setup do
-    :ok = Sandbox.checkout(Repo, isolation: "REPEATABLE READ")
+    sandbox_owner = Sandbox.start_owner!(Repo, shared: true, isolation: "REPEATABLE READ")
+    on_exit(fn -> Sandbox.stop_owner(sandbox_owner) end)
     unique = Integer.to_string(System.unique_integer([:positive]))
     workspace_id = "manifest-deployments-#{unique}"
 
@@ -572,7 +573,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "first-party archive deployment activates and replays after inspection", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-activation-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
     archive_body = File.read!(archive_path)
@@ -609,7 +609,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     runner_id = "manifest-inspection-runner-#{System.unique_integer([:positive])}"
 
     runner_agent =
-      spawn_link(fn ->
+      spawn(fn ->
         receive do
           :stop -> :ok
         end
@@ -724,7 +724,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "first-party archive deployment reports a runner-start timeout", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-timeout-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
     archive_body = File.read!(archive_path)
@@ -776,7 +775,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "activation capacity rejection releases its durable claim", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-capacity-release-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
     archive_body = File.read!(archive_path)
@@ -814,7 +812,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "activation preparation timeout releases its durable claim", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-preparation-timeout-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
 
@@ -847,7 +844,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "reclaim after the durable deadline cancels existing queued inspection demand", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "expired-reclaim-#{System.unique_integer([:positive])}"
 
     assert {:ok, :accepted, _} =
@@ -913,7 +909,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
   test "an active inspection timeout does not freeze a decision before cancellation is terminal",
        context do
-    Sandbox.mode(Repo, {:shared, self()})
     context = with_sibling_asset(context)
     operation_id = "archive-active-timeout-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
@@ -939,7 +934,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     runner_id = "manifest-stalled-runner-#{System.unique_integer([:positive])}"
 
     runner_agent =
-      spawn_link(fn ->
+      spawn(fn ->
         receive do
           :stop -> :ok
         end
@@ -1431,7 +1426,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
   test "local dispatcher records committed outcome before cancellation can report failure",
        context do
-    Sandbox.mode(Repo, {:shared, self()})
     start_owned_runtime()
     assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
     command = local_command(context, "local-commit")
