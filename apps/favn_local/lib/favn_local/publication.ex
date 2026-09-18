@@ -1,6 +1,7 @@
 defmodule FavnLocal.Publication do
   @moduledoc false
 
+  alias FavnLocal.ActivationObserver
   alias Favn.Manifest.Publication
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.Lifecycle
@@ -109,7 +110,7 @@ defmodule FavnLocal.Publication do
                      session_id,
                      canonical.manifest_version_id
                    ) do
-              await_activation(workspace, operation_id, now_ms() + 330_000)
+              ActivationObserver.await(workspace, operation_id, now_ms() + 330_000)
             else
               {:error, _reason} = error -> error
             end
@@ -177,54 +178,4 @@ defmodule FavnLocal.Publication do
   end
 
   defp release_admission(permit), do: FavnOrchestrator.Lifecycle.release_admission(permit)
-
-  defp await_activation(workspace, operation_id, deadline) do
-    case ManifestDeployments.get_local(workspace, operation_id) do
-      {:ok, %{state: state, activation_receipt: receipt}}
-      when state in [:succeeded, :needs_attention] and not is_nil(receipt) ->
-        case Manifests.active_runtime(workspace) do
-          {:ok, runtime}
-          when runtime.deployment_id == :erlang.map_get("deployment_id", receipt) and
-                 runtime.revision == :erlang.map_get("runtime_revision", receipt) ->
-            {:ok, runtime}
-
-          {:ok, _runtime} ->
-            {:error, {:deployment_superseded, operation_id}}
-
-          {:error, reason} ->
-            {:error, {:reload_outcome_unknown, %{operation_id: operation_id, reason: reason}}}
-        end
-
-      {:ok, %{state: state, failure_class: reason}}
-      when state in [:failed, :cancelled, :unknown] ->
-        {:error, {:deployment_operation, operation_id, state, reason}}
-
-      {:ok, _operation} ->
-        if now_ms() >= deadline do
-          case ManifestDeployments.cancel(workspace, operation_id, :startup_timeout) do
-            {:ok, %{activation_receipt: receipt}} when not is_nil(receipt) ->
-              await_activation(workspace, operation_id, deadline)
-
-            {:ok, %{state: state, cleanup_state: cleanup}} when state != :unknown ->
-              {:error,
-               {:deployment_interrupted,
-                %{operation_id: operation_id, activation: :not_committed, cleanup: cleanup}}}
-
-            _unknown ->
-              {:error,
-               {:reload_outcome_unknown,
-                %{operation_id: operation_id, reason: :operation_wait_timeout}}}
-          end
-        else
-          # This bounded observer runs in a supervised task, never in the runtime GenServer.
-          receive do
-          after
-            250 -> await_activation(workspace, operation_id, deadline)
-          end
-        end
-
-      {:error, reason} ->
-        {:error, {:reload_outcome_unknown, %{operation_id: operation_id, reason: reason}}}
-    end
-  end
 end

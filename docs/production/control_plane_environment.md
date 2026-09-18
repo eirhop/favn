@@ -21,6 +21,7 @@ no storage selector.
 | `FAVN_DATABASE_SSL_MODE` | Required; only `verify-full` or `verify_full` is accepted by the production loader. |
 | `FAVN_DATABASE_SSL_CA_FILE` | Optional absolute readable CA bundle. Without it, Erlang's system trust store is used. |
 | `FAVN_DATABASE_POOL_SIZE` | `1..200`, default `15`. |
+| `FAVN_MANIFEST_INSPECTION_CONCURRENCY` | `1..32`, default `32`. Boot-time shared cap on simultaneous target inspections per orchestrator process. Lowering it reduces inspection pressure but can increase activation duration; it neither reserves database connections nor changes the inspection deadline. |
 | `FAVN_DATABASE_QUEUE_TARGET_MS` | `1..120000`, default `50`. |
 | `FAVN_DATABASE_QUEUE_INTERVAL_MS` | `1..120000`, default `1000`. |
 | `FAVN_DATABASE_TIMEOUT_MS` | `1..120000`, default `15000`. |

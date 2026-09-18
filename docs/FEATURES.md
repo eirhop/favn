@@ -112,6 +112,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   exact pool/release can cold-start from zero through the runner-demand endpoint.
   Incompatible, drifted, and ownership-unknown targets reject ordinary writes
   on affected dependency paths; compatible and unrelated paths remain runnable.
+- Manifest inspection admission has a boot-time concurrency limit; local
+  activation observation retries transient reads within its existing deadline.
+  See the [local configuration guide](../apps/favn/guides/configuration.md) and
+  [production environment contract](production/control_plane_environment.md).
 - The private manifest-deployment API authenticates, checks replay/conflict, and
   acquires distributed upload admission before reading the archive. It validates
   gzip/tar incrementally without mounted volumes, stores packages in bounded

@@ -26,11 +26,13 @@ defmodule FavnOrchestrator.RuntimeConfig do
           http_server: map(),
           shutdown_drain_timeout_ms: pos_integer(),
           manifest_publication: ManifestPublicationConfig.t(),
+          manifest_inspection_concurrency: 1..32,
           auth_session_ttl_seconds: pos_integer()
         }
   @type error :: {:invalid_runtime_config, {atom(), term()}}
 
-  defstruct workspace_ids: [],
+  defstruct manifest_inspection_concurrency: 32,
+            workspace_ids: [],
             api_server: [],
             scheduler: [],
             run_submissions: [],
@@ -110,6 +112,8 @@ defmodule FavnOrchestrator.RuntimeConfig do
       shutdown_drain_timeout_ms:
         Application.get_env(:favn_orchestrator, :shutdown_drain_timeout_ms, 120_000),
       manifest_publication: Application.get_env(:favn_orchestrator, :manifest_publication, []),
+      manifest_inspection_concurrency:
+        Application.get_env(:favn_orchestrator, :manifest_inspection_concurrency, 32),
       auth_session_ttl_seconds:
         Application.get_env(
           :favn_orchestrator,
@@ -141,11 +145,13 @@ defmodule FavnOrchestrator.RuntimeConfig do
     http_server = normalize_http_server(Keyword.get(attrs, :http_server, %{}))
     shutdown_drain_timeout_ms = Keyword.get(attrs, :shutdown_drain_timeout_ms, 120_000)
     manifest_publication = Keyword.get(attrs, :manifest_publication, [])
+    inspection_concurrency = Keyword.get(attrs, :manifest_inspection_concurrency, 32)
 
     auth_session_ttl_seconds =
       Keyword.get(attrs, :auth_session_ttl_seconds, @default_auth_session_ttl_seconds)
 
-    with :ok <- validate_workspace_ids(workspace_ids),
+    with :ok <- validate_inspection_concurrency(inspection_concurrency),
+         :ok <- validate_workspace_ids(workspace_ids),
          {:ok, api_server} <- validate_keyword(:api_server, api_server),
          {:ok, scheduler} <- validate_keyword(:scheduler, scheduler),
          {:ok, run_submissions} <- validate_keyword(:run_submissions, run_submissions),
@@ -167,6 +173,7 @@ defmodule FavnOrchestrator.RuntimeConfig do
          http_server: http_server,
          shutdown_drain_timeout_ms: shutdown_drain_timeout_ms,
          manifest_publication: manifest_publication,
+         manifest_inspection_concurrency: inspection_concurrency,
          auth_session_ttl_seconds: auth_session_ttl_seconds
        }}
     end
@@ -240,6 +247,12 @@ defmodule FavnOrchestrator.RuntimeConfig do
     :persistent_term.erase(persistent_key(state.name))
     :ok
   end
+
+  defp validate_inspection_concurrency(value) when is_integer(value) and value in 1..32,
+    do: :ok
+
+  defp validate_inspection_concurrency(_value),
+    do: {:error, {:invalid_runtime_config, {:manifest_inspection_concurrency, :out_of_range}}}
 
   defp dynamic_env_override?(__MODULE__) do
     Application.get_env(:favn_orchestrator, :runtime_config_dynamic_env?, false) == true

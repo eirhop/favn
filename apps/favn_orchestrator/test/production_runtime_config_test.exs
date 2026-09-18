@@ -28,6 +28,24 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     %{ca_file: ca_file}
   end
 
+  test "validates the inspection concurrency environment limit", %{ca_file: ca_file} do
+    for value <- ["1", "4", "32"] do
+      env = Map.put(base_env(ca_file), "FAVN_MANIFEST_INSPECTION_CONCURRENCY", value)
+      assert {:ok, config} = ProductionRuntimeConfig.validate(env)
+      assert config.manifest_inspection_concurrency == String.to_integer(value)
+
+      assert ProductionRuntimeConfig.diagnostics(config).manifest_inspection_concurrency ==
+               String.to_integer(value)
+    end
+
+    for value <- ["", " ", "0", "33", "-1", "2x", "1.5", "private-input", nil, 4] do
+      env = Map.put(base_env(ca_file), "FAVN_MANIFEST_INSPECTION_CONCURRENCY", value)
+
+      assert {:error, %{error: {:invalid_env, "FAVN_MANIFEST_INSPECTION_CONCURRENCY", "1..32"}}} =
+               ProductionRuntimeConfig.validate(env)
+    end
+  end
+
   test "validate/1 accepts the PostgreSQL production defaults", %{ca_file: ca_file} do
     assert {:ok, config} = ProductionRuntimeConfig.validate(base_env(ca_file))
 
@@ -36,6 +54,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     assert config.postgres[:ssl_mode] == :verify_full
     assert config.postgres[:ssl_ca_file] == ca_file
     assert config.postgres[:pool_size] == 15
+    assert config.manifest_inspection_concurrency == 32
 
     assert config.runtime_input_pin == %{
              keys: %{1 => :binary.copy(<<7>>, 32)},
@@ -660,6 +679,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
   test "apply/1 freezes redacted PostgreSQL composition", %{ca_file: ca_file} do
     orchestrator_keys = [
+      :manifest_inspection_concurrency,
       :persistence_backend,
       :persistence_options,
       :instance_id,
@@ -708,9 +728,11 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
       )
       |> Map.put("FAVN_RUNTIME_INPUT_PIN_KEY_VERSION", "2")
       |> Map.put("FAVN_SCHEDULER_ENABLED", "false")
+      |> Map.put("FAVN_MANIFEST_INSPECTION_CONCURRENCY", "4")
 
     assert {:ok, config} = ProductionRuntimeConfig.validate(env)
     assert :ok = ProductionRuntimeConfig.apply(config)
+    assert Application.get_env(:favn_orchestrator, :manifest_inspection_concurrency) == 4
 
     assert Application.get_env(:favn_orchestrator, :persistence_backend) ==
              ProductionRuntimeConfig.postgres_backend()
@@ -788,6 +810,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     start_supervised!({FavnOrchestrator.RuntimeConfig, config: frozen, name: frozen_name})
 
     Application.put_env(:favn_orchestrator, :auth_session_ttl_seconds, 1)
+    Application.put_env(:favn_orchestrator, :manifest_inspection_concurrency, 32)
 
     Application.put_env(:favn_orchestrator, :manifest_publication,
       compressed_limit_bytes: 1,
@@ -795,6 +818,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
     )
 
     assert FavnOrchestrator.RuntimeConfig.current(frozen_name).auth_session_ttl_seconds == 43_200
+
+    assert FavnOrchestrator.RuntimeConfig.current(frozen_name).manifest_inspection_concurrency ==
+             4
 
     assert FavnOrchestrator.RuntimeConfig.current(frozen_name).manifest_publication ==
              frozen.manifest_publication

@@ -136,6 +136,18 @@ machine without editing committed configuration. Both accept `1..65535`; any
 other value stops startup before the runtime applications start. `mix favn.dev`
 prints the ports it actually used.
 
+`FAVN_MANIFEST_INSPECTION_CONCURRENCY` limits simultaneous manifest target
+inspections across activations in the local Orchestrator. It accepts `1..32` and
+defaults to `4` for `mix favn.dev`. Invalid values stop startup. The value is read
+at boot; restart to change it. This limits inspection work, not database
+connections, and does not reserve connections for other control-plane work.
+Lower values reduce inspection pressure but can make large activations reach
+their existing inspection deadline. For example:
+
+```bash
+FAVN_MANIFEST_INSPECTION_CONCURRENCY=2 mix favn.dev
+```
+
 Set `FAVN_DATABASE_URL`, `FAVN_DATABASE_MIGRATOR_URL`, and
 `FAVN_RUNTIME_INPUT_PIN_KEY` in the process environment.
 `FAVN_DATABASE_URL` is the restricted runtime connection.
