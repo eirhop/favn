@@ -111,7 +111,6 @@ defmodule FavnLocal.Publication do
                    ) do
               await_activation(workspace, operation_id, now_ms() + 330_000)
             else
-              nil -> {:error, :local_deployment_owner_required}
               {:error, _reason} = error -> error
             end
           end)
@@ -177,7 +176,6 @@ defmodule FavnLocal.Publication do
     FavnOrchestrator.Lifecycle.acquire_maintenance_admission(token)
   end
 
-  defp release_admission(nil), do: :ok
   defp release_admission(permit), do: FavnOrchestrator.Lifecycle.release_admission(permit)
 
   defp await_activation(workspace, operation_id, deadline) do

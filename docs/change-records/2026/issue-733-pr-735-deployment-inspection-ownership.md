@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Lifecycle and persistence bug fix |
 | Primary issue | [#733](https://github.com/eirhop/favn/issues/733) |
 | Pull request | [#735](https://github.com/eirhop/favn/pull/735) |
@@ -193,7 +193,7 @@ predecessor and no unresolved activation outcome.
 
 ### Scope and non-goals
 
-Include local startup, manifest-only reload and runner-replacement reload,
+Include local startup, manifest-only reload and reload that starts a new runner,
 durable ownership, cleanup, activation reconciliation, migrations, diagnostics,
 and regression coverage of shared archive behavior. Preserve local no-op reload,
 candidate retirement and maintenance admission; an unproven outcome must not
@@ -408,13 +408,13 @@ between acceptance and settlement.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
-| 1: contracts, facade and schema | 422 | 12 | 0 | 0 |
-| 2: ownership, fencing and dispatcher | 1126 | 83 | 0 | 0 |
-| 3: local lifecycle | 259 | 51 | 112 | 7 |
-| 4: shared verification and canonical docs | 0 | 0 | 1041 | 3 |
+| 1: contracts, facade and schema | 423 | 12 | 0 | 0 |
+| 2: ownership, fencing and dispatcher | 1145 | 83 | 0 | 0 |
+| 3: local lifecycle | 262 | 54 | 112 | 7 |
+| 4: shared verification and canonical docs | 0 | 0 | 1092 | 5 |
 
 Slice 2 exceeds its 550-line upper estimate. The explicit ownership module
-accounts for 504 lines, including acceptance that the estimate assigned to
+accounts for 507 lines, including acceptance that the estimate assigned to
 slice 1. The additional stop-before-acceptance fence, exact attested legacy/
 unknown settlement, scoped permit delegation, monitored cancellation failures,
 and fair cancellation delivery were required by reviewed race findings.
@@ -469,16 +469,28 @@ a blanket production-readiness claim.
 
 ### CI and rendered documentation
 
-CI has not yet qualified the implementation head. The baseline GitHub diagrams
-were rendered and reviewed; the final record diagram and links will be checked
-after the implementation is pushed.
+At implementation commit `4575b2f0`, fast tests, slow tests, acceptance, generic
+runner/control-plane image qualification and the production-shaped HTTP
+boundary passed. The first quick check
+rejected a phrase in the original planning prose that matched the removed-runner
+architecture guard; the phrase was reworded without changing scope or meaning.
+Dialyzer also found two unreachable nil fallbacks after publication/admission
+validation was tightened. Both were removed and independently re-reviewed;
+warnings-as-errors compilation and all 48 local fast tests passed again.
+The final pushed revision must pass all applicable
+[PR checks](https://github.com/eirhop/favn/pull/735/checks) before readiness.
+Those checks retain the qualifying commit and immutable run logs; the PR
+verification section records the final qualifying revision.
+All three GitHub-rendered diagrams were verified in Chrome: the original
+flowcharts have eight and twelve nodes, and the final sequence diagram renders
+with all three participants. Repository-relative documentation links resolve.
 
 ## Final review
 
 Independent agent `review_startup_timeout` compared the implementation, tests,
 canonical docs, record and complexity with the approved baseline. Verdict:
-implementation and design deviations approved; no remaining production
-correctness findings. The focused diagnostic/lifecycle recheck passed 13 tests, including transition
+implementation, final corrections and design deviations approved; no remaining
+production correctness findings. The focused diagnostic/lifecycle recheck passed 13 tests, including transition
 logging and repeated-warning coalescing. Readiness remains conditional on
 final-head CI. The external consumer proof
 boundary above must remain explicit.
