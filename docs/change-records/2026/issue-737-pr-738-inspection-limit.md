@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#737](https://github.com/eirhop/favn/issues/737) |
-| Pull request | Pending |
+| Pull request | [#738](https://github.com/eirhop/favn/pull/738) |
 | Related work | Focused mitigation; does not close all of #737 |
 | Affected areas | Local startup, orchestrator boot configuration, manifest inspection admission |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | 3d622faddba145713fc749e0c4442be0c640adac |
 | Last updated | 2026-09-18 |
 
 ## One-minute summary
