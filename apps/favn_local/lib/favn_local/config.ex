@@ -30,7 +30,7 @@ defmodule FavnLocal.Config do
     :postgres_options,
     :runtime_input_pin_key
   ]
-  defstruct @enforce_keys ++ [scheduler_enabled?: false]
+  defstruct @enforce_keys ++ [scheduler_enabled?: false, manifest_inspection_concurrency: 4]
 
   @type t :: %__MODULE__{
           root_dir: Path.t(),
@@ -47,7 +47,8 @@ defmodule FavnLocal.Config do
           runner_release_id: String.t(),
           postgres_options: keyword(),
           runtime_input_pin_key: binary(),
-          scheduler_enabled?: boolean()
+          scheduler_enabled?: boolean(),
+          manifest_inspection_concurrency: 1..32
         }
 
   @spec load(keyword()) :: {:ok, t()} | {:error, term()}
@@ -60,6 +61,7 @@ defmodule FavnLocal.Config do
     with {:ok, database_url} <- required_env(env, "FAVN_DATABASE_URL"),
          {:ok, pin_key} <- runtime_input_pin_key(env),
          {:ok, log_level} <- log_level(env),
+         {:ok, inspection_concurrency} <- inspection_concurrency(env),
          {:ok, postgres_options} <-
            PostgresConfig.repo_options(
              url: database_url,
@@ -106,6 +108,7 @@ defmodule FavnLocal.Config do
          bootstrap_password: view_credentials.password,
          runner_release_id: runner_release_id,
          postgres_options: postgres_options,
+         manifest_inspection_concurrency: inspection_concurrency,
          runtime_input_pin_key: pin_key,
          scheduler_enabled?:
            Keyword.get(opts, :scheduler, Keyword.get(dev, :scheduler_enabled, false))
@@ -136,6 +139,12 @@ defmodule FavnLocal.Config do
     })
 
     Application.put_env(:favn_storage_postgres, :runtime_input_pin_current_key_version, 1)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :manifest_inspection_concurrency,
+      config.manifest_inspection_concurrency
+    )
 
     Application.put_env(:favn_orchestrator, :start_runtime, true)
     Application.put_env(:favn_orchestrator, :production_runtime_config, false)
@@ -276,6 +285,16 @@ defmodule FavnLocal.Config do
         {:error,
          {:invalid_env, "FAVN_LOG_LEVEL",
           "debug, info, notice, warning, error, critical, alert, or emergency"}}
+    end
+  end
+
+  defp inspection_concurrency(env) do
+    with value when is_binary(value) <-
+           Map.get(env, "FAVN_MANIFEST_INSPECTION_CONCURRENCY", "4"),
+         {limit, ""} when limit in 1..32 <- Integer.parse(value) do
+      {:ok, limit}
+    else
+      _invalid -> {:error, {:invalid_env, "FAVN_MANIFEST_INSPECTION_CONCURRENCY", "1..32"}}
     end
   end
 

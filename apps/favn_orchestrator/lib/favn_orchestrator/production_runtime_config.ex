@@ -47,6 +47,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           api_server: keyword(),
           http_server: map(),
           manifest_publication: keyword(),
+          manifest_inspection_concurrency: 1..32,
           api_service_tokens: [ServiceTokens.token_config()],
           manifest_deployer_tokens: [ManifestDeployerTokens.token_config()],
           workspace_ids: [String.t()],
@@ -92,6 +93,12 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     Application.put_env(:favn_orchestrator, :persistence_options, postgres)
     Application.put_env(:favn_orchestrator, :instance_id, config.instance_id)
     Application.put_env(:favn_orchestrator, :http_server, config.http_server)
+
+    Application.put_env(
+      :favn_orchestrator,
+      :manifest_inspection_concurrency,
+      config.manifest_inspection_concurrency
+    )
 
     Application.put_env(
       :favn_orchestrator,
@@ -186,6 +193,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, api_server} <- api_server(env),
          {:ok, http_server} <- http_server(env),
          {:ok, manifest_publication} <- manifest_publication(env),
+         {:ok, inspection_concurrency} <- inspection_concurrency(env),
          {:ok, runner_pools} <- runner_pools(env),
          {:ok, tokens} <- api_service_tokens(env, runner_pools),
          {:ok, manifest_deployer_tokens} <- manifest_deployer_tokens(env, tokens),
@@ -205,6 +213,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          api_server: api_server,
          http_server: http_server,
          manifest_publication: ManifestPublicationConfig.to_keyword(manifest_publication),
+         manifest_inspection_concurrency: inspection_concurrency,
          api_service_tokens: tokens,
          manifest_deployer_tokens: manifest_deployer_tokens,
          workspace_ids: workspace_ids,
@@ -231,6 +240,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       status: :ok,
       deployment_mode: config.deployment_mode,
       instance: %{configured?: true},
+      manifest_inspection_concurrency: config.manifest_inspection_concurrency,
       storage: %{backend: :postgres, database: %{configured?: true, endpoint: :redacted}},
       postgres: %{
         authentication_mode: database_authentication_mode(config.postgres),
@@ -291,6 +301,16 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
     case Keyword.get(postgres, :authentication, :password) do
       :password -> :password
       {:dynamic, _provider, _options} -> :azure_managed_identity
+    end
+  end
+
+  defp inspection_concurrency(env) do
+    with value when is_binary(value) <-
+           Map.get(env, "FAVN_MANIFEST_INSPECTION_CONCURRENCY", "32"),
+         {limit, ""} when limit in 1..32 <- Integer.parse(value) do
+      {:ok, limit}
+    else
+      _invalid -> {:error, {:invalid_env, "FAVN_MANIFEST_INSPECTION_CONCURRENCY", "1..32"}}
     end
   end
 

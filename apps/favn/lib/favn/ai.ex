@@ -316,6 +316,9 @@ defmodule Favn.AI do
     entrypoint. Favn does not expose an arbitrary SQL query command; stop Favn
     before opening a file-backed DuckDB database in the DuckDB CLI.
   - To run local tooling, read `FavnLocal`, then `apps/favn_local/README.md`.
+    For `FAVN_MANIFEST_INSPECTION_CONCURRENCY`, read the local section of
+    [Configuration](configuration.html); for bounded activation observation and
+    unknown outcomes, read [Local Development Commands](local-development.html).
     Source development is Docker-free: the developer supplies PostgreSQL, loads
     environment variables, and runs the Orchestrator and View in the current
     BEAM plus one child runner BEAM.

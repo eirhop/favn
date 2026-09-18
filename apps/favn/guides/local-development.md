@@ -215,7 +215,17 @@ config :favn, :dev,
 
 Set `FAVN_VIEW_PORT` or `FAVN_ORCHESTRATOR_API_PORT` to run more than one local
 stack on the same machine; the environment overrides those two keys. See the
-[Configuration guide](configuration.html).
+[Configuration guide](configuration.html). That guide also describes
+`FAVN_MANIFEST_INSPECTION_CONCURRENCY` for reducing activation pressure on a
+small PostgreSQL pool.
+
+During startup and reload, temporary retryable storage errors while reading
+activation status or verifying its receipt are retried within the original
+activation wait deadline. These retries observe the same operation; they do not
+publish or activate it again. If reads remain unavailable, the result stays
+explicitly unknown and includes the operation ID. An active deployment with
+unresolved inspections still requires attention; a ready local process does not
+prove every target inspection succeeded.
 
 PostgreSQL and secrets remain environment variables. Set
 `FAVN_DATABASE_SSL_MODE=verify-full` and

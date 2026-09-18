@@ -195,24 +195,67 @@ to resolve pool starvation or qualify a production-sized activation.
 
 ## Implementation outcome
 
-Pending.
+The implementation follows the approved behavior. Local and production loaders
+strictly validate the environment setting and freeze it into `RuntimeConfig`.
+The existing shared admission process receives that value; its queue and process
+monitor cleanup remain unchanged. Production configuration diagnostics expose the
+limit. Local defaults to 4 and production to 32.
+
+`FavnLocal.ActivationObserver` now owns the extracted bounded polling loop. It
+retries retryable persistence reads using the original deadline and reconciles
+receipts directly, including a receipt returned by timeout cancellation. It never
+resubmits deployment and returns the first transient error when a read series
+exhausts its deadline. Publication calls it from the existing supervised task.
+
+### Actual scope and complexity
+
+Implementation and operational complexity are low: one existing boot setting path,
+one existing admission owner, and one internal bounded observer. No storage,
+schema, lease, or runner contract changed. Canonical configuration, local workflow,
+production environment, feature inventory, and `Favn.AI` routing were updated.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1: configuration and admission | 58 | 5 | 123 | 0 |
+| 2: activation observation | 114 | 51 | 275 | 1 |
+
+Counts exclude this record. The three `Favn.AI` moduledoc lines and feature summary
+count as supporting documentation in slice 1. Slice 2 supporting additions exceed
+the estimate by 15 lines (below the material-variance threshold), principally for
+the explicit renewal regression requested at plan review. Production additions
+are at or below the approved upper bounds.
 
 ## Deviations from the approved plan
 
-None yet.
+No behavioral or scope deviations. GitHub visual verification could not use the
+Windows browser tool because its Node tool rejected the WSL workspace URI.
+GitHub's rendered HTML was fetched successfully and contained both Mermaid render
+containers; both diagrams rendered to SVG with Mermaid 11 in a local headless
+browser. Interactive GitHub diagram presentation remains unverified.
 
 ## Decision log
 
-None yet.
+| Date | Decision | Reason | Review needed |
+| --- | --- | --- | --- |
+| 2026-09-18 | Strict parsing for the new setting in both loaders | The existing production integer helper silently defaults blank input; the approved contract rejects invalid supplied values. | Final review |
+| 2026-09-18 | Reconcile cancellation receipts directly | Avoid restarting an expired polling loop; authoritative committed receipts remain usable at timeout. | Final review |
 
 ## Verification evidence
 
-Pending.
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Initial focused Local tests | 46 passed | Configuration, observer, publication and lifecycle tests before strict-parser follow-up |
+| Compile | Test-environment warnings-as-errors passed | Full umbrella compilation |
+| Local and Orchestrator fast suites | Running | Final result to be recorded before acceptance |
+| Format, tag tiers, whitespace | Running | Final result to be recorded before acceptance |
+| Diagram rendering | Both Mermaid diagrams rendered to SVG; GitHub returned both diagram containers | Local render plus GitHub Markdown, not interactive GitHub visual proof |
 
 ### Not verified
 
-Live pool-load reproduction and production deployment are outside this focused mitigation.
+Live pool-load reproduction, PostgreSQL starvation guarantees, production-sized
+activation, managed-provider deployment and interactive GitHub diagram display
+were not verified. The cap and observer tests do not close those parts of #737.
 
 ## Final review
 
-Pending independent comparison with the approved baseline.
+Pending independent comparison with baseline `3d622fad` and final verification.

@@ -33,6 +33,7 @@ defmodule FavnLocal.ConfigTest do
     assert config.orchestrator_port == 4101
     assert config.view_port == 4173
     assert config.log_level == :info
+    assert config.manifest_inspection_concurrency == 4
     assert config.runtime_input_pin_key == String.duplicate("k", 32)
     assert config.runner_release_id =~ ~r/^rr_[0-9a-f]{64}$/
     assert config.distribution_cookie =~ ~r/\A[0-9a-f]{96}\z/
@@ -41,6 +42,26 @@ defmodule FavnLocal.ConfigTest do
              ~r/^favn_local_operator_[^@]+@favn-local\.test$/
 
     assert Atom.to_string(config.runner_node) =~ ~r/^favn_local_runner_[^@]+@favn-local\.test$/
+  end
+
+  test "validates and applies the inspection concurrency override" do
+    preserve_runtime_state()
+
+    for value <- ["1", "4", "32"] do
+      assert {:ok, config} =
+               Config.load(env: valid_env(%{"FAVN_MANIFEST_INSPECTION_CONCURRENCY" => value}))
+
+      assert config.manifest_inspection_concurrency == String.to_integer(value)
+      assert :ok = Config.apply(config)
+
+      assert FavnOrchestrator.RuntimeConfig.from_app_env().manifest_inspection_concurrency ==
+               String.to_integer(value)
+    end
+
+    for value <- ["", " ", "0", "33", "-1", "2x", "1.5", "private-input", nil, 4] do
+      assert {:error, {:invalid_env, "FAVN_MANIFEST_INSPECTION_CONCURRENCY", "1..32"}} =
+               Config.load(env: valid_env(%{"FAVN_MANIFEST_INSPECTION_CONCURRENCY" => value}))
+    end
   end
 
   test "loads an explicit source-development log level and rejects invalid values" do

@@ -5,6 +5,65 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
   alias FavnLocal.DevelopmentRuntime
   alias FavnOrchestrator.RunnerRegistry
 
+  defmodule RenewalStore do
+    def renew_local_manifest_deployment(command) do
+      send(FavnLocal.RenewalObserverTest, {:renewed, command})
+      :ok
+    end
+  end
+
+  test "renewal handling progresses while a supervised activation observer is waiting" do
+    alias FavnLocal.ActivationObserver
+    alias FavnOrchestrator.Persistence.Error
+    alias FavnOrchestrator.Persistence.Runtime
+    alias FavnOrchestrator.Persistence.WorkspaceContext
+
+    Process.register(self(), FavnLocal.RenewalObserverTest)
+    start_supervised!({Task.Supervisor, name: FavnLocal.TaskSupervisor})
+    stores = %{FavnStoragePostgres.Backend.stores() | registry: RenewalStore}
+
+    start_supervised!(
+      {Runtime, %Runtime{backend: FavnStoragePostgres.Backend, options: [], stores: stores}}
+    )
+
+    {:ok, workspace} = WorkspaceContext.new("local-dev", "favn-local", [:platform_operator])
+    parent = self()
+
+    observer =
+      Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
+        ActivationObserver.await(
+          workspace,
+          "operation",
+          System.monotonic_time(:millisecond) + 5_000,
+          read_operation: fn _, _ ->
+            {:error, Error.new(:unavailable, "temporary", retryable?: true)}
+          end,
+          wait: fn _ ->
+            send(parent, :observer_waiting)
+
+            receive do
+              :finish -> exit(:normal)
+            end
+          end
+        )
+      end)
+
+    assert_receive :observer_waiting
+
+    owner = %{operation_id: "operation", session_id: "session"}
+    state = %{status: :starting, deployment_owner: owner, config: %{workspace_id: "local-dev"}}
+
+    assert {:noreply, ^state} =
+             DevelopmentRuntime.handle_info({:renew_deployment_owner, owner}, state)
+
+    assert_receive {:renewed, command}
+    assert command.operation_id == "operation"
+    assert command.session_id == "session"
+    assert command.workspace_context.workspace_id == "local-dev"
+    assert Process.alive?(observer.pid)
+    Task.shutdown(observer, :brutal_kill)
+  end
+
   defmodule SlowReload do
     use GenServer
     def init(parent), do: {:ok, parent}
