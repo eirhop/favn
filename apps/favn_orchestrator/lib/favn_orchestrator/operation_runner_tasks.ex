@@ -127,6 +127,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
       :task_kind,
       :run_id,
       :operation_id,
+      :deployment_operation_id,
       :asset_step_id,
       :runner_pool,
       :required_runner_release_id,

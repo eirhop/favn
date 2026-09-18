@@ -31,6 +31,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
               manifest_content_hash: command.manifest_content_hash,
               run_id: command.run_id,
               operation_id: command.operation_id,
+              deployment_operation_id: command.deployment_operation_id,
               asset_step_id: command.asset_step_id,
               write_target_id: command.write_target_id,
               write_operation_id: command.write_operation_id,
@@ -241,6 +242,40 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
     assert length(commands) == 1
     assert Enum.uniq_by(commands, & &1.task_id) |> length() == 1
     assert Enum.all?(commands, &(&1.runner_pool == "duckdb_image"))
+  end
+
+  test "replay requires the original deployment parent, including absence", fixture do
+    for {original_parent, changed_parent} <- [
+          {"deployment-original", "deployment-other"},
+          {"deployment-original", nil},
+          {nil, "deployment-other"}
+        ] do
+      identity = {:target_inspection, {original_parent, changed_parent}}
+
+      ensure = fn parent ->
+        OperationRunnerTasks.ensure(
+          fixture.context,
+          fixture.version,
+          fixture.asset.ref,
+          :relation_inspection,
+          inspection_request(fixture),
+          identity,
+          deployment_operation_id: parent
+        )
+      end
+
+      assert {:ok, original} = ensure.(original_parent)
+      assert {:ok, replay} = ensure.(original_parent)
+      assert replay.task_id == original.task_id
+      assert replay.deployment_operation_id == original_parent
+      task_id = original.task_id
+
+      assert {:error, {:operation_runner_task_identity_mismatch, ^task_id}} =
+               ensure.(changed_parent)
+    end
+
+    assert length(Agent.get(fixture.agent, & &1.commands)) == 3
+    assert Agent.get(fixture.agent, & &1.retries) == []
   end
 
   test "a reclaimed caller reuses the durable inspection deadline", fixture do

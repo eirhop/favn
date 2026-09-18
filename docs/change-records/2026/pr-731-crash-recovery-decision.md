@@ -977,3 +977,22 @@ point the 175 core PostgreSQL checks pass together, 911 orchestrator checks pass
 before the last guard matrix, and the final 21 admission/sequential checks pass.
 Credo, Sobelow, warnings-as-errors compilation and Dialyzer pass. Full storage
 order/isolation qualification and final-head CI remain pending.
+
+### Rebase and qualification corrections
+
+Rebased onto main `8d37a2a2` (PR #735). The operation-task replay path retains
+main's deployment ownership association and compares it as part of immutable task
+identity. Astra found the missing comparison during rebase review; regression
+coverage now rejects changed, removed, or newly added deployment parents while
+allowing replay with the original parent. All seven operation-task tests pass.
+Astra granted rebase source approval after that correction. Live deployment
+claim/start/retry guards remain in the PostgreSQL store; reading an already saved
+successful result does not reopen a closed deployment.
+
+The full-storage admission-barrier failure was a test isolation defect introduced
+by the fault-injection fixture: its custom persistence runtime survived in the
+registry after supervisor teardown, bypassing the next test's instrumented store.
+Explicit normal runtime shutdown now clears the registry. The analogous lost-reply
+fixture has the same cleanup. The original five-second barrier remains unchanged;
+no production workaround or increased timeout was added. Full suites and exact-head
+CI are being rerun after these corrections.

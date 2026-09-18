@@ -8808,18 +8808,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     Process.unlink(first_pid)
     monitor = Process.monitor(first_pid)
 
-    receive do
-      {:first_recovery_refill_task_committed, ^first_pid} -> :ok
-    after
-      5_000 ->
-        stack = Process.info(first_pid, :current_stacktrace)
-        state = :sys.get_state(first_pid, 1_000)
-
-        flunk(
-          "admission barrier missing: #{inspect(stack)}; #{inspect(Map.take(state, [:run_state, :execution_state, :run_start_persist_pending]), limit: :infinity)}"
-        )
-    end
-
+    assert_receive {:first_recovery_refill_task_committed, ^first_pid}, 5_000
     assert [_task_id] = runner_task_ids(fixture.workspace_id, run.id)
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 1
 
@@ -9169,14 +9158,15 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     Application.put_env(:favn_storage_postgres, :lifecycle_gate, gate)
     on_exit(fn -> Application.delete_env(:favn_storage_postgres, :lifecycle_gate) end)
 
-    start_supervised!(
-      {Runtime,
-       %Runtime{
-         backend: Backend,
-         options: [],
-         stores: %{Backend.stores() | materialization: LostMaterializationReplyStore}
-       }}
-    )
+    {:ok, runtime} =
+      Runtime.start_link(%Runtime{
+        backend: Backend,
+        options: [],
+        stores: %{Backend.stores() | materialization: LostMaterializationReplyStore}
+      })
+
+    Process.unlink(runtime)
+    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
 
     {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
     start_pipeline_runtime!()

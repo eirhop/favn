@@ -860,14 +860,15 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     alias FavnOrchestrator.Persistence.Runtime
     alias FavnStoragePostgres.Backend
 
-    start_supervised!(
-      {Runtime,
-       %Runtime{
-         backend: Backend,
-         options: [],
-         stores: %{Backend.stores() | runner_tasks: HistoryConflictAdmissionStore}
-       }}
-    )
+    {:ok, runtime} =
+      Runtime.start_link(%Runtime{
+        backend: Backend,
+        options: [],
+        stores: %{Backend.stores() | runner_tasks: HistoryConflictAdmissionStore}
+      })
+
+    Process.unlink(runtime)
+    on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
   end
 
   defp sequential_state(f, timeout_ms, opts \\ []) do
