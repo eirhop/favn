@@ -22,7 +22,26 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   alias FavnOrchestrator.RunState
 
   defmodule FakeStore do
-    def get_execution_package(_query), do: {:ok, Process.get(:native_package)}
+    def get(query) do
+      if Process.get({__MODULE__, :completed_result_unavailable}) do
+        {:error,
+         FavnOrchestrator.Persistence.Error.new(
+           :unavailable,
+           "accepted result temporarily unreadable"
+         )}
+      else
+        FavnOrchestrator.TestRunnerTaskStore.get(query)
+      end
+    end
+
+    defdelegate request_cancellation(command), to: FavnOrchestrator.TestRunnerTaskStore
+
+    def get_execution_package(_query) do
+      case Process.get({__MODULE__, :package_error}) do
+        nil -> {:ok, Process.get(:native_package)}
+        error -> {:error, error}
+      end
+    end
 
     def claim(command) do
       claim =
@@ -134,21 +153,17 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     end
 
     def admit(command) do
-      send(self(), {:admit_execution, command})
-      {:error, :forced_refill_stop}
+      send(self(), {:runner_admission, command})
+      {:error, Process.get({__MODULE__, :admission_error}, :forced_refill_stop)}
     end
   end
 
-  setup context do
+  setup do
     stores = %Stores{
       registry: FakeStore,
       runs: FakeStore,
       run_submissions: FakeStore,
-      runner_tasks:
-        if(context[:native_publication],
-          do: FakeStore,
-          else: FavnOrchestrator.TestRunnerTaskStore
-        ),
+      runner_tasks: FakeStore,
       run_ownership: FakeStore,
       scheduler: FakeStore,
       admission: FakeStore,
@@ -171,121 +186,156 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     :ok
   end
 
-  @tag native_publication: true
-  test "forced sequential SQL dispatch pins publication and the original calendar period" do
-    ref = {__MODULE__.Asset, :native}
+  for disposition <- [:rejected, :uncertain, :package_unavailable] do
+    @tag native_publication: true, disposition: disposition
+    test "forced sequential SQL dispatch retains its identity when #{disposition}", %{
+      disposition: disposition
+    } do
+      if disposition == :uncertain do
+        Process.put(
+          {FakeStore, :admission_error},
+          FavnOrchestrator.Persistence.Error.new(:timeout, "admission reply lost")
+        )
+      end
 
-    relation =
-      Favn.RelationRef.new!(
-        connection: :warehouse,
-        catalog: "mart",
-        schema: "main",
-        name: "native"
-      )
+      if disposition == :package_unavailable do
+        Process.put(
+          {FakeStore, :package_error},
+          FavnOrchestrator.Persistence.Error.new(:unavailable, "package read unavailable")
+        )
+      end
 
-    sql = "SELECT 1 AS value"
+      ref = {__MODULE__.Asset, :native}
 
-    {:ok, package} =
-      Favn.Manifest.ExecutionPackage.new(ref, %Favn.Manifest.SQLExecution{
-        sql: sql,
-        template: Favn.SQL.Template.compile!(sql, file: "native.sql", line: 1)
-      })
+      relation =
+        Favn.RelationRef.new!(
+          connection: :warehouse,
+          catalog: "mart",
+          schema: "main",
+          name: "native"
+        )
 
-    {:ok, policy} = Favn.Freshness.Policy.calendar(:day, timezone: "Etc/UTC")
+      sql = "SELECT 1 AS value"
 
-    asset = %Asset{
-      ref: ref,
-      module: elem(ref, 0),
-      name: :native,
-      type: :sql,
-      relation: relation,
-      materialization: :table,
-      execution_package_hash: package.content_hash,
-      freshness: policy
-    }
+      {:ok, package} =
+        Favn.Manifest.ExecutionPackage.new(ref, %Favn.Manifest.SQLExecution{
+          sql: sql,
+          template: Favn.SQL.Template.compile!(sql, file: "native.sql", line: 1)
+        })
 
-    descriptor =
-      Favn.Manifest.TargetDescriptor.from_asset(asset,
-        connection_definitions: %{
-          warehouse: %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
-        },
-        manifest_schema_version: 21,
-        runner_contract_version: 17
-      )
+      {:ok, policy} = Favn.Freshness.Policy.calendar(:day, timezone: "Etc/UTC")
 
-    asset = %{asset | target_descriptor: descriptor}
+      asset = %Asset{
+        ref: ref,
+        module: elem(ref, 0),
+        name: :native,
+        type: :sql,
+        relation: relation,
+        materialization: :table,
+        execution_package_hash: package.content_hash,
+        freshness: policy
+      }
 
-    manifest =
-      %Favn.Manifest{assets: [asset], pipelines: []}
-      |> FavnTestSupport.with_manifest_contract()
-      |> FavnTestSupport.with_manifest_graph()
+      descriptor =
+        Favn.Manifest.TargetDescriptor.from_asset(asset,
+          connection_definitions: %{
+            warehouse: %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
+          },
+          manifest_schema_version: 21,
+          runner_contract_version: 17
+        )
 
-    {:ok, version} = Version.new(manifest)
-    key = {ref, nil}
+      asset = %{asset | target_descriptor: descriptor}
 
-    plan = %Plan{
-      target_refs: [ref],
-      target_node_keys: [key],
-      topo_order: [ref],
-      stages: [[ref]],
-      node_stages: [[key]],
-      nodes: %{
-        key => %{
-          ref: ref,
-          node_key: key,
-          window: nil,
-          upstream: [],
-          downstream: [],
-          stage: 0,
-          action: :run,
-          target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
-          active_relation: relation,
-          write_relation: relation
+      manifest =
+        %Favn.Manifest{assets: [asset], pipelines: []}
+        |> FavnTestSupport.with_manifest_contract()
+        |> FavnTestSupport.with_manifest_graph()
+
+      {:ok, version} = Version.new(manifest)
+      key = {ref, nil}
+
+      plan = %Plan{
+        dependencies: :none,
+        target_refs: [ref],
+        target_node_keys: [key],
+        topo_order: [ref],
+        stages: [[ref]],
+        node_stages: [[key]],
+        nodes: %{
+          key => %{
+            ref: ref,
+            node_key: key,
+            window: nil,
+            upstream: [],
+            downstream: [],
+            stage: 0,
+            action: :run,
+            target_generation_id: "018f47a0-7b0d-4b1a-8d8b-e18a9a987654",
+            active_relation: relation,
+            write_relation: relation
+          }
         }
       }
-    }
 
-    run =
-      RunState.new(
-        id: "native-sequential",
-        workspace_id: "workspace",
-        deployment_id: "deployment",
-        manifest_version_id: version.manifest_version_id,
-        manifest_content_hash: version.content_hash,
-        runner_releases: version.runner_releases,
-        asset_ref: ref,
-        target_refs: [ref],
-        plan: plan,
-        trigger: %{force: true}
-      )
+      run =
+        RunState.new(
+          id: "native-sequential",
+          workspace_id: "workspace",
+          deployment_id: "deployment",
+          manifest_version_id: version.manifest_version_id,
+          manifest_content_hash: version.content_hash,
+          runner_releases: version.runner_releases,
+          asset_ref: ref,
+          target_refs: [ref],
+          plan: plan,
+          trigger: %{force: true}
+        )
 
-    run = %{run | inserted_at: ~U[2026-01-01 12:00:00Z], storage_owner_id: "owner"}
-    Process.put(:native_package, package)
-    Process.put({FakeStore, :commit_transition}, :succeed)
+      run = %{run | inserted_at: ~U[2026-01-01 12:00:00Z], storage_owner_id: "owner"}
+      Process.put(:native_package, package)
+      Process.put({FakeStore, :commit_transition}, :succeed)
 
-    state = %RunExecutionState{
-      run: run,
-      version: version,
-      work_set: ActiveTaskSet.from_entries(run, []),
-      manifest_index: %Index{assets_by_ref: %{ref => asset}},
-      sequential_refs: [{ref, key, 0}]
-    }
+      state = %RunExecutionState{
+        run: run,
+        version: version,
+        work_set: ActiveTaskSet.from_entries(run, []),
+        manifest_index: %Index{assets_by_ref: %{ref => asset}},
+        sequential_refs: [{ref, key, 0}]
+      }
 
-    assert {:await, _, _} = Sequential.continue(state)
-    assert_receive {:native_work_enqueued, command}
+      if disposition == :package_unavailable do
+        assert {:recovery_required, _, %{kind: :unavailable}} = Sequential.continue(state)
+        refute_received {:runner_admission, _}
+        refute_received {:commit_transition, %{event: %{event_type: :step_failed}}}
+      else
+        if disposition == :uncertain do
+          assert {:persist_retry, paused, retry, %{kind: :timeout}} = Sequential.continue(state)
+          assert {:recovery_required, _, _} = Execution.retry_persistence(paused, retry)
+          refute_received {:commit_transition, %{event: %{event_type: :step_failed}}}
+        else
+          assert {:terminal, _} = Sequential.continue(state)
+        end
 
-    assert {:ok, work} =
-             Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
-               :asset_attempt,
-               command.payload,
-               version,
-               [package]
-             )
+        assert_receive {:runner_admission, %{enqueue: command}}
 
-    assert work.runtime_publication.freshness_key == "calendar:day:Etc/UTC:2026-01-01"
+        assert {:ok, work} =
+                 Favn.Contracts.RunnerTask.PersistenceCodec.decode_payload(
+                   :asset_attempt,
+                   command.payload,
+                   version,
+                   [package]
+                 )
 
-    assert {:ok, {"deadline", ~U[2026-01-02 00:00:00Z], false}} =
-             Favn.RuntimeCatalog.Publication.expiry(work.runtime_publication, DateTime.utc_now())
+        assert work.runtime_publication.freshness_key == "calendar:day:Etc/UTC:2026-01-01"
+
+        assert {:ok, {"deadline", ~U[2026-01-02 00:00:00Z], false}} =
+                 Favn.RuntimeCatalog.Publication.expiry(
+                   work.runtime_publication,
+                   DateTime.utc_now()
+                 )
+      end
+    end
   end
 
   test "pre-submit failures preserve the planned effective window" do
@@ -546,14 +596,16 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       RunState.new(
         id: "run-persistence-retry-refill",
         workspace_id: "workspace-persistence-retry-refill",
+        deployment_id: "deployment-persistence-retry-refill",
         manifest_version_id: "manifest-persistence-retry-refill",
-        manifest_content_hash: "sha256:persistence-retry-refill",
+        manifest_content_hash: String.duplicate("a", 64),
         runner_releases: %{"default" => release_id},
         asset_ref: completed_ref,
         target_refs: [completed_ref, deferred_ref],
         plan: plan,
         metadata: %{pipeline_execution_policy: %{max_concurrency: 1}}
       )
+      |> RunState.transition(status: :running)
       |> RunState.with_storage_fence("run-owner", 1)
 
     version = %Version{
@@ -625,7 +677,14 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       stage_attempt: 1,
       stage_state:
         StageAttemptState.new(run, [], [entry], [deferred_key], MapSet.new(), nil, :blocked),
-      stage_decisions: %{deferred_key => %{decision: :run, freshness_key: "latest"}},
+      stage_decisions: %{
+        deferred_key => %{
+          decision: :run,
+          reason: :forced,
+          node_key: deferred_key,
+          freshness_key: "latest"
+        }
+      },
       freshness_context: freshness_context,
       stage_freshness_context: freshness_context,
       freshness_checkpoint: %{
@@ -670,7 +729,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
     assert {:terminal, failed} = Execution.retry_persistence(retry_state, retry)
     assert failed.status == :error
-    assert_receive {:admit_execution, %{run_id: "run-persistence-retry-refill"}}
+    assert_receive {:runner_admission, %{enqueue: %{run_id: "run-persistence-retry-refill"}}}
     refute_receive {:release_execution_lease, _duplicate}
   end
 
@@ -795,86 +854,99 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     assert ActiveTaskSet.active_runner_task_ids(failed) == [task_id]
   end
 
-  test "local timeout uses an already-completed durable runner result" do
-    task_id = "rt_completed_before_timeout"
-    release_id = FavnTestSupport.runner_release_id()
-    ref = {__MODULE__.Asset, :orders}
-    node_key = {ref, nil}
+  for readable? <- [true, false] do
+    test "local timeout preserves an already-completed result when readable=#{readable?}" do
+      Process.put({FakeStore, :completed_result_unavailable}, not unquote(readable?))
+      task_id = "rt_completed_before_timeout"
+      release_id = FavnTestSupport.runner_release_id()
+      ref = {__MODULE__.Asset, :orders}
+      node_key = {ref, nil}
 
-    run =
-      RunState.new(
-        id: "run_completed_before_timeout",
-        workspace_id: "ws_completed_before_timeout",
-        manifest_version_id: "mv_completed_before_timeout",
-        manifest_content_hash: "hash_completed_before_timeout",
-        runner_releases: %{"default" => release_id},
-        asset_ref: ref
-      )
+      run =
+        RunState.new(
+          id: "run_completed_before_timeout",
+          workspace_id: "ws_completed_before_timeout",
+          manifest_version_id: "mv_completed_before_timeout",
+          manifest_content_hash: "hash_completed_before_timeout",
+          runner_releases: %{"default" => release_id},
+          asset_ref: ref
+        )
 
-    result = %RunnerResult{
-      run_id: run.id,
-      manifest_version_id: run.manifest_version_id,
-      manifest_content_hash: run.manifest_content_hash,
-      required_runner_release_id: release_id,
-      status: :ok,
-      asset_results: []
-    }
-
-    task = %RunnerTask{
-      workspace_id: run.workspace_id,
-      task_id: task_id,
-      status: :succeeded,
-      result: result,
-      payload: %RunnerWork{
+      result = %RunnerResult{
         run_id: run.id,
         manifest_version_id: run.manifest_version_id,
         manifest_content_hash: run.manifest_content_hash,
-        required_runner_release_id: release_id
+        required_runner_release_id: release_id,
+        status: :ok,
+        asset_results: []
       }
-    }
 
-    Process.put({FavnOrchestrator.TestRunnerTaskStore, :terminal_cancellation_test}, true)
-    Process.put({FavnOrchestrator.TestRunnerTaskStore, task_id}, task)
-
-    entry = %{
-      task_id: task_id,
-      required_runner_release_id: release_id,
-      asset_ref: ref,
-      node_key: node_key,
-      asset_step_id: "step_completed_before_timeout",
-      window: nil,
-      stage: 0,
-      attempt: 1,
-      lease: nil
-    }
-
-    work_set = ActiveTaskSet.from_entries(run, [entry])
-    run = ActiveTaskSet.sync_run_metadata(run, work_set)
-    timeout_token = make_ref()
-
-    state = %RunExecutionState{
-      run: run,
-      mode: :sequential,
-      work_set: work_set,
-      accumulated_results: [],
-      awaits: %{
-        task_id => %{
-          pid: nil,
-          monitor_ref: nil,
-          timeout_token: timeout_token,
-          timeout_ref: make_ref(),
-          entry: entry,
-          kind: :sequential
+      task = %RunnerTask{
+        workspace_id: run.workspace_id,
+        task_id: task_id,
+        status: :succeeded,
+        result: result,
+        payload: %RunnerWork{
+          run_id: run.id,
+          manifest_version_id: run.manifest_version_id,
+          manifest_content_hash: run.manifest_content_hash,
+          required_runner_release_id: release_id
         }
-      },
-      await_timers: %{timeout_token => task_id}
-    }
+      }
 
-    assert {:persist_retry, _state, %PersistenceRetry{event_type: :step_finished},
-            :forced_failure} =
-             Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+      Process.put({FavnOrchestrator.TestRunnerTaskStore, :terminal_cancellation_test}, true)
+      Process.put({FavnOrchestrator.TestRunnerTaskStore, task_id}, task)
 
-    refute_received {:commit_transition, %{event: %{event_type: :step_timed_out}}}
+      entry = %{
+        task_id: task_id,
+        required_runner_release_id: release_id,
+        asset_ref: ref,
+        node_key: node_key,
+        asset_step_id: "step_completed_before_timeout",
+        window: nil,
+        stage: 0,
+        attempt: 1,
+        lease: nil
+      }
+
+      work_set = ActiveTaskSet.from_entries(run, [entry])
+      run = ActiveTaskSet.sync_run_metadata(run, work_set)
+      timeout_token = make_ref()
+
+      state = %RunExecutionState{
+        run: run,
+        mode: :sequential,
+        work_set: work_set,
+        accumulated_results: [],
+        awaits: %{
+          task_id => %{
+            pid: nil,
+            monitor_ref: nil,
+            timeout_token: timeout_token,
+            timeout_ref: make_ref(),
+            entry: entry,
+            kind: :sequential
+          }
+        },
+        await_timers: %{timeout_token => task_id}
+      }
+
+      if unquote(readable?) do
+        assert {:persist_retry, _state, %PersistenceRetry{event_type: :step_finished},
+                :forced_failure} =
+                 Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+      else
+        assert {:recovery_required, recovering,
+                {:completed_runner_result_unavailable, ^task_id, %{kind: :unavailable}}} =
+                 Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+
+        assert ActiveTaskSet.active_runner_task_ids(recovering.run) == [task_id]
+        refute_received {:release_execution_lease, _}
+        refute_received {:commit_transition, _}
+      end
+
+      refute_received {:commit_transition, %{event: %{event_type: :step_timed_out}}}
+    end
   end
 
   defp plan_node(ref, node_key, evidence_generation_id) do
@@ -887,6 +959,8 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       stage: 0,
       execution_pool: nil,
       evidence_generation_id: evidence_generation_id,
+      target_id: Favn.TargetIdentity.for_asset(ref),
+      target_generation_id: nil,
       action: :run,
       retry_policy: Favn.Retry.Policy.default(),
       retry_policy_source: :default

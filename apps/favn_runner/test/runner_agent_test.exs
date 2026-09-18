@@ -1283,6 +1283,16 @@ defmodule FavnRunner.RunnerAgentTest do
       {:reply, reply, %{state | started_count: state.started_count + 1, started_replies: rest}}
     end
 
+    def handle_call(
+          {:request, %RunnerTask.Started{} = started},
+          from,
+          %{block_second_started_ack?: true, started_count: count} = state
+        )
+        when count > 0 do
+      send(state.owner, {:started_after_preparation, started})
+      {:noreply, %{state | started_count: count + 1} |> Map.put(:started_from, from)}
+    end
+
     def handle_call({:request, %RunnerTask.Started{} = started}, _from, state) do
       send(state.owner, {:started_after_preparation, started})
 
@@ -1489,7 +1499,7 @@ defmodule FavnRunner.RunnerAgentTest do
   end
 
   test "Started preserves its issued-at timestamp after renewal and an acknowledgement loss" do
-    {version, work} = executable_work("started_ack_loss")
+    {version, work} = executable_work("started_ack_loss", __MODULE__.CompletingAsset)
 
     {:ok, control_plane} =
       start_supervised(
@@ -1520,6 +1530,9 @@ defmodule FavnRunner.RunnerAgentTest do
     assert replay.issued_at == first.issued_at
     assert DateTime.compare(replay.occurred_at, first.occurred_at) in [:eq, :gt]
     send(control_plane, :release_second_started)
+    assert_receive {:preparation_task_result, %{outcome: :succeeded}}, 2_000
+    assert_eventually(fn -> :sys.get_state(agent).assignment == nil end)
+    assert nil == FavnRunner.TaskResultBuffer.pending_result()
     assert Process.alive?(agent)
   end
 

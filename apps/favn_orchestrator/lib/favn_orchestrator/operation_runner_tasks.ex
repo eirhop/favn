@@ -8,7 +8,8 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
 
   The optional `:operation_id` references a retained rebuild or target-recovery
   parent. It is distinct from a mutation's `write_operation_id`, derived from the
-  payload; normal initial marker registration has no such parent.
+  payload; normal initial marker registration instead uses `:run_id` to retain
+  its task evidence with the run that produced the successful materialization.
   """
 
   alias Favn.Contracts.RunnerTask
@@ -78,38 +79,87 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
            {:ok, orchestration_context} <-
              RunnerTaskContext.encode(Keyword.get(opts, :orchestration_context, %{})),
            {:ok, required_capability} <- Map.fetch(@capabilities, task_kind) do
-        with {:ok, _enqueue_receipt} <-
-               RunnerTasks.enqueue(%EnqueueRunnerTask{
-                 workspace_context: context,
-                 platform_context: Keyword.get(opts, :platform_context),
-                 command_id: "enqueue:#{task_id}",
-                 task_id: task_id,
-                 domain_identity: durable_domain_identity(task_kind, domain_identity, version),
-                 task_kind: task_kind,
-                 manifest_version_id: version.manifest_version_id,
-                 manifest_content_hash: version.content_hash,
-                 write_target_id: mutation_target(task_kind, payload),
-                 write_operation_id: mutation_operation(task_kind, payload),
-                 runner_pool: runner_pool,
-                 required_runner_release_id: release_id,
-                 retry_class: RunnerTask.default_retry_class(task_kind),
-                 payload: encoded_payload,
-                 payload_hash: payload_hash,
-                 orchestration_context: orchestration_context,
-                 operation_id: Keyword.get(opts, :operation_id),
-                 deployment_operation_id: Keyword.get(opts, :deployment_operation_id),
-                 required_capability: required_capability,
-                 deadline_at: deadline_at,
-                 issued_at: issued_at,
-                 occurred_at: occurred_at
-               }),
-             {:ok, task} <- fetch(context, task_id) do
-          maybe_retry_safe(context, task)
-        end
+        command = %EnqueueRunnerTask{
+          workspace_context: context,
+          platform_context: Keyword.get(opts, :platform_context),
+          command_id: "enqueue:#{task_id}",
+          task_id: task_id,
+          domain_identity: durable_domain_identity(task_kind, domain_identity, version),
+          task_kind: task_kind,
+          manifest_version_id: version.manifest_version_id,
+          manifest_content_hash: version.content_hash,
+          write_target_id: mutation_target(task_kind, payload),
+          write_operation_id: mutation_operation(task_kind, payload),
+          runner_pool: runner_pool,
+          required_runner_release_id: release_id,
+          retry_class: RunnerTask.default_retry_class(task_kind),
+          payload: encoded_payload,
+          payload_hash: payload_hash,
+          orchestration_context: orchestration_context,
+          run_id: Keyword.get(opts, :run_id),
+          operation_id: Keyword.get(opts, :operation_id),
+          deployment_operation_id: Keyword.get(opts, :deployment_operation_id),
+          required_capability: required_capability,
+          deadline_at: deadline_at,
+          issued_at: issued_at,
+          occurred_at: occurred_at
+        }
+
+        with {:ok, task} <- ensure_persisted(context, existing_task, command),
+             do: maybe_retry_safe(context, task)
       else
         :error -> {:error, {:unsupported_runner_task_kind, task_kind}}
         {:error, _reason} = error -> error
       end
+    end
+  end
+
+  defp ensure_persisted(context, nil, command) do
+    with {:ok, _receipt} <- RunnerTasks.enqueue(command), do: fetch(context, command.task_id)
+  end
+
+  defp ensure_persisted(context, existing, command) do
+    fields = [
+      :task_id,
+      :domain_identity,
+      :manifest_version_id,
+      :manifest_content_hash,
+      :task_kind,
+      :run_id,
+      :operation_id,
+      :deployment_operation_id,
+      :asset_step_id,
+      :runner_pool,
+      :required_runner_release_id,
+      :required_capability,
+      :deadline_at,
+      :payload_hash,
+      :write_target_id,
+      :write_operation_id,
+      :write_claim_key,
+      :write_claim_fence
+    ]
+
+    context_hash =
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary(command.orchestration_context, [:deterministic])
+      )
+
+    cond do
+      existing.data_state != :available ->
+        {:error, {:runner_task_data_unavailable, existing.persistence_failure}}
+
+      Map.take(existing, fields) != Map.take(command, fields) or
+        existing.payload_version != PersistenceCodec.payload_version() or
+          existing.orchestration_context_hash != context_hash ->
+        {:error, {:operation_runner_task_identity_mismatch, existing.task_id}}
+
+      not is_nil(existing.deployment_operation_id) ->
+        ensure_persisted(context, nil, command)
+
+      true ->
+        {:ok, existing}
     end
   end
 
@@ -201,7 +251,9 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
       ) do
     with {:ok, task} <-
            ensure(context, version, asset_ref, task_kind, payload, domain_identity, opts) do
-      await(context, task.task_id, opts)
+      if task.status in @terminal_statuses,
+        do: terminal_result(task),
+        else: await(context, task.task_id, opts)
     end
   end
 

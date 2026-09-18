@@ -663,7 +663,10 @@ defmodule FavnRunner.RuntimeInputResolver do
       type: type,
       phase: :runtime_inputs,
       message: message,
-      details: Map.put_new(details, :asset_retryable?, false)
+      details:
+        details
+        |> Map.put_new(:asset_retryable?, false)
+        |> Map.put(:asset_write_outcome, :not_started)
     }
   end
 

@@ -76,6 +76,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
   @doc "Fenced replacement of the run's single shared checkpoint."
   @spec put(RunState.t(), non_neg_integer(), pos_integer(), map(), checkpoint_ref() | nil) ::
           {:ok, checkpoint_ref()} | {:error, term()}
+  def put(run, stage, attempt, context, previous_reference, position \\ nil)
+
   def put(
         %RunState{
           workspace_id: workspace_id,
@@ -85,7 +87,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
         stage,
         attempt,
         context,
-        previous_reference
+        previous_reference,
+        position
       )
       when is_integer(stage) and stage >= 0 and is_integer(attempt) and attempt > 0 and
              is_binary(workspace_id) and is_binary(owner_id) and is_integer(fencing_token) and
@@ -94,7 +97,33 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
     with {:ok, revision} <- next_revision(previous_reference),
          {:ok, payload} <- encode_payload(run.id, context),
          payload_hash <- :crypto.hash(:sha256, payload) do
+      {run, transition} =
+        if position do
+          positioned = RunState.transition(run, [])
+
+          event =
+            FavnOrchestrator.Projector.run_event(positioned, :run_execution_position, %{
+              position: position
+            })
+
+          context = SystemContext.workspace(run.workspace_id, :run_checkpoint_write)
+
+          {:ok, command} =
+            FavnOrchestrator.Runs.prepare_commit(
+              context,
+              RunState.for_step_persistence(positioned),
+              event,
+              owner_id: run.storage_owner_id,
+              fencing_token: run.storage_fencing_token
+            )
+
+          {positioned, command}
+        else
+          {run, nil}
+        end
+
       command = %PutRunExecutionCheckpoint{
+        transition: transition,
         workspace_context: SystemContext.workspace(run.workspace_id, :run_checkpoint_write),
         run_id: run.id,
         owner_id: run.storage_owner_id,
@@ -119,15 +148,21 @@ defmodule FavnOrchestrator.RunServer.Execution.PipelineFreshnessCheckpoint do
       }
 
       case Persistence.stores().runs.put_execution_checkpoint(command) do
-        {:ok, checkpoint} -> {:ok, reference(checkpoint)}
-        {:error, reason} -> resolve_unknown_put(run, expected, reason)
+        {:ok, checkpoint} ->
+          if position, do: {:ok, reference(checkpoint), run}, else: {:ok, reference(checkpoint)}
+
+        {:error, reason} ->
+          case resolve_unknown_put(run, expected, reason) do
+            {:ok, reference} when not is_nil(position) -> {:ok, reference, run}
+            result -> result
+          end
       end
     else
       {:error, reason} -> {:error, {:run_execution_checkpoint_write_failed, reason}}
     end
   end
 
-  def put(%RunState{}, _stage, _attempt, _context, _previous_reference),
+  def put(%RunState{}, _stage, _attempt, _context, _previous_reference, _position),
     do: {:error, :invalid_run_execution_checkpoint_owner}
 
   @doc "Returns true when a task continuation names the loaded checkpoint."

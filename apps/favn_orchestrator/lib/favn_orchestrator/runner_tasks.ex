@@ -34,6 +34,30 @@ defmodule FavnOrchestrator.RunnerTasks do
   @cancellation_ack_wait_ms 1_000
   @cancellation_poll_ms 20
 
+  @doc "Commits saved admission and notifies runners only after the transaction succeeds."
+  @spec admit(C.AdmitRunnerTask.t()) ::
+          {:ok, FavnOrchestrator.Persistence.Results.RunnerTaskAdmission.t()} | {:error, term()}
+  def admit(%C.AdmitRunnerTask{} = command) do
+    with {:ok, result} <- store().admit(command) do
+      if result.transition,
+        do:
+          FavnOrchestrator.TransitionWriter.publish_committed(
+            command.enqueue.workspace_context,
+            result.transition
+          )
+
+      if result.task && result.task.status == :queued,
+        do:
+          RunnerQueueCoordinator.notify(
+            result.task.runner_pool,
+            result.task.required_runner_release_id,
+            1
+          )
+
+      {:ok, result}
+    end
+  end
+
   def enqueue(%C.EnqueueRunnerTask{} = command) do
     with {:ok, task} <- store().enqueue(command) do
       if task.status == :queued do

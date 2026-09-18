@@ -404,7 +404,7 @@ defmodule FavnRunner.Worker do
 
     RunnerError.normalize(error,
       retryable?: retryable?,
-      outcome: if(retryable?, do: :safe_failure, else: :unknown),
+      outcome: sql_failure_outcome(details),
       resource_outcomes: sql_resource_outcomes(details)
     )
   end
@@ -418,12 +418,17 @@ defmodule FavnRunner.Worker do
 
     RunnerError.normalize(error,
       retryable?: retryable?,
-      outcome: if(retryable?, do: :safe_failure, else: :unknown),
+      outcome: sql_failure_outcome(details),
       resource_outcomes: sql_resource_outcomes(details, connection_name(asset.relation))
     )
   end
 
   defp normalize_error(error, %Asset{}), do: normalize_error(error)
+
+  defp sql_failure_outcome(%{asset_write_outcome: outcome})
+       when outcome in [:rolled_back, :not_started], do: :safe_failure
+
+  defp sql_failure_outcome(_details), do: :unknown
 
   defp resource_success_outcomes(%Asset{type: :sql, relation: relation}) do
     case connection_name(relation) do

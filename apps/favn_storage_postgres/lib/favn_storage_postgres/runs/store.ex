@@ -420,6 +420,22 @@ defmodule FavnStoragePostgres.Runs.Store do
     with :ok <- validate_execution_checkpoint(command),
          {:ok, result} <-
            Repo.transaction(fn ->
+             if transition = command.transition do
+               unless transition.run.id == command.run_id and
+                        transition.workspace_context.workspace_id ==
+                          command.workspace_context.workspace_id and
+                        transition.run.event_seq == command.checkpoint_sequence and
+                        transition.owner_id == command.owner_id and
+                        transition.fencing_token == command.fencing_token do
+                 Repo.rollback(Error.new(:invalid, "checkpoint transition identity mismatch"))
+               end
+
+               case commit_transition(transition) do
+                 {:ok, _receipt} -> :ok
+                 {:error, reason} -> Repo.rollback(reason)
+               end
+             end
+
              validate_execution_checkpoint_fence!(command)
              put_execution_checkpoint!(command)
            end) do
@@ -1456,9 +1472,9 @@ defmodule FavnStoragePostgres.Runs.Store do
     end
   end
 
-  defp validate_fence!(%CommitRunTransition{owner_id: nil}), do: :ok
+  def validate_fence!(%CommitRunTransition{owner_id: nil}), do: :ok
 
-  defp validate_fence!(%CommitRunTransition{} = command) do
+  def validate_fence!(%CommitRunTransition{} = command) do
     workspace_id = command.workspace_context.workspace_id
 
     query =

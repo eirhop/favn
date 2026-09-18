@@ -13,6 +13,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   alias Favn.Window.Selection
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunServer.Execution.AdmissionIntent
   alias FavnOrchestrator.Storage.ExactDateTimeCodec
   alias FavnOrchestrator.Storage.JsonSafe
   alias FavnOrchestrator.Storage.RunSnapshotCodec.ManifestAtoms
@@ -168,7 +169,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   @spec encode_run(RunState.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def encode_run(%RunState{} = run_state, opts \\ []) when is_list(opts) do
     with :ok <- validate_current_release_binding(run_state),
-         {:ok, normalized} <- RunStateCodec.normalize(run_state) do
+         {:ok, normalized} <- RunStateCodec.normalize(run_state),
+         :ok <- AdmissionIntent.validate_metadata(normalized.metadata) do
       snapshot =
         case Keyword.get(opts, :plan, :inline) do
           :inline ->
@@ -266,6 +268,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     encoded =
       metadata
       |> Map.drop([
+        AdmissionIntent.metadata_key(),
         :execution_pool_policy,
         "execution_pool_policy",
         :connection_circuit_policy,
@@ -273,18 +276,33 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
       ])
       |> JsonSafe.data()
 
-    case field(metadata, :pipeline_context) do
-      context when is_map(context) ->
-        encoded_context =
-          context
-          |> JsonSafe.data()
-          |> Map.put("settings", settings_to_dto(field(context, :settings, %{})))
-          |> Map.put("metadata", pipeline_metadata_to_dto(field(context, :metadata, %{})))
+    encoded =
+      case field(metadata, :pipeline_context) do
+        context when is_map(context) ->
+          encoded_context =
+            context
+            |> JsonSafe.data()
+            |> Map.put("settings", settings_to_dto(field(context, :settings, %{})))
+            |> Map.put("metadata", pipeline_metadata_to_dto(field(context, :metadata, %{})))
 
-        Map.put(encoded, "pipeline_context", encoded_context)
+          Map.put(encoded, "pipeline_context", encoded_context)
 
-      _other ->
-        encoded
+        _other ->
+          encoded
+      end
+
+    encoded =
+      case field(metadata, :recovery_attention) do
+        attention when is_map(attention) ->
+          Map.put(encoded, "recovery_attention", JsonSafe.data(attention))
+
+        _ ->
+          encoded
+      end
+
+    case Map.fetch(metadata, AdmissionIntent.metadata_key()) do
+      {:ok, intent} -> Map.put(encoded, AdmissionIntent.metadata_key(), intent)
+      :error -> encoded
     end
   end
 
@@ -384,6 +402,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
          {:ok, runner_releases} <- runner_releases_from_dto(dto, schema_version),
          {:ok, metadata} <-
            metadata_from_dto(Map.get(dto, "metadata"), allowed_atom_strings),
+         :ok <- AdmissionIntent.validate_metadata(metadata),
          {:ok, metadata} <- policy_metadata_from_dto(dto, metadata),
          {:ok, result} <- result_from_dto(Map.get(dto, "result"), allowed_atom_strings) do
       {:ok,
@@ -804,8 +823,9 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
   defp relation_from_dto(relation, _allowed_atom_strings, false) when is_map(relation),
     do: {:ok, relation}
 
-  defp relation_from_dto(relation, _allowed_atom_strings, true) when is_map(relation) do
-    with {:ok, connection} <- optional_existing_atom(field(relation, :connection)) do
+  defp relation_from_dto(relation, allowed_atom_strings, true) when is_map(relation) do
+    with {:ok, connection} <-
+           optional_atom_from_dto(field(relation, :connection), allowed_atom_strings) do
       {:ok,
        RelationRef.new!(
          connection: connection,
@@ -820,10 +840,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp relation_from_dto(relation, _allowed_atom_strings, _struct?),
     do: {:error, {:invalid_plan_relation, relation}}
-
-  defp optional_existing_atom(nil), do: {:ok, nil}
-  defp optional_existing_atom(value) when is_binary(value), do: existing_atom(value)
-  defp optional_existing_atom(value), do: {:error, {:invalid_atom_dto, value}}
 
   defp retry_policy_to_dto(nil), do: nil
 
@@ -1065,9 +1081,13 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp ref_from_dto(value, _allowed_atom_strings), do: {:error, {:invalid_ref_dto, value}}
 
+  # Pinned manifest whitelist and global headroom are validated before decoding.
+  # sobelow_skip ["DOS.StringToAtom"]
   defp atom_from_dto(value, allowed_atom_strings) when is_binary(value) do
     if MapSet.member?(allowed_atom_strings, value) do
-      existing_atom(value)
+      # Only pinned manifest identifiers and fixed framework names reach this
+      # branch. Recovery must work before consumer modules have been loaded.
+      {:ok, String.to_atom(value)}
     else
       {:error, {:unknown_atom, value}}
     end
@@ -1079,12 +1099,6 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
 
   defp optional_atom_from_dto(value, allowed_atom_strings),
     do: atom_from_dto(value, allowed_atom_strings)
-
-  defp existing_atom(value) do
-    {:ok, String.to_existing_atom(value)}
-  rescue
-    ArgumentError -> {:error, {:atom_not_loaded, value}}
-  end
 
   defp status_from_dto("pending"), do: {:ok, :pending}
   defp status_from_dto("running"), do: {:ok, :running}
@@ -1941,7 +1955,8 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodec do
     do: {:error, {:invalid_manifest_record, record}}
 
   defp allowed_atom_strings(manifest_record) do
-    with {:ok, manifest_atoms} <- ManifestAtoms.extract(manifest_record) do
+    with {:ok, manifest_atoms} <- ManifestAtoms.extract(manifest_record),
+         :ok <- Favn.Manifest.AtomBudget.check_headroom(manifest_atoms) do
       {:ok, Enum.reduce(@internal_atom_strings, manifest_atoms, &MapSet.put(&2, &1))}
     end
   end

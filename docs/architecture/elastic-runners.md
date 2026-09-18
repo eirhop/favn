@@ -99,6 +99,63 @@ recovery. Pre-activation compatibility inspection requires platform deployment
 authority and workspace administration, is read-only, and carries the same exact
 retained manifest and release pin as other tasks.
 
+### Resuming an interrupted run
+
+A process exit does not cancel its tasks. The existing ownership recovery sweep
+claims released or expired run ownership, then starts a run server through the
+run manager. A failed restoration releases that claim for a later sweep and
+leaves durable task evidence intact. A killed process may therefore wait for its
+ownership lease to expire before recovery begins.
+
+Run recovery reads the pinned plan, ordered run events and durable tasks. It
+restores successful and failed siblings, sequential progress and the selected
+retry attempt. A saved task result is consumed again only to finish control-plane
+bookkeeping; recovery does not invoke that asset callback again.
+
+Before admission, the run records one pending intent with the exact task ID,
+attempt, decision and original deadline. PostgreSQL then commits capacity,
+circuit permits, materialization ownership, task creation and the matching
+step-start event together. A lost reply reuses that transaction's evidence. A
+pending intent is resumed before other deferred nodes, including when retry
+order differs from the original plan order.
+
+A step outcome records what happened; `step_settled` records that its
+materialization, resource outcomes and initial-generation registration have
+finished. Recovery can therefore resume the missing bookkeeping after a crash
+between those commits. Shared freshness checkpoint replacement and its
+`run_execution_position` event are atomic. Recovery rejects conflicting position,
+checkpoint, task and outcome evidence rather than guessing a new execution.
+
+| Retained evidence | Recovery behavior |
+| --- | --- |
+| Accepted successful result | Finish missing bookkeeping and continue eligible work |
+| Queued or executing task within its original deadline | Reattach to that task under current ownership; adopt live capacity where required |
+| Terminal task whose capacity was not released | Release the exact reservation once without acquiring new capacity |
+| Saved intent with no task | Complete that original admission under current ownership and its original deadline |
+| Unknown external write | Preserve the write exclusion and require supported reconciliation |
+| Unavailable or inconsistent required data | Leave the run recoverable and emit `run_execution_recovery_required`; never treat the failed read as absence |
+
+Events are read in pages of 50. Reconstruction keeps compact per-node facts and
+at most 128 retained display results, reads one task body at a time, and passes
+task IDs through the run mailbox. The existing active-run memory budget also
+applies during reconstruction. Large concurrent recovery still needs deployment
+load qualification.
+
+Initial-generation operation tasks belong to the run for retention, while their
+marker mutation identity remains separate from rebuild/recovery parent ownership.
+Known successful inspection and marker tasks are reused after restart. An unknown
+marker initialization can be observed through a matching marker read; that
+observation does not clear an unresolved writer hold automatically. Use the
+[held-write procedure](../production/elastic_runners.md#resolve-a-held-write)
+when that hold remains.
+
+This is a coordinated pre-v1 format change. Drain old-format runs before switching
+the control plane and runners, preserve retained data and unknown-write holds,
+and verify restart with work created by the new build. There is no reader that
+invents missing intent or settlement evidence for interrupted old-format runs.
+The [initial registration repair](../production/postgresql_operator_runbook.md)
+uses saved successful writes and leaves an already failed run terminal.
+
 Adopting this breaking persistence format requires the explicit
 [fresh development database procedure](../production/upgrade_and_rollback.md#task-persistence-format-adoption).
 After adoption, every restart reuses that database and its retained artifacts.

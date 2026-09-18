@@ -148,13 +148,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionClassificationTest 
              )
     end
 
-    # A package the registry cannot find is node-shaped, but it arrives as a
-    # persistence error rather than one of the package terms, so the plan's
-    # conservative default applies and the stage still stops. The storage
-    # integration test "terminal failure during refill cancels a sibling
-    # admitted by an earlier batch" depends on this staying whole-stage.
-    test "a package the registry cannot find stops the stage" do
-      refute StageAdmission.node_specific_failure?(
+    test "a missing package fails its node while independent siblings continue" do
+      assert StageAdmission.node_specific_failure?(
                :execution_package,
                Error.new(:not_found, "execution package not found")
              )

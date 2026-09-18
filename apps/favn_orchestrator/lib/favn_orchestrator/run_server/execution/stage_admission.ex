@@ -18,24 +18,24 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   require Logger
 
-  alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
-  alias FavnOrchestrator.CancellationOutcome
   alias Favn.Freshness.Key
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Persistence.Commands.AdmitRunnerTask
+  alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.Runs
+  alias FavnOrchestrator.RunServer.Execution.AdmissionIntent
   alias FavnOrchestrator.AssetRunnerTasks
   alias FavnOrchestrator.ExecutionAdmission
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.ResourceCircuits
   alias FavnOrchestrator.Redaction
-  alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.Persistence.Error, as: PersistenceError
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.PreSubmitFailure
   alias FavnOrchestrator.RunServer.Execution.PipelineTaskContinuation
-  alias FavnOrchestrator.RunServer.Execution.RecoveryPosition
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.StageClassifier
   alias FavnOrchestrator.RunServer.Execution.StageEntry
@@ -85,14 +85,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @typedoc """
   Outcome of submitting a stage's runnable nodes.
 
-  A `:persist_retry` carries either the partial-retry shape or
+  A `:persist_retry` carries the current admission phase or
   `t:node_failure_resume/0` as its resume payload.
   """
   @type result ::
           {:ok, RunState.t(), [entry()], [node_key()], MapSet.t(term()), [map()], map() | nil,
            deferred_refill_cause()}
-          | {:partial_retry, RunState.t(), [entry()], [node_key()], node_key(), term(),
-             MapSet.t(term()), [map()], map() | nil, deferred_refill_cause()}
           | {:error, RunState.t(), [term()], [node_key()], [entry()]}
           | {:persist_retry, PersistenceRetry.t(), term()}
           | {:persist_retry, PersistenceRetry.t(), term(), map()}
@@ -151,6 +149,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp do_submit([node_key | rest] = node_keys, ctx) do
     ctx =
       Map.drop(ctx, [
+        :intent,
         :lease,
         :resource_circuit_permits,
         :materialization_claim,
@@ -191,7 +190,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
                 batch_count: ctx.batch_count + 1
               })
 
-            admit_execution_capacity(entry_context)
+            prepare_intent(entry_context)
 
           {:error, reason} ->
             stop_after_stage_build_failure(ctx, node_key, reason)
@@ -199,23 +198,85 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     end
   end
 
-  defp admit_resource_circuits(ctx) do
-    case ResourceCircuits.acquire(ctx.current_run, ctx.work, ctx.manifest_index) do
-      {:ok, permits} ->
-        handle_admitted_entry(Map.put(ctx, :resource_circuit_permits, permits))
+  defp prepare_intent(ctx) do
+    work = ctx.work
 
-      {:blocked, blockers} ->
-        :ok = release_entry_lease(ctx)
-        persist_resource_block(ctx, blockers)
+    with {:ok, existing} <- AdmissionIntent.load(ctx.current_run, work, ctx.version) do
+      ctx =
+        Map.merge(ctx, %{
+          work: work,
+          lease: nil,
+          materialization_claim: nil,
+          resource_circuit_permits: []
+        })
 
-      {:error, reason} ->
-        :ok = release_entry_lease(ctx)
-        failed = Snapshots.snapshot_update(ctx.current_run, status: :error, error: reason)
-        {:error, failed, [], attempted_node_keys(ctx), entries(ctx)}
+      if existing do
+        admit_intent(use_intent(ctx, existing))
+      else
+        with {:ok, intent} <-
+               AdmissionIntent.new(
+                 ctx.current_run,
+                 work,
+                 orchestration_context(ctx),
+                 DateTime.utc_now()
+               ),
+             {:ok, metadata} <- AdmissionIntent.put(ctx.current_run.metadata, intent) do
+          run = RunState.transition(ctx.current_run, metadata: metadata)
+
+          pause = %{
+            phase: :admission_intent,
+            ctx: use_intent(ctx, intent),
+            run: run,
+            entries: entries(ctx)
+          }
+
+          retry =
+            PersistenceRetry.new(
+              run,
+              :step_intended,
+              intent_data(ctx, intent),
+              {:stage_operation, pause}
+            )
+
+          persist_operation(retry, pause)
+        else
+          {:error, reason} -> reject_operation(%{ctx: ctx}, reason)
+        end
+      end
+    else
+      {:error, reason} -> reject_operation(%{ctx: ctx}, reason)
     end
   end
 
-  defp admit_execution_capacity(ctx) do
+  defp use_intent(ctx, intent) do
+    ctx
+    |> Map.put(:intent, intent)
+    |> Map.put(:work, %{ctx.work | deadline_at: intent.deadline_at})
+    |> Map.put(:decisions, Map.put(ctx.decisions, ctx.node_key, intent.context.decision))
+  end
+
+  defp admit_intent(ctx) do
+    package_context =
+      SystemContext.workspace(ctx.current_run.workspace_id, :execution_package_fetch)
+
+    case ExecutionPackages.attach(
+           package_context,
+           ctx.current_run.deployment_id,
+           ctx.work,
+           ctx.version,
+           ctx.manifest_index
+         ) do
+      {:ok, work} ->
+        prepare_admission(%{ctx | work: work})
+
+      {:error, reason} ->
+        if node_specific_failure?(:execution_package, reason),
+          do: fail_node_and_continue(ctx, reason),
+          else: reject_operation(%{ctx: ctx}, reason)
+    end
+  end
+
+  defp prepare_admission(ctx) do
     entry = %{
       asset_step_id: ctx.work.asset_step_id,
       execution_pool: RunnerWork.execution_pool(ctx.work),
@@ -223,34 +284,101 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       attempt: ctx.attempt
     }
 
-    case ExecutionAdmission.prepare_acquire(ctx.current_run, entry, []) do
-      {:ok, nil} ->
-        handle_capacity_result(ctx, {:ok, nil})
-
-      {:ok, command} ->
-        pause = %{ctx: ctx, entries: entries(ctx), phase: :admission, admission_entry: entry}
-
-        persist_operation(
-          PersistenceRetry.command(
-            ctx.current_run,
-            :admission,
-            command,
-            operation_data(ctx),
-            {:stage_operation, pause}
-          ),
-          pause
+    with {:ok, capacity} <- ExecutionAdmission.prepare_acquire(ctx.current_run, entry, []),
+         {:ok, circuits} <-
+           ResourceCircuits.prepare_acquire(ctx.current_run, ctx.work, ctx.manifest_index),
+         {:ok, claim_context, claim, target_lock} <-
+           MaterializationClaims.prepare_admission(
+             ctx.current_run,
+             ctx.version,
+             ctx.manifest_index,
+             ctx.node_key,
+             ctx.decisions,
+             ctx.freshness_context,
+             ctx.work
+           ),
+         {:ok, enqueue, work} <-
+           AssetRunnerTasks.prepare(
+             ctx.current_run,
+             ctx.work,
+             ctx.node_key,
+             ctx.attempt,
+             ctx.intent.context
+           ),
+         {:ok, metadata} <- AdmissionIntent.clear(ctx.current_run.metadata, ctx.intent) do
+      admitted =
+        with_inflight_task(
+          %{ctx.current_run | metadata: metadata},
+          ctx.intent.task_id,
+          RunnerWork.lifecycle_metadata(work)
         )
 
-      {:error, reason} ->
-        handle_capacity_result(ctx, {:error, reason})
+      durable = RunState.for_step_persistence(admitted)
+
+      event =
+        Projector.run_event(
+          durable,
+          attempt_start_event(ctx.attempt),
+          intent_data(ctx, ctx.intent)
+        )
+
+      {:ok, transition} =
+        Runs.prepare_commit(enqueue.workspace_context, durable, event,
+          owner_id: admitted.storage_owner_id,
+          fencing_token: admitted.storage_fencing_token
+        )
+
+      command = %AdmitRunnerTask{
+        intent: ctx.intent,
+        enqueue: %{enqueue | write_target_id: claim.target_id},
+        transition: transition,
+        capacity: capacity,
+        circuits: circuits,
+        claim: claim,
+        claim_context: claim_context,
+        target_lock: target_lock
+      }
+
+      pause = %{
+        phase: :runner_admission,
+        ctx: %{ctx | work: work},
+        entries: entries(ctx),
+        admitted_run: admitted,
+        admission_entry: entry,
+        task_id: ctx.intent.task_id
+      }
+
+      retry =
+        PersistenceRetry.command(
+          ctx.current_run,
+          :runner_admission,
+          command,
+          operation_data(ctx),
+          {:stage_operation, pause}
+        )
+
+      persist_operation(retry, pause)
+    else
+      {:error, reason} -> fail_node_and_continue(ctx, reason)
     end
+  end
+
+  defp intent_data(ctx, intent) do
+    {:ok, fingerprint} = AdmissionIntent.fingerprint(intent)
+
+    operation_data(ctx)
+    |> Map.merge(%{
+      runner_task_id: intent.task_id,
+      admission_intent_hash: fingerprint,
+      window: RunnerWork.window(ctx.work),
+      max_attempts: ctx.work.max_attempts,
+      execution_pool: RunnerWork.execution_pool(ctx.work),
+      freshness_key: intent.context.freshness_key
+    })
   end
 
   defp handle_capacity_result(ctx, result) do
     case result do
-      {:ok, lease} ->
-        admit_resource_circuits(Map.put(ctx, :lease, lease))
-
       {:waiting, waiter} ->
         persist_or_defer_queued_entry(
           ctx
@@ -293,7 +421,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     }
 
     outcome_run =
-      RecoveryPosition.record_outcome(ctx.current_run, ctx.stage, ctx.attempt)
+      ctx.current_run
 
     retry =
       StageClassifier.prepare_decision(
@@ -335,45 +463,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp yield_batch?(_ctx), do: false
 
-  defp handle_admitted_entry(
-         %{current_run: current_run, version: version, node_key: node_key} = ctx
-       ) do
-    case MaterializationClaims.prepare_acquire(
-           current_run,
-           version,
-           ctx.manifest_index,
-           node_key,
-           ctx.decisions,
-           ctx.freshness_context,
-           ctx.work
-         ) do
-      {:ok, claim, command} ->
-        ctx = Map.put(ctx, :prepared_claim, claim)
-        pause = %{ctx: ctx, entries: entries(ctx), phase: :materialization_claim}
-
-        persist_operation(
-          PersistenceRetry.command(
-            current_run,
-            :materialization_claim,
-            command,
-            operation_data(ctx),
-            {:stage_operation, pause}
-          ),
-          pause
-        )
-
-      other ->
-        handle_claim_result(ctx, other)
-    end
-  end
-
   defp handle_claim_result(ctx, result) do
     current_run = ctx.current_run
 
     case result do
-      {:ok, claim} ->
-        submit_admitted_entry(Map.put(ctx, :materialization_claim, claim))
-
       {:already_succeeded, claim} ->
         with :ok <- release_pre_dispatch(ctx) do
           maybe_skip_succeeded_claim(released_context(ctx), claim)
@@ -416,6 +509,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   defp maybe_skip_succeeded_claim(ctx, claim) do
+    ctx = clear_intent(ctx)
+
     if MaterializationClaims.reusable_success?(ctx.decisions, ctx.node_key) do
       decision =
         ctx.decisions
@@ -426,7 +521,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         })
 
       outcome_run =
-        RecoveryPosition.record_outcome(ctx.current_run, ctx.stage, ctx.attempt)
+        ctx.current_run
 
       retry =
         StageClassifier.prepare_decision(
@@ -489,50 +584,60 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   @doc false
   @spec adopt_operation(map(), term()) :: map()
-  def adopt_operation(%{phase: phase, ctx: ctx} = pause, result)
-      when phase in [:admission, :admission_recheck] do
-    resolved =
-      ExecutionAdmission.resolve_admission(ctx.current_run, pause.admission_entry, result)
+  def adopt_operation(%{phase: :admission_intent, run: run, ctx: ctx} = pause, :ok),
+    do: %{pause | ctx: %{ctx | current_run: run}}
 
-    ctx =
-      case resolved do
-        {:ok, lease} -> Map.put(ctx, :lease, lease)
-        {:waiting, waiter} -> Map.put(ctx, :waiter, waiter)
-        _ -> ctx
+  def adopt_operation(
+        %{phase: :runner_admission, ctx: ctx} = pause,
+        %{status: :admitted} = result
+      ) do
+    lease =
+      case if(result.replayed?, do: nil, else: result.capacity) do
+        nil ->
+          nil
+
+        capacity ->
+          {:ok, lease} =
+            ExecutionAdmission.resolve_admission(ctx.current_run, pause.admission_entry, capacity)
+
+          lease
       end
 
-    pause |> Map.put(:ctx, ctx) |> Map.put(:resolved_result, resolved)
-  end
+    ctx = %{
+      ctx
+      | current_run:
+          if(ctx.current_run.event_seq > pause.admitted_run.event_seq,
+            do: ctx.current_run,
+            else: pause.admitted_run
+          ),
+        lease: lease,
+        materialization_claim: result.context.materialization_claim,
+        resource_circuit_permits: result.context.resource_circuit_permits
+    }
 
-  def adopt_operation(%{phase: :materialization_claim, ctx: ctx} = pause, result) do
-    resolved = MaterializationClaims.resolve_claim(ctx.prepared_claim, result)
-
-    ctx =
-      case resolved do
-        {:ok, claim} -> Map.put(ctx, :materialization_claim, claim)
-        _ -> Map.update!(ctx, :prepared_claim, &Map.delete(&1, :target_operation_lock))
-      end
-
-    pause |> Map.put(:ctx, ctx) |> Map.put(:resolved_result, resolved)
-  end
-
-  def adopt_operation(%{phase: :runner_enqueue, ctx: ctx} = pause, task) do
     pause
+    |> Map.put(:ctx, ctx)
     |> Map.put(:submitted?, true)
-    |> Map.put(:entries, pause.entries ++ [enqueued_entry(ctx, task)])
+    |> Map.put(
+      :entries,
+      Enum.uniq_by(pause.entries ++ [enqueued_entry(ctx, result.task)], & &1.task_id)
+    )
   end
 
   def adopt_operation(pause, _result), do: pause
 
   @doc false
   @spec resume_operation(map(), term()) :: result()
-  def resume_operation(%{ctx: ctx} = pause, result) do
+  def resume_operation(pause, result) do
+    pause = adopt_operation(pause, result)
+    ctx = pause.ctx
+
     if deadline_live?(ctx.work.deadline_at) or
          pause.phase in [
            :queued,
            :blocked_decision,
            :skipped_decision,
-           :runner_enqueue,
+           :runner_admission,
            :resource_recovery_candidate
          ] do
       resume_operation_phase(pause, result)
@@ -550,63 +655,60 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp resume_operation_phase(%{phase: :queued, ctx: ctx, run: run}, :ok),
     do: queued_result(%{ctx | current_run: run})
 
-  defp resume_operation_phase(
-         %{phase: :admission, ctx: ctx, admission_entry: entry} = pause,
-         _result
-       ) do
-    case pause.resolved_result do
-      {:waiting, waiter} ->
-        ctx = Map.put(ctx, :waiter, waiter)
+  defp resume_operation_phase(%{phase: :admission_intent, ctx: ctx, run: run}, :ok),
+    do: admit_intent(%{ctx | current_run: run})
 
-        case ExecutionAdmission.prepare_acquire(ctx.current_run, entry,
-               stage: ctx.stage,
-               attempt: ctx.attempt
-             ) do
-          {:ok, command} when not is_nil(command) ->
-            pause = %{pause | ctx: ctx, phase: :admission_recheck}
+  defp resume_operation_phase(%{phase: :runner_admission, ctx: ctx}, %{
+         status: :admitted,
+         task: task,
+         replayed?: true
+       }) do
+    entry = enqueued_entry(ctx, task)
 
-            retry =
-              PersistenceRetry.command(
-                ctx.current_run,
-                :admission,
-                command,
-                operation_data(ctx),
-                {:stage_operation, pause}
-              )
+    case FavnOrchestrator.RunServer.Execution.RecoveredTask.reconcile(
+           ctx.current_run,
+           task,
+           entry
+         ) do
+      {:ok, entry} ->
+        do_submit(ctx.rest, %{ctx | entries_rev: [entry | ctx.entries_rev]})
 
-            persist_operation(retry, pause)
-
-          {:ok, nil} ->
-            handle_capacity_result(ctx, {:ok, nil})
-
-          {:error, reason} ->
-            handle_capacity_result(ctx, {:error, reason})
-        end
-
-      other ->
-        handle_capacity_result(ctx, other)
+      {:error, reason} ->
+        {:error,
+         Snapshots.snapshot_update(ctx.current_run,
+           error: {:runner_task_recovery_failed, reason}
+         ), [], attempted_node_keys(ctx), entries(ctx) ++ [entry]}
     end
   end
 
-  defp resume_operation_phase(
-         %{phase: :admission_recheck, ctx: ctx, resolved_result: resolved},
-         _result
-       ) do
-    if match?({:ok, _}, resolved), do: ExecutionAdmission.cancel_wait(ctx.waiter)
-    handle_capacity_result(ctx, resolved)
-  end
+  defp resume_operation_phase(%{phase: :runner_admission, ctx: ctx}, %{
+         status: :admitted,
+         task: task
+       }),
+       do: accept_enqueued_entry(ctx, task)
 
-  defp resume_operation_phase(
-         %{phase: :materialization_claim, ctx: ctx, resolved_result: resolved},
-         _result
-       ),
-       do: handle_claim_result(ctx, resolved)
+  defp resume_operation_phase(%{phase: :runner_admission, ctx: ctx, admission_entry: entry}, %{
+         status: :waiting,
+         capacity: capacity
+       }),
+       do:
+         handle_capacity_result(
+           ctx,
+           ExecutionAdmission.resolve_admission(ctx.current_run, entry, capacity)
+         )
 
-  defp resume_operation_phase(%{phase: :attempt_start, ctx: ctx, task_id: task_id}, :ok),
-    do: enqueue_admitted_entry(ctx, task_id)
+  defp resume_operation_phase(%{phase: :runner_admission, ctx: ctx}, %{
+         status: :blocked,
+         reason: blockers
+       }),
+       do: persist_resource_block(clear_intent(ctx), blockers)
 
-  defp resume_operation_phase(%{phase: :runner_enqueue, ctx: ctx}, task),
-    do: accept_enqueued_entry(ctx, task)
+  defp resume_operation_phase(%{phase: :runner_admission, ctx: ctx}, %{
+         status: status,
+         reason: claim
+       })
+       when status in [:already_claimed, :already_succeeded],
+       do: handle_claim_result(ctx, {status, claim})
 
   defp resume_operation_phase(%{phase: :skipped_decision, ctx: ctx, decision_run: run}, :ok),
     do: do_submit(ctx.rest, %{ctx | current_run: run})
@@ -643,8 +745,20 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
        ),
        do: finish_resource_block(ctx, reason)
 
+  defp clear_intent(%{intent: intent} = ctx) do
+    if Map.has_key?(ctx.current_run.metadata, AdmissionIntent.metadata_key()) do
+      {:ok, metadata} = AdmissionIntent.clear(ctx.current_run.metadata, intent)
+      %{ctx | current_run: Snapshots.snapshot_update(ctx.current_run, metadata: metadata)}
+    else
+      ctx
+    end
+  end
+
+  defp clear_intent(ctx), do: ctx
+
   defp operation_data(ctx),
     do: %{
+      runner_task_id: ctx |> Map.get(:intent, %{}) |> Map.get(:task_id),
       asset_step_id: ctx.work.asset_step_id,
       asset_ref: ctx.work.asset_ref,
       node_key: ctx.node_key,
@@ -664,11 +778,14 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
         resume_operation(adopt_operation(pause, result), result)
 
       {:error, %{details: %{reason_code: "target_write_in_progress"}} = reason}
-      when pause.phase == :materialization_claim ->
+      when pause.phase == :runner_admission ->
         reject_operation(pause, reason)
 
+      {:error, reason} when reason in [:fenced, :external_cancel, :cancellation_race] ->
+        {:persist_retry, retry, reason, pause}
+
       {:error, reason} ->
-        if PersistenceRetry.replayable?(reason),
+        if PersistenceRetry.recovery_required?(reason),
           do: {:persist_retry, retry, reason, pause},
           else: reject_operation(pause, reason)
     end
@@ -682,21 +799,17 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   end
 
   @doc false
-  def reject_operation(%{phase: :admission, ctx: ctx}, reason),
-    do: handle_capacity_result(ctx, {:error, reason})
+  def reject_operation(%{phase: :runner_admission, ctx: ctx}, %{
+        details: %{reason_code: "target_write_in_progress"}
+      }),
+      do:
+        handle_claim_result(
+          ctx,
+          {:already_claimed, %{claim_key: "target:" <> ctx.work.logical_target_id}}
+        )
 
-  def reject_operation(
-        %{phase: :materialization_claim, ctx: ctx},
-        %{details: %{reason_code: "target_write_in_progress"}}
-      ) do
-    :ok = MaterializationClaims.release_prepared_claim(ctx.prepared_claim)
-    handle_claim_result(ctx, {:already_claimed, %{claim_key: ctx.prepared_claim.claim_key}})
-  end
-
-  def reject_operation(%{phase: :materialization_claim, ctx: ctx}, reason) do
-    :ok = MaterializationClaims.release_prepared_claim(ctx.prepared_claim)
-    handle_claim_result(ctx, {:error, reason})
-  end
+  def reject_operation(%{phase: :runner_admission, ctx: ctx}, reason),
+    do: handle_claim_result(ctx, {:error, reason})
 
   def reject_operation(%{ctx: ctx}, reason),
     do:
@@ -710,87 +823,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   defp entries(%{entries_rev: entries_rev}), do: Enum.reverse(entries_rev)
   defp attempted_node_keys(ctx), do: Enum.map(entries(ctx), & &1.node_key)
 
-  defp submit_admitted_entry(ctx) do
-    package_context =
-      SystemContext.workspace(ctx.current_run.workspace_id, :execution_package_fetch)
-
-    with {:ok, work} <-
-           ExecutionPackages.attach(
-             package_context,
-             ctx.current_run.deployment_id,
-             ctx.work,
-             ctx.version,
-             ctx.manifest_index
-           ) do
-      do_submit_admitted_entry(%{
-        ctx
-        | work: work,
-          materialization_claim: MaterializationClaims.enrich(ctx.materialization_claim, work)
-      })
-    else
-      {:error, reason} ->
-        fail_unsubmitted_entry(ctx, :execution_package, ctx.work.asset_ref, reason)
-    end
-  end
-
-  defp do_submit_admitted_entry(ctx) do
-    task_id =
-      AssetRunnerTasks.task_id(
-        ctx.current_run,
-        ctx.work,
-        ctx.node_key,
-        ctx.attempt
-      )
-
-    intended_run =
-      with_inflight_task(
-        ctx.current_run,
-        task_id,
-        RunnerWork.lifecycle_metadata(ctx.work)
-      )
-
-    intent = %{
-      asset_ref: ctx.work.asset_ref,
-      runner_task_id: task_id,
-      asset_step_id: ctx.work.asset_step_id,
-      window: RunnerWork.window(ctx.work),
-      stage: ctx.stage,
-      attempt: ctx.attempt,
-      max_attempts: ctx.work.max_attempts,
-      execution_pool: RunnerWork.execution_pool(ctx.work),
-      freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
-    }
-
-    pause = %{
-      ctx: %{ctx | current_run: intended_run},
-      phase: :attempt_start,
-      task_id: task_id,
-      entries: entries(ctx)
-    }
-
-    retry =
-      PersistenceRetry.new(
-        intended_run,
-        attempt_start_event(ctx.attempt),
-        intent,
-        {:stage_operation, pause}
-      )
-
-    case PersistenceRetry.persist(retry) do
-      :ok ->
-        resume_operation(pause, :ok)
-
-      {:error, reason} ->
-        if replayable_attempt_start_failure?(reason),
-          do: {:persist_retry, retry, reason, pause},
-          else: fail_unsubmitted_entry(ctx, :attempt_start, ctx.work.asset_ref, reason)
-    end
-  end
-
   @doc false
   @spec dispatch_expired?(map()) :: boolean()
   def dispatch_expired?(%{phase: phase, ctx: ctx})
-      when phase in [:admission, :admission_recheck, :materialization_claim, :runner_enqueue],
+      when phase in [:admission_intent, :runner_admission],
       do: not deadline_live?(ctx.work.deadline_at)
 
   def dispatch_expired?(_pause), do: false
@@ -804,15 +840,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   @spec cleanup_paused(map(), term(), RunState.t()) :: RunState.t()
   def cleanup_paused(%{submitted?: true}, _reason, current_run), do: current_run
 
-  def cleanup_paused(%{ctx: ctx} = pause, reason, %RunState{} = current_run) do
+  def cleanup_paused(%{ctx: ctx}, reason, %RunState{} = current_run) do
     if waiter = Map.get(ctx, :waiter), do: ExecutionAdmission.cancel_wait(waiter)
     :ok = release_entry_lease(%{lease: Map.get(ctx, :lease)})
     _ = ResourceCircuits.release(ctx.current_run, Map.get(ctx, :resource_circuit_permits, []))
     :ok = fail_claim(ctx, reason)
 
-    if Map.get(pause, :task_id),
-      do: without_inflight_task(current_run, pause.task_id),
-      else: current_run
+    current_run
   end
 
   @doc false
@@ -829,44 +863,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp deadline_live?(%DateTime{} = deadline),
     do: DateTime.compare(deadline, DateTime.utc_now()) == :gt
-
-  defp enqueue_admitted_entry(ctx, task_id) do
-    case AssetRunnerTasks.prepare(
-           ctx.current_run,
-           ctx.work,
-           ctx.node_key,
-           ctx.attempt,
-           orchestration_context(ctx)
-         ) do
-      {:ok, command, work} ->
-        ctx = %{ctx | work: work}
-        pause = %{ctx: ctx, entries: entries(ctx), phase: :runner_enqueue, task_id: task_id}
-
-        retry =
-          PersistenceRetry.command(
-            ctx.current_run,
-            :runner_enqueue,
-            command,
-            operation_data(ctx),
-            {:stage_operation, pause}
-          )
-
-        case PersistenceRetry.persist(retry) do
-          {:ok, task} ->
-            accept_enqueued_entry(ctx, task)
-
-          {:error,
-           %PersistenceError{details: %{reason_code: "execution_history_owner_busy"}} = reason} ->
-            {:persist_retry, retry, reason, pause}
-
-          {:error, reason} ->
-            fail_enqueue(ctx, task_id, reason)
-        end
-
-      {:error, reason} ->
-        fail_enqueue(ctx, task_id, reason)
-    end
-  end
 
   defp accept_enqueued_entry(ctx, task) do
     entry = enqueued_entry(ctx, task)
@@ -895,40 +891,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       resource_circuit_permits: ctx.resource_circuit_permits,
       freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
     })
-  end
-
-  defp fail_enqueue(ctx, task_id, reason) do
-    if AssetRunnerTasks.rejected_without_task?(ctx.current_run, task_id, reason) do
-      fail_unsubmitted_entry(
-        %{ctx | current_run: without_inflight_task(ctx.current_run, task_id)},
-        :enqueue,
-        ctx.work.asset_ref,
-        reason
-      )
-    else
-      fail_unknown_enqueue(ctx, task_id, ctx.work.asset_ref, reason)
-    end
-  end
-
-  defp fail_unknown_enqueue(ctx, task_id, asset_ref, reason) do
-    cancel_reason = %{kind: :runner_task_enqueue_unknown, asset_ref: asset_ref, error: reason}
-
-    {cancelled, [_outcome]} =
-      cancel_task_ids_with_results(ctx.current_run, [task_id], cancel_reason)
-
-    failed =
-      cancelled
-      |> RunState.transition(status: :error, error: reason)
-      |> RecoveryPosition.record_outcome(ctx.stage, ctx.attempt)
-
-    persist_stage_submit_failure(
-      ctx,
-      failed,
-      asset_ref,
-      reason,
-      false,
-      entries(ctx) ++ [unknown_enqueue_entry(ctx, task_id)]
-    )
+    |> Map.put(:deadline_at, work.deadline_at)
   end
 
   defp orchestration_context(ctx) do
@@ -940,60 +903,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
       freshness_key: decision_freshness_key(ctx.decisions, ctx.node_key)
     })
   end
-
-  defp fail_unsubmitted_entry(ctx, call_site, asset_ref, reason) do
-    with :ok <- release_entry_lease(%{lease: ctx.lease}),
-         :ok <-
-           ResourceCircuits.release(
-             ctx.current_run,
-             Map.get(ctx, :resource_circuit_permits, [])
-           ),
-         :ok <- fail_claim(ctx, reason) do
-      cond do
-        safe_retryable?(reason) and
-            StepAttemptLifecycle.retry_allowed?(ctx.current_run, ctx.node_key, ctx.attempt) ->
-          persist_retryable_submit_failure(ctx, asset_ref, reason)
-
-        node_specific_failure?(call_site, reason) ->
-          fail_node_and_continue(ctx, reason)
-
-        true ->
-          terminalize_unsubmitted_entry(ctx, asset_ref, reason)
-      end
-    else
-      {:error, release_reason} -> pre_dispatch_release_failed(ctx, release_reason)
-    end
-  end
-
-  defp persist_retryable_submit_failure(ctx, asset_ref, reason) do
-    failed =
-      ctx.current_run
-      |> RunState.transition(status: :error, error: reason)
-      |> RecoveryPosition.record_outcome(ctx.stage, ctx.attempt)
-
-    result =
-      {:partial_retry, failed, entries(ctx), ctx.rest, ctx.node_key, reason, ctx.queued_steps,
-       ctx.waiters, ctx.terminal_failure, deferred_refill_cause(ctx.rest, :blocked)}
-
-    case persist_stage_submit_failure_event(ctx, failed, asset_ref, reason, true, result) do
-      :ok ->
-        result
-
-      {:error, :external_cancel} ->
-        terminalize_unsubmitted_entry(ctx, asset_ref, :external_cancel)
-
-      {:error, persist_reason, retry} ->
-        {:persist_retry, retry, persist_reason}
-    end
-  end
-
-  defp terminalize_unsubmitted_entry(ctx, _asset_ref, :external_cancel),
-    do:
-      {:error, Snapshots.cancelled_snapshot(ctx.current_run), [], attempted_node_keys(ctx),
-       entries(ctx)}
-
-  defp terminalize_unsubmitted_entry(ctx, _asset_ref, reason),
-    do: fail_node_and_continue(ctx, reason)
 
   @doc """
   Returns whether a terminal admission failure belongs to one node alone.
@@ -1026,6 +935,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   def node_specific_failure?(call_site, :asset_not_found)
       when call_site in [:materialization_claim, :execution_package],
       do: true
+
+  def node_specific_failure?(:execution_package, %PersistenceError{kind: :not_found}), do: true
 
   def node_specific_failure?(:execution_package, reason),
     do: execution_package_failure?(reason)
@@ -1064,12 +975,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
   # run stays `running` because siblings are still working; the stage's first
   # terminal failure becomes the run's error when the stage finalizes.
   defp fail_node_and_continue(ctx, reason) do
+    ctx = clear_intent(ctx)
     node_result = failed_node_result(ctx)
 
     failed_run =
       ctx.current_run
       |> RunState.transition(status: :running, error: nil)
-      |> RecoveryPosition.record_outcome(ctx.stage, ctx.attempt)
       |> ResultBuilder.append_node_result(node_result)
 
     failure =
@@ -1137,73 +1048,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     }
   end
 
-  defp persist_stage_submit_failure(
-         ctx,
-         failed,
-         asset_ref,
-         reason,
-         retryable?,
-         cleanup_entries
-       ) do
-    result = {:error, failed, [], attempted_node_keys(ctx), cleanup_entries}
-
-    case persist_stage_submit_failure_event(
-           ctx,
-           failed,
-           asset_ref,
-           reason,
-           retryable?,
-           result
-         ) do
-      :ok ->
-        result
-
-      {:error, :external_cancel} ->
-        {:error, Snapshots.cancelled_snapshot(failed), [], attempted_node_keys(ctx),
-         cleanup_entries}
-
-      {:error, persist_reason, retry} ->
-        {:persist_retry, retry, persist_reason}
-    end
-  end
-
-  defp persist_stage_submit_failure_event(
-         ctx,
-         failed,
-         asset_ref,
-         reason,
-         retryable?,
-         resume_result
-       ) do
-    data = %{
-      asset_ref: asset_ref,
-      error: reason,
-      node_key: RunnerWork.node_key(ctx.work),
-      asset_step_id: ctx.work.asset_step_id,
-      window: RunnerWork.window(ctx.work),
-      stage: ctx.stage,
-      attempt: ctx.attempt,
-      max_attempts: ctx.work.max_attempts,
-      retryable?: retryable?,
-      retry_exhausted?: retryable? and ctx.attempt >= ctx.work.max_attempts,
-      execution_pool: RunnerWork.execution_pool(ctx.work)
-    }
-
-    retry =
-      PersistenceRetry.new(
-        failed,
-        :step_failed,
-        data,
-        {:stage_admission, ctx.attempt, resume_result}
-      )
-
-    case PersistenceRetry.persist(retry) do
-      :ok -> :ok
-      {:error, :external_cancel} -> {:error, :external_cancel}
-      {:error, reason} -> {:error, reason, retry}
-    end
-  end
-
   defp queue_signature(asset_step_id, queue_reason, scope) do
     scope_kind = Map.get(scope, :kind) || Map.get(scope, "kind")
     scope_key = Map.get(scope, :key) || Map.get(scope, "key")
@@ -1243,9 +1087,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     end
   end
 
-  defp safe_retryable?(%RunnerError{retryable?: true, outcome: :safe_failure}), do: true
-  defp safe_retryable?(_reason), do: false
-
   @doc false
   @spec replayable_attempt_start_failure?(term()) :: boolean()
   def replayable_attempt_start_failure?(%PersistenceError{
@@ -1268,18 +1109,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     RunState.transition(run_state,
       runner_task_id: nil,
       metadata: run_state.metadata |> Map.merge(metadata) |> Map.put(:active_runner_task_ids, ids)
-    )
-  end
-
-  defp without_inflight_task(%RunState{} = run_state, task_id) do
-    ids =
-      run_state.metadata
-      |> Map.get(:active_runner_task_ids, [])
-      |> Enum.reject(&(&1 == task_id))
-
-    Snapshots.snapshot_update(run_state,
-      runner_task_id: nil,
-      metadata: Map.put(run_state.metadata, :active_runner_task_ids, ids)
     )
   end
 
@@ -1307,21 +1136,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
     end
   end
 
-  defp unknown_enqueue_entry(ctx, task_id) do
-    runner_pool =
-      case Favn.RunnerPool.encode(ctx.work.runner_pool) do
-        {:ok, pool} -> pool
-        {:error, _} -> nil
-      end
-
-    enqueued_entry(ctx, %{
-      task_id: task_id,
-      assignment_generation: nil,
-      runner_pool: runner_pool,
-      required_runner_release_id: ctx.work.required_runner_release_id
-    })
-  end
-
   defp release_entry_lease(entry), do: ActiveTaskSet.release_entry(entry)
 
   defp release_pre_dispatch(ctx) do
@@ -1342,34 +1156,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmission do
 
   defp attempt_start_event(attempt) when attempt > 1, do: :step_retry_started
   defp attempt_start_event(_attempt), do: :step_started
-
-  defp cancel_task_ids_with_results(
-         %RunState{} = run_state,
-         task_ids,
-         reason
-       ) do
-    cancel_results = Cancellation.dispatch_runner_tasks(run_state, task_ids, reason)
-
-    confirmed_ids =
-      cancel_results
-      |> Enum.filter(&CancellationOutcome.confirmed?/1)
-      |> Enum.map(& &1.task_id)
-
-    remaining_ids =
-      run_state
-      |> ActiveTaskSet.active_runner_task_ids()
-      |> Enum.reject(&(&1 in confirmed_ids))
-
-    metadata =
-      run_state.metadata
-      |> Map.delete(:active_runner_task_ids)
-      |> Map.delete("active_runner_task_ids")
-      |> Map.put(:active_runner_task_ids, remaining_ids)
-      |> Map.put(:cancel_outcomes, Enum.map(cancel_results, &CancellationOutcome.to_map/1))
-
-    {Snapshots.snapshot_update(run_state, metadata: metadata, runner_task_id: nil),
-     cancel_results}
-  end
 
   defp decision_freshness_key(decisions, node_key) when is_map(decisions) do
     decisions

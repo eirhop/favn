@@ -45,6 +45,43 @@ defmodule FavnStoragePostgres.Admission.Store do
     end
   end
 
+  # Called only after composed admission has locked/validated the current run
+  # fence and its exact pending intent. Ordinary admission keeps exact replay.
+  def admit_saved_intent(command) do
+    with :ok <- validate_admit(command), do: transaction(fn -> admit!(command, true) end)
+  end
+
+  # Replay evidence only: an expired lease is not renewed or adopted here.
+  def saved_lease(command) do
+    workspace_id = command.workspace_context.workspace_id
+
+    case Repo.get_by(ExecutionLease, workspace_id: workspace_id, lease_id: command.lease_id) do
+      nil ->
+        nil
+
+      lease ->
+        scopes =
+          Repo.all(
+            from(scope in ExecutionLeaseScope,
+              where: scope.workspace_id == ^workspace_id and scope.lease_id == ^command.lease_id,
+              select: {scope.scope_id, scope.units}
+            )
+          )
+          |> Enum.sort()
+
+        expected = Enum.map(command.requests, &{&1.scope_id, &1.units}) |> Enum.sort()
+
+        if lease.run_id != command.run_id or lease.step_id != command.step_id or
+             scopes != expected,
+           do:
+             Repo.rollback(
+               Error.new(:conflict, "saved admission lease does not match the task intent")
+             )
+
+        lease_result(lease)
+    end
+  end
+
   @impl true
   def adopt_lease(%AdoptExecutionLease{} = command) do
     with :ok <- validate_adopt(command) do
@@ -67,6 +104,82 @@ defmodule FavnStoragePostgres.Admission.Store do
   end
 
   @impl true
+  def release_completed(
+        %FavnOrchestrator.Persistence.Commands.ReleaseCompletedExecution{} = command
+      ) do
+    transaction(fn ->
+      workspace = command.workspace_context.workspace_id
+      FavnStoragePostgres.CancellationOwnership.lock!(workspace, command.run_id)
+      ownership = lock_run_ownership!(workspace, command.run_id)
+
+      unless current_run_owner?(ownership, command),
+        do:
+          Repo.rollback(
+            Error.new(:fenced, "completed capacity release requires current run ownership")
+          )
+
+      row =
+        Repo.one(
+          from(task in FavnStoragePostgres.Schemas.RunnerTask,
+            where:
+              task.workspace_id == ^workspace and task.run_id == ^command.run_id and
+                task.task_id == ^command.task_id and
+                task.status in ["succeeded", "failed", "cancelled", "unknown"],
+            lock: "FOR SHARE"
+          )
+        )
+
+      work =
+        case row && FavnStoragePostgres.RunnerTasks.Store.admission_task(row) do
+          %{data_state: :available, payload: %Favn.Contracts.RunnerWork{} = work} ->
+            work
+
+          _ ->
+            Repo.rollback(
+              Error.new(:invalid, "terminal asset task evidence required for capacity release")
+            )
+        end
+
+      lease_id =
+        FavnOrchestrator.ExecutionAdmission.Identity.lease_id(
+          command.run_id,
+          work.asset_step_id,
+          work.stage,
+          work.attempt
+        )
+
+      lease =
+        Repo.one(
+          from(lease in ExecutionLease,
+            where: lease.workspace_id == ^workspace and lease.lease_id == ^lease_id,
+            lock: "FOR UPDATE"
+          )
+        )
+
+      if lease &&
+           (lease.run_id != command.run_id or lease.step_id != work.asset_step_id or
+              lease.owner_generation > command.owner_generation or
+              (lease.owner_generation == command.owner_generation and
+                 lease.owner_id != command.owner_id)),
+         do:
+           Repo.rollback(Error.new(:fenced, "terminal capacity lease identity or owner mismatch"))
+
+      leases = if lease && lease.status == "active", do: [lease], else: []
+
+      result = release_batch!(workspace, leases, "released", "admission.release_completed")
+
+      unless current_run_owner?(ownership, command),
+        do:
+          Repo.rollback(
+            Error.new(:fenced, "run ownership expired during completed capacity release")
+          )
+
+      notify_admission_changed!()
+      result
+    end)
+  end
+
+  @impl true
   def release_run_leases(%ReleaseRunLeases{} = command) do
     with :ok <- validate_release_run(command) do
       transaction(fn -> release_run_leases!(command) end)
@@ -80,12 +193,12 @@ defmodule FavnStoragePostgres.Admission.Store do
     end
   end
 
-  defp admit!(command) do
+  defp admit!(command, takeover? \\ false) do
     workspace_id = command.workspace_context.workspace_id
     requests = normalize_requests(command.requests)
     request_hash = request_hash!(command, requests)
 
-    case existing_decision(workspace_id, command, request_hash) do
+    case existing_decision(workspace_id, command, request_hash, takeover?) do
       {:ok, result} ->
         result
 
@@ -99,7 +212,7 @@ defmodule FavnStoragePostgres.Admission.Store do
     end
   end
 
-  defp existing_decision(workspace_id, command, request_hash) do
+  defp existing_decision(workspace_id, command, request_hash, takeover?) do
     lease =
       from(lease in ExecutionLease,
         where:
@@ -118,7 +231,20 @@ defmodule FavnStoragePostgres.Admission.Store do
       )
       |> Repo.one()
 
-    decide_existing(lease, waiter, command, request_hash)
+    case {takeover?, lease, waiter} do
+      {true, nil, %AdmissionWaiter{} = existing} ->
+        if existing.command_id != command.command_id and
+             existing.waiter_id == command.waiter_id and existing.run_id == command.run_id and
+             existing.step_id == command.step_id and
+             existing.requested_scopes == request_maps(normalize_requests(command.requests)) do
+          :new
+        else
+          decide_existing(lease, waiter, command, request_hash)
+        end
+
+      _ ->
+        decide_existing(lease, waiter, command, request_hash)
+    end
   end
 
   defp decide_existing(%ExecutionLease{} = lease, _waiter, command, request_hash) do

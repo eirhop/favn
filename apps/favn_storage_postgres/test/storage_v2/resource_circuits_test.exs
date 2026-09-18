@@ -43,6 +43,78 @@ defmodule FavnStoragePostgres.StorageV2.ResourceCircuitsTest do
     {:ok, workspace_id: workspace_id, resource: resource}
   end
 
+  test "retained run outcomes survive the command window without changing newer circuit decisions",
+       fixture do
+    now = DateTime.utc_now()
+    old = DateTime.add(now, -8 * 86_400, :second)
+    [permit] = acquire(fixture, "late-owner", now).permits
+    command = outcome_command(fixture, permit, "late-outcome", :failure, old)
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [command.run_id])
+
+    assert {:ok, %ResourceCircuitUpdate{closed_resources: []}} = Store.record_outcomes(command)
+    assert {:ok, %ResourceCircuitUpdate{closed_resources: []}} = Store.record_outcomes(command)
+
+    assert %{rows: [[1]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.resource_circuit_outcomes WHERE workspace_id=$1 AND run_id=$2",
+               [fixture.workspace_id, command.run_id]
+             )
+
+    assert %{rows: [[0]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT consecutive_failures FROM favn_control.resource_circuits WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             )
+
+    assert {:error, %{kind: :invalid}} = Store.record_outcomes(%{command | run_id: "missing"})
+
+    assert {:error, %{kind: :invalid}} =
+             Store.record_outcomes(%{command | occurred_at: DateTime.add(now, 600, :second)})
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET retiring=true WHERE workspace_id=$1 AND run_id=$2",
+      [fixture.workspace_id, command.run_id]
+    )
+
+    assert {:error, _} = Store.record_outcomes(command)
+  end
+
+  test "old first settlement preserves its expired recovery candidate deadline", fixture do
+    now = DateTime.utc_now()
+    old = DateTime.add(now, -8 * 86_400, :second)
+    [permit] = acquire(fixture, "late-first-owner", now).permits
+    command = outcome_command(fixture, permit, "late-first", :failure, old)
+    FavnStoragePostgres.TestSupport.RunFixture.create(fixture.workspace_id, [command.run_id])
+    candidate = recovery_candidate(fixture, command, "expired-late-candidate")
+
+    Ecto.Adapters.SQL.query!(
+      Repo,
+      "UPDATE favn_control.resource_circuits SET updated_at=$2, consecutive_failures=1 WHERE workspace_id=$1",
+      [fixture.workspace_id, DateTime.add(old, -1, :second)]
+    )
+
+    assert {:ok, _} = Store.record_outcomes(%{command | recovery_candidates: [candidate]})
+
+    assert %{rows: [["open"]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT state FROM favn_control.resource_circuits WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             )
+
+    assert %{rows: [[0]]} =
+             Ecto.Adapters.SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.resource_recovery_candidates WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             )
+
+    assert {:error, %{kind: :invalid}} = Store.record_recovery_candidate(candidate)
+  end
+
   test "only one concurrent caller receives the due half-open probe", fixture do
     now = DateTime.utc_now()
     first = acquire(fixture, "owner-first", now)
@@ -240,7 +312,13 @@ defmodule FavnStoragePostgres.StorageV2.ResourceCircuitsTest do
 
     assert {:ok, %ResourceCircuitUpdate{closed_resources: [closed]}} =
              Store.record_outcomes(
-               outcome_command(fixture, succeeding, "inflight-success", :success, now)
+               outcome_command(
+                 fixture,
+                 succeeding,
+                 "inflight-success",
+                 :success,
+                 DateTime.utc_now()
+               )
              )
 
     assert closed == fixture.resource
@@ -330,7 +408,7 @@ defmodule FavnStoragePostgres.StorageV2.ResourceCircuitsTest do
     refute recovery_wakeup?(fixture, now)
 
     %ResourceCircuitAdmission{permits: [second]} = acquire(fixture, "opens", now, policy)
-    opens = outcome_command(fixture, second, "opens", :failure, now)
+    opens = outcome_command(fixture, second, "opens", :failure, DateTime.utc_now())
 
     assert {:ok, %ResourceCircuitUpdate{}} =
              Store.record_outcomes(%{
@@ -340,11 +418,19 @@ defmodule FavnStoragePostgres.StorageV2.ResourceCircuitsTest do
 
     refute recovery_wakeup?(fixture, now)
 
-    due = DateTime.add(now, 2, :millisecond)
+    due = DateTime.add(DateTime.utc_now(), 2, :millisecond)
     %ResourceCircuitAdmission{permits: [probe]} = acquire(fixture, "closes", due, policy)
 
     assert {:ok, %ResourceCircuitUpdate{closed_resources: [_resource]}} =
-             Store.record_outcomes(outcome_command(fixture, probe, "closes", :success, due))
+             Store.record_outcomes(
+               outcome_command(
+                 fixture,
+                 probe,
+                 "closes",
+                 :success,
+                 Enum.max([due, DateTime.utc_now()], DateTime)
+               )
+             )
 
     assert recovery_wakeup?(fixture, due)
   end

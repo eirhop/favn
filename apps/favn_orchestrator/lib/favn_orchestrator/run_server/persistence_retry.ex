@@ -22,9 +22,7 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
               ]
 
   @type operation ::
-          :admission
-          | :materialization_claim
-          | :runner_enqueue
+          :runner_admission
           | :resource_outcomes
           | :resource_recovery_candidate
   @type t :: %__MODULE__{
@@ -53,14 +51,8 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
   def persist(%__MODULE__{command: nil} = retry),
     do: Persistence.persist_run_step(retry.run, retry.event_type, retry.data)
 
-  def persist(%__MODULE__{event_type: :admission, command: command}),
-    do: Stores.stores().admission.admit(command)
-
-  def persist(%__MODULE__{event_type: :materialization_claim, command: command}),
-    do: Stores.stores().materialization.claim(command)
-
-  def persist(%__MODULE__{event_type: :runner_enqueue, command: command}),
-    do: RunnerTasks.enqueue(command)
+  def persist(%__MODULE__{event_type: :runner_admission, command: command, run: run}),
+    do: Persistence.normalize_result(run, RunnerTasks.admit(command))
 
   def persist(%__MODULE__{event_type: :resource_outcomes, command: command}),
     do: ResourceCircuits.persist_settlement(command)
@@ -73,6 +65,24 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
       when kind in [:unavailable, :timeout, :conflict], do: retryable?
 
   def replayable?(_reason), do: false
+
+  @doc false
+  @spec recovery_required?(term()) :: boolean()
+  def recovery_required?(%Error{kind: kind}) when kind in [:unavailable, :timeout], do: true
+  def recovery_required?(%Error{kind: :conflict, retryable?: true}), do: true
+  def recovery_required?(:runner_task_timeout), do: true
+
+  def recovery_required?({kind, _})
+      when kind in [
+             :runner_task_waiter_unavailable,
+             :runner_task_waiter_stopped,
+             :runner_task_data_unavailable,
+             :post_step_worker_down
+           ],
+      do: true
+
+  def recovery_required?({_operation, reason}), do: recovery_required?(reason)
+  def recovery_required?(_reason), do: false
 
   @spec rejected(t(), term()) :: t()
   def rejected(retry, reason),

@@ -101,7 +101,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
              manifest_index,
              asset_ref,
              {:initial_generation_inspection, target_id, generation_id,
-              MaterializationClaims.materialization_id(claim)}
+              MaterializationClaims.materialization_id(claim)},
+             claim.run_id
            ),
          {:ok, data_plane_marker} <-
            initialize_data_plane_marker(
@@ -112,7 +113,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
              target_id,
              generation_id,
              MaterializationClaims.materialization_id(claim),
-             fingerprint
+             fingerprint,
+             claim.run_id
            ),
          {:ok, _result} <-
            Persistence.stores().target_generations.reconcile_initial(
@@ -143,7 +145,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
          target_id,
          generation_id,
          materialization_id,
-         fingerprint
+         fingerprint,
+         run_id
        ) do
     payload = %GenerationCapabilitiesRequest{
       manifest: Version.identity(version),
@@ -160,7 +163,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
            :generation_capabilities,
            payload,
            {:initial_generation_capabilities, target_id, generation_id, materialization_id},
-           runner_binding: binding
+           runner_binding: binding,
+           run_id: run_id
          ) do
       {:ok, %GenerationCapabilitiesResult{capabilities: capabilities}}
       when is_map(capabilities) ->
@@ -174,7 +178,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
             target_id,
             generation_id,
             materialization_id,
-            fingerprint
+            fingerprint,
+            run_id
           )
         else
           {:ok, nil}
@@ -200,7 +205,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
          target_id,
          generation_id,
          materialization_id,
-         fingerprint
+         fingerprint,
+         run_id
        ) do
     operation_id = marker_operation_id(materialization_id, generation_id, fingerprint.fingerprint)
 
@@ -223,7 +229,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
            :generation_marker_initialize,
            request,
            {:initial_generation_marker_initialize, operation_id},
-           runner_binding: binding
+           runner_binding: binding,
+           run_id: run_id
          ) do
       {:ok, %GenerationMarkerInitializationResult{outcome: :succeeded} = result} ->
         with :ok <- GenerationMarkerInitializationResult.validate(result, request) do
@@ -231,10 +238,10 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
         end
 
       {:ok, %GenerationMarkerInitializationResult{outcome: :outcome_unknown}} ->
-        reconcile_initialized_marker(context, binding, version, asset_ref, request)
+        reconcile_initialized_marker(context, binding, version, asset_ref, request, run_id)
 
-      {:error, {_status, %{outcome: :unknown}}} ->
-        reconcile_initialized_marker(context, binding, version, asset_ref, request)
+      {:error, {:unknown, _error}} ->
+        reconcile_initialized_marker(context, binding, version, asset_ref, request, run_id)
 
       {:ok, %GenerationMarkerInitializationResult{} = result} ->
         {:error, {:initial_generation_marker_failed, result.error}}
@@ -247,7 +254,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
     end
   end
 
-  defp reconcile_initialized_marker(context, binding, version, asset_ref, request) do
+  defp reconcile_initialized_marker(context, binding, version, asset_ref, request, run_id) do
     payload = %GenerationMarkerReadRequest{
       manifest: Version.identity(version),
       asset_ref: asset_ref
@@ -260,7 +267,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
            :generation_marker_read,
            payload,
            {:initial_generation_marker_read, request.initialization_operation_id},
-           runner_binding: binding
+           runner_binding: binding,
+           run_id: run_id
          ) do
       {:ok, %GenerationMarkerReadResult{marker: %GenerationMarker{} = marker}} ->
         if marker_identity(marker) == request_marker_identity(request),
@@ -289,7 +297,7 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
   defp target_relation(%Index{} = manifest_index, asset_ref),
     do: manifest_index.assets_by_ref |> Map.fetch!(asset_ref) |> Map.fetch!(:relation)
 
-  defp inspect_physical(context, version, manifest_index, asset_ref, domain_identity) do
+  defp inspect_physical(context, version, manifest_index, asset_ref, domain_identity, run_id) do
     asset = Map.fetch!(manifest_index.assets_by_ref, asset_ref)
     {:ok, binding} = OperationRunnerTasks.binding(version, asset)
 
@@ -310,7 +318,8 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconciler do
              :relation_inspection,
              request,
              domain_identity,
-             runner_binding: binding
+             runner_binding: binding,
+             run_id: run_id
            ),
          :ok <-
            RunnerIdentityVerifier.verify_inspection_result(

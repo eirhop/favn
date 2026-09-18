@@ -61,7 +61,6 @@ defmodule Favn.Manifest.Rehydrate do
   @max_manifest_atom_length 255
   @max_manifest_module_length 255
   @max_manifest_atom_refs 100_000
-  @min_manifest_atom_headroom 100_000
 
   @type error ::
           {:invalid_manifest_input, term()}
@@ -1407,17 +1406,8 @@ defmodule Favn.Manifest.Rehydrate do
     end
   end
 
-  defp validate_manifest_atom_headroom(atom_refs) do
-    new_atom_count = Enum.count(atom_refs, &(maybe_existing_atom(&1) == :error))
-    atom_count = :erlang.system_info(:atom_count)
-    atom_limit = :erlang.system_info(:atom_limit)
-
-    if atom_limit - atom_count - new_atom_count >= @min_manifest_atom_headroom do
-      :ok
-    else
-      {:error, {:manifest_atom_headroom_exceeded, atom_count, atom_limit, new_atom_count}}
-    end
-  end
+  defp validate_manifest_atom_headroom(atom_refs),
+    do: Favn.Manifest.AtomBudget.check_headroom(atom_refs)
 
   defp collect_manifest_atom_refs(%_{} = struct, refs) do
     struct

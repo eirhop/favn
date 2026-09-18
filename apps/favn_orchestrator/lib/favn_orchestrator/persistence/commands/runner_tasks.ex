@@ -1,3 +1,24 @@
+defmodule FavnOrchestrator.Persistence.Commands.AdmitRunnerTask do
+  @moduledoc """
+  Commits one saved admission intent, its acquired permissions, runner task and
+  step-start transition together. Preparation and process notification stay
+  outside persistence. A waiting result commits only its capacity waiter.
+  """
+  @enforce_keys [:intent, :enqueue, :transition]
+  defstruct @enforce_keys ++ [:capacity, :circuits, :claim, :claim_context, :target_lock]
+
+  @type t :: %__MODULE__{
+          intent: FavnOrchestrator.RunServer.Execution.AdmissionIntent.t(),
+          enqueue: FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask.t(),
+          transition: FavnOrchestrator.Persistence.Commands.CommitRunTransition.t(),
+          capacity: FavnOrchestrator.Persistence.Commands.AdmitExecution.t() | nil,
+          circuits: FavnOrchestrator.Persistence.Commands.AcquireResourceCircuits.t() | nil,
+          claim: FavnOrchestrator.Persistence.Commands.ClaimMaterialization.t() | nil,
+          claim_context: map() | nil,
+          target_lock: FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks.t() | nil
+        }
+end
+
 defmodule FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask do
   @moduledoc "Idempotently admits one durable runner task."
   @enforce_keys [

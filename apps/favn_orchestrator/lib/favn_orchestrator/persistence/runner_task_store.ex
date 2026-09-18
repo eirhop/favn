@@ -24,6 +24,11 @@ defmodule FavnOrchestrator.Persistence.RunnerTaskStore do
   alias FavnOrchestrator.Persistence.Results.WorkspaceRunnerTaskStats
   alias FavnOrchestrator.Persistence.Error
 
+  @doc "Atomically acquires permissions and saves a task with its matching run transition."
+  @callback admit(C.AdmitRunnerTask.t()) ::
+              {:ok, FavnOrchestrator.Persistence.Results.RunnerTaskAdmission.t()}
+              | {:error, Error.t()}
+
   @callback enqueue(C.EnqueueRunnerTask.t()) :: {:ok, RunnerTask.t()} | {:error, Error.t()}
   @callback claim(C.ClaimRunnerTask.t()) ::
               {:ok, RunnerTask.t() | nil} | {:error, Error.t()}

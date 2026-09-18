@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   settlements use the correct sequence while the worker is running.
   """
 
+  alias FavnOrchestrator.RunServer.Execution.RecoveredTask
   alias Favn.Contracts.RunnerResult
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.Freshness.StateWriter
@@ -26,7 +27,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   alias FavnOrchestrator.RunServer.Cancellation
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.ResultSanitizer
-  alias FavnOrchestrator.RunServer.Execution.RecoveryPosition
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.StageAttemptState
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
@@ -50,7 +50,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
           required(:entry) => map(),
           required(:stage) => non_neg_integer(),
           required(:attempt) => pos_integer(),
-          required(:post_step_value) => RunnerResult.t()
+          required(:post_step_value) => RunnerResult.t(),
+          required(:node_status) => atom()
         }
 
   @type settlement_result ::
@@ -58,6 +59,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
           | {:halt, {:error, RunState.t(), [term()], [Favn.Plan.node_key()]}}
           | {:persist_retry, PersistenceRetry.t(), term()}
           | {:post_step_pending, StageAttemptState.t(), post_step_pending()}
+          | {:recovery_required, RunState.t(), term()}
 
   @doc "Builds a timed-out terminal result for work still waiting on admission."
   @spec timeout_deferred(StageAttemptState.t()) ::
@@ -133,28 +135,28 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     )
   end
 
+  def resume_persisted(%StageAttemptState{} = state, %{kind: :settled} = resume),
+    do:
+      apply_settled_result(
+        state,
+        resume.run,
+        resume.outcome,
+        resume.asset_results,
+        resume.entry,
+        resume
+      )
+
   def resume_persisted(%StageAttemptState{}, %{kind: :stage_state, state: next_state}),
     do: {:cont, next_state}
-
-  @doc false
-  @spec fail_bookkeeping(StageAttemptState.t(), map(), term()) :: settlement_result()
-  def fail_bookkeeping(state, resume, reason) do
-    settle_finished_step(
-      state,
-      {:settled, post_step_persistence_failure(resume.run, reason), :error, resume.asset_results},
-      resume.entry,
-      resume
-    )
-  end
 
   @doc """
   Completes a node settlement deferred by `{:post_step_pending, _, pending}`.
 
   `result` is the reconciler's reply, or an error built from a worker exit.
   The node's result is not appended again. On `:ok` the node settles as it
-  would have synchronously; any error settles it as
-  `post_step_persistence_failed` with the bounded reason. Resource-circuit
-  settlement and result recording run exactly once, here.
+  would have synchronously. Conclusive errors retain a bounded post-step failure;
+  uncertain replies leave the accepted result recoverable. Resource-circuit
+  settlement and result recording may replay idempotently after a lost reply.
   """
   @spec finish_post_step(StageAttemptState.t(), post_step_pending(), :ok | {:error, term()}) ::
           settlement_result()
@@ -166,13 +168,28 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   end
 
   def finish_post_step(%StageAttemptState{run: current_run} = state, pending, {:error, reason}) do
-    settle_finished_step(
-      state,
-      {:settled, post_step_persistence_failure(current_run, reason), :error, []},
-      pending.entry,
-      pending
-    )
+    if PersistenceRetry.recovery_required?(reason) do
+      {:recovery_required, current_run,
+       {:generation_registration_unavailable, pending.entry.asset_ref, reason}}
+    else
+      settle_finished_step(
+        state,
+        {:settled,
+         post_step_persistence_failure(
+           current_run,
+           reason,
+           pending.entry,
+           :ok,
+           :generation_registration
+         ), :error, []},
+        pending.entry,
+        pending
+      )
+    end
   end
+
+  defp settle_finished_step(_state, {:recovery_required, _, _} = result, _entry, _context),
+    do: result
 
   defp settle_finished_step(_state, {:persist_retry, _, _} = retry, _entry, _context), do: retry
 
@@ -195,15 +212,54 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     {:post_step_pending, next_state, Map.delete(pending, :step_results)}
   end
 
-  defp settle_processed_result(
+  defp settle_processed_result(state, next_run, outcome, results, entry, context) do
+    settled_run = RunState.transition(next_run, [])
+
+    data = %{
+      asset_step_id: entry.asset_step_id,
+      asset_ref: entry.asset_ref,
+      node_key: entry.node_key,
+      runner_task_id: entry.task_id,
+      stage: context.stage,
+      attempt: context.attempt,
+      node_status:
+        Map.get(context, :node_status) ||
+          ResultBuilder.latest_node_status(next_run, entry.node_key),
+      status: if(outcome == :ok, do: :ok, else: next_run.status),
+      error: next_run.error,
+      retry_after_ms: if(is_tuple(outcome), do: elem(outcome, 1)),
+      retryable?: is_tuple(outcome)
+    }
+
+    resume =
+      Map.merge(context, %{
+        kind: :settled,
+        run: settled_run,
+        outcome: outcome,
+        asset_results: results,
+        entry: entry
+      })
+
+    retry = PersistenceRetry.new(settled_run, :step_settled, data, {:pipeline, resume})
+
+    case PersistenceRetry.persist(retry) do
+      :ok -> apply_settled_result(state, settled_run, outcome, results, entry, context)
+      {:error, reason} -> {:persist_retry, retry, reason}
+    end
+  end
+
+  defp apply_settled_result(
          state,
          next_run,
          outcome,
          step_results,
          entry,
-         %{stage: stage, attempt: attempt}
+         %{stage: stage, attempt: attempt} = context
        ) do
-    status = ResultBuilder.latest_node_status(next_run, entry.node_key) || :error
+    status =
+      Map.get(context, :node_status) || ResultBuilder.latest_node_status(next_run, entry.node_key) ||
+        :error
+
     state = StageAttemptState.put_node_status(state, entry.node_key, status)
 
     reduce_outcome(
@@ -260,9 +316,18 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
        ) do
     result = ResultSanitizer.sanitize(result)
     asset_results = result.asset_results
-    step_status = StepAttemptLifecycle.map_runner_status(result.status)
-    {event_type, retryable?} = StepAttemptLifecycle.step_outcome(step_status)
-    retryable? = retryable? and StepAttemptLifecycle.runner_result_retryable?(result)
+
+    {step_status, retryable?, outcome_error, post_step_value} =
+      RecoveredTask.settlement(entry, result)
+
+    {event_type, _retryable?} = StepAttemptLifecycle.step_outcome(step_status)
+
+    retry_delay =
+      if retryable? and StepAttemptLifecycle.retry_allowed?(run_state, entry.node_key, attempt) do
+        if entry[:recovered_outcome],
+          do: Map.get(entry.recovered_outcome.data, "retry_after_ms"),
+          else: StepAttemptLifecycle.retry_delay_ms(run_state, entry.node_key, attempt, result)
+      end
 
     node_result =
       ResultBuilder.execution_result(
@@ -274,19 +339,31 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         asset_results
       )
 
+    attrs = [
+      status: step_status,
+      error: outcome_error,
+      metadata: ResultSanitizer.merge_metadata(run_state.metadata, result.metadata),
+      runner_task_id: nil
+    ]
+
     step_state =
-      RunState.transition(run_state,
-        status: step_status,
-        error: result.error,
-        metadata: ResultSanitizer.merge_metadata(run_state.metadata, result.metadata),
-        runner_task_id: nil
-      )
-      |> RecoveryPosition.record_outcome(stage, attempt)
+      if Map.has_key?(entry, :recovered_outcome) do
+        Snapshots.snapshot_update(run_state, attrs)
+      else
+        RunState.transition(run_state, attrs)
+      end
+
+    outcome_at =
+      if entry[:recovered_outcome],
+        do: entry.recovered_outcome.occurred_at,
+        else: step_state.updated_at
+
+    entry = Map.put(entry, :settlement_at, outcome_at)
 
     data = %{
       asset_ref: asset_ref,
       result_status: result.status,
-      error: result.error,
+      error: outcome_error,
       node_key: Map.get(entry, :node_key),
       asset_step_id: Map.get(entry, :asset_step_id),
       stage: stage,
@@ -294,6 +371,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       max_attempts:
         StepAttemptLifecycle.retry_policy(run_state, Map.fetch!(entry, :node_key)).max_attempts,
       retryable?: retryable?,
+      retry_after_ms: retry_delay,
       retry_exhausted?:
         retryable? and
           not StepAttemptLifecycle.retry_allowed?(run_state, entry.node_key, attempt),
@@ -310,12 +388,15 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       attempt: attempt,
       status: step_status,
       retryable?: retryable?,
+      retry_after_ms: retry_delay,
       asset_results: asset_results,
       node_result: node_result,
-      post_step_value: result
+      post_step_value: post_step_value
     }
 
-    persist_step(event_type, data, resume)
+    if entry[:recovered_outcome],
+      do: finish_persisted_step(resume),
+      else: persist_step(event_type, data, resume)
   end
 
   defp process_one_result(
@@ -340,7 +421,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         error: :timeout,
         runner_task_id: nil
       )
-      |> RecoveryPosition.record_outcome(stage, attempt)
 
     data = %{
       asset_ref: asset_ref,
@@ -378,6 +458,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
          {:error, reason},
          %{stage: stage, attempt: attempt}
        ) do
+    reason = RecoveredTask.await_failure_reason(reason)
+
     cleared =
       cancel_task_ids(
         run_state,
@@ -399,7 +481,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         error: reason,
         runner_task_id: nil
       )
-      |> RecoveryPosition.record_outcome(stage, attempt)
 
     data = %{
       asset_ref: asset_ref,
@@ -450,7 +531,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   end
 
   defp finish_persisted_step(resume) do
-    step_state = ResultBuilder.append_node_result(resume.run, resume.node_result)
+    step_state =
+      if resume.entry[:recovered_outcome],
+        do: resume.run,
+        else: ResultBuilder.append_node_result(resume.run, resume.node_result)
 
     case persist_post_step_state(
            step_state,
@@ -470,13 +554,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
                   resume.entry.node_key,
                   resume.attempt
                 ) ->
-              {:retry,
-               StepAttemptLifecycle.retry_delay_ms(
-                 step_state,
-                 resume.entry.node_key,
-                 resume.attempt,
-                 resume.post_step_value
-               )}
+              {:retry, resume.retry_after_ms}
 
             true ->
               :error
@@ -513,13 +591,25 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
              stage: resume.stage,
              attempt: resume.attempt,
              post_step_value: resume.post_step_value,
+             node_status: resume.status,
              step_results: resume.asset_results
            }}
         end
 
       {:error, reason} ->
-        {:settled, post_step_persistence_failure(step_state, reason), :error,
-         resume.asset_results}
+        if PersistenceRetry.recovery_required?(reason) do
+          {:recovery_required, step_state,
+           {:post_step_bookkeeping_unavailable, resume.entry.asset_ref, reason}}
+        else
+          {:settled,
+           post_step_persistence_failure(
+             step_state,
+             reason,
+             resume.entry,
+             resume.status,
+             :materialization_settlement
+           ), :error, resume.asset_results}
+        end
     end
   end
 
@@ -534,6 +624,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       command ->
         resume = %{
           kind: :resource_outcome,
+          node_status: Map.get(context, :node_status) || Map.get(context, :status),
           run: step_state,
           entry: entry,
           stage: context.stage,
@@ -560,9 +651,24 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
             {:settled, step_state, outcome, results}
 
           {:error, reason} ->
-            if PersistenceRetry.replayable?(reason),
-              do: {:persist_retry, retry, reason},
-              else: {:settled, post_step_persistence_failure(step_state, reason), :error, results}
+            cond do
+              PersistenceRetry.replayable?(reason) ->
+                {:persist_retry, retry, reason}
+
+              PersistenceRetry.recovery_required?(reason) ->
+                {:recovery_required, step_state,
+                 {:resource_outcomes_unavailable, entry.asset_ref, reason}}
+
+              true ->
+                {:settled,
+                 post_step_persistence_failure(
+                   step_state,
+                   reason,
+                   entry,
+                   resume.node_status,
+                   :resource_outcomes
+                 ), :error, results}
+            end
         end
     end
   end
@@ -740,16 +846,38 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     )
   end
 
-  defp post_step_persistence_failure(%RunState{} = step_state, reason) do
-    Snapshots.snapshot_update(step_state,
-      status: :error,
-      error: %{
-        type: :post_step_persistence_failed,
-        message: "Post-step reconciliation or persistence failed after the asset write succeeded",
-        reason: reason
-      },
-      runner_task_id: nil
-    )
+  defp post_step_persistence_failure(step_state, reason, entry, status, operation) do
+    message =
+      case {status, step_state.error} do
+        {:ok, _} ->
+          "Post-step reconciliation or persistence failed after the asset succeeded"
+
+        {_, %{outcome: :unknown}} ->
+          "Post-step persistence failed with an unknown asset write outcome"
+
+        _ ->
+          "Post-step persistence failed after the asset failed"
+      end
+
+    failure = %{
+      type: :post_step_persistence_failed,
+      message: message,
+      reason: reason,
+      asset_ref: entry.asset_ref,
+      operation: operation,
+      asset_status: status
+    }
+
+    error =
+      if status != :ok and is_map(step_state.error) do
+        Map.update(step_state.error, :details, %{post_step_failure: failure}, fn details ->
+          Map.put(details || %{}, :post_step_failure, failure)
+        end)
+      else
+        failure
+      end
+
+    Snapshots.snapshot_update(step_state, status: :error, error: error, runner_task_id: nil)
   end
 
   defp cancel_task_ids(

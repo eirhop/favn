@@ -26,6 +26,8 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   alias FavnOrchestrator.Persistence.Results.RunnerReleaseDrain
   alias FavnOrchestrator.Persistence.Results.RunnerTask
 
+  def admit(_command), do: unavailable()
+
   def enqueue(command) do
     if test_pid = Process.get(:rebuild_test_pid) do
       send(test_pid, {:runner_task_enqueued, command})
@@ -271,20 +273,22 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
           {:error, :unsupported_test_runner_task}
       end
 
-    base = %RunnerTask{
-      workspace_id: command.workspace_context.workspace_id,
-      task_id: command.task_id,
-      domain_identity: command.domain_identity,
-      task_kind: command.task_kind,
-      runner_pool: command.runner_pool,
-      required_runner_release_id: command.required_runner_release_id,
-      required_capability: command.required_capability,
-      retry_class: command.retry_class,
-      payload: payload,
-      payload_hash: command.payload_hash,
-      orchestration_context: command.orchestration_context,
-      assignment_generation: 0,
-      inserted_at: command.occurred_at
+    base = struct(RunnerTask, Map.from_struct(command))
+
+    base = %{
+      base
+      | workspace_id: command.workspace_context.workspace_id,
+        payload: payload,
+        payload_version: PersistenceCodec.payload_version(),
+        data_state: :available,
+        orchestration_context_hash:
+          :crypto.hash(
+            :sha256,
+            :erlang.term_to_binary(command.orchestration_context, [:deterministic])
+          ),
+        assignment_generation: 0,
+        enqueued_at: command.occurred_at,
+        inserted_at: command.occurred_at
     }
 
     case result do
@@ -292,7 +296,11 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
         %{base | status: :succeeded, result: value, retry_class: :terminal}
 
       {:error, reason} ->
-        %{base | status: :failed, error: reason}
+        %{
+          base
+          | status: if(match?(%{outcome: :unknown}, reason), do: :unknown, else: :failed),
+            error: reason
+        }
     end
   end
 

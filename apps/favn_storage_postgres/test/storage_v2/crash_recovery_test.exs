@@ -833,6 +833,181 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
     end
   end
 
+  test "whole pipeline resumes in fresh BEAMs after outcome and settlement SIGKILL", f do
+    SQL.query!(
+      Repo,
+      "CREATE TABLE IF NOT EXISTS public.favn_run_crash_effects (workspace_id text, step_id text, effects integer NOT NULL, PRIMARY KEY(workspace_id,step_id))",
+      []
+    )
+
+    asset = hd(f.version.manifest.assets)
+
+    windows =
+      for offset <- 0..2 do
+        at = DateTime.add(~U[2026-09-01 00:00:00Z], offset, :day)
+
+        Favn.Window.Runtime.new!(
+          :day,
+          at,
+          DateTime.add(at, 1, :day),
+          Favn.Window.Key.new!(:day, at, "Etc/UTC")
+        )
+      end
+
+    [a, b, c] = keys = Enum.map(windows, &{asset.ref, &1.key})
+
+    nodes =
+      Map.new(Enum.zip(keys, windows), fn {key, window} ->
+        {key,
+         %{
+           node_key: key,
+           ref: asset.ref,
+           window: window,
+           stage: if(key == c, do: 1, else: 0),
+           upstream: if(key == c, do: [a, b], else: []),
+           downstream: if(key == c, do: [], else: [c]),
+           target_id: Favn.TargetIdentity.for_asset(asset.ref),
+           target_generation_id: nil,
+           evidence_generation_id: asset.semantic_generation_id,
+           physical_relation: nil,
+           input_generations: [],
+           execution_pool: nil,
+           runner_pool: asset.runner_pool,
+           action: :run,
+           retry_policy: Favn.Retry.Policy.default(),
+           retry_policy_source: :asset
+         }}
+      end)
+
+    plan = %Favn.Plan{
+      target_refs: [asset.ref],
+      target_node_keys: [c],
+      dependencies: :all,
+      nodes: nodes,
+      topo_order: [asset.ref, asset.ref, asset.ref],
+      stages: [[asset.ref, asset.ref], [asset.ref]],
+      node_stages: [[a, b], [c]]
+    }
+
+    run =
+      FavnOrchestrator.RunState.new(
+        id: "run-" <> f.id,
+        params: %{"probe_workspace" => f.id},
+        workspace_id: f.id,
+        deployment_id: f.id,
+        manifest_version_id: f.version.manifest_version_id,
+        manifest_content_hash: f.version.content_hash,
+        runner_releases: f.version.runner_releases,
+        asset_ref: asset.ref,
+        target_refs: [asset.ref],
+        submit_kind: :pipeline,
+        plan: plan,
+        timeout_ms: 120_000,
+        metadata: %{pipeline_execution_policy: %{max_concurrency: 1}}
+      )
+
+    assert {:ok, _} =
+             FavnStoragePostgres.Runs.Store.create_run(%C.CreateRun{
+               workspace_context: f.context,
+               command_id: "create:" <> run.id,
+               deployment_id: f.id,
+               run: run,
+               targets: [
+                 %C.RunTarget{
+                   target_kind: :asset,
+                   target_id: Favn.TargetIdentity.for_asset(asset.ref),
+                   target_module: Atom.to_string(asset.module),
+                   target_name: Atom.to_string(asset.name),
+                   is_primary: true
+                 }
+               ],
+               event: FavnOrchestrator.Projector.run_event(run, :run_submitted, %{})
+             })
+
+    file = Path.join(System.tmp_dir!(), "favn-run-crash-" <> f.id <> ".json")
+    File.write!(file, Jason.encode!(%{workspace: f.id, run_id: run.id, pool: f.pool}))
+    on_exit(fn -> File.rm(file) end)
+    script = Path.expand("../support/run_recovery_process.exs", __DIR__)
+    args = :code.get_path() |> Enum.flat_map(fn path -> ["-pa", to_string(path)] end)
+
+    for phase <- ["step_finished", "step_settled"] do
+      port =
+        Port.open(
+          {:spawn_executable, System.find_executable("elixir")},
+          [
+            :binary,
+            :exit_status,
+            :stderr_to_stdout,
+            args: args ++ [script, phase, file],
+            env: [{~c"ERL_FLAGS", ~c"+S 2:2"}]
+          ]
+        )
+
+      try do
+        assert_barrier(port, phase, "")
+        {:os_pid, pid} = Port.info(port, :os_pid)
+        assert {_, 0} = System.cmd("kill", ["-KILL", Integer.to_string(pid)])
+        assert_receive {^port, {:exit_status, status}}, 10_000
+        assert status != 0
+      after
+        case Port.info(port, :os_pid) do
+          {:os_pid, pid} ->
+            System.cmd("kill", ["-KILL", Integer.to_string(pid)], stderr_to_stdout: true)
+            Port.close(port)
+
+          nil ->
+            :ok
+        end
+      end
+
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.run_ownerships SET expires_at=clock_timestamp()-interval '1 second' WHERE workspace_id=$1 AND run_id=$2",
+        [f.id, run.id]
+      )
+    end
+
+    {output, code} =
+      System.cmd(System.find_executable("elixir"), args ++ [script, "finish", file],
+        stderr_to_stdout: true,
+        env: [{"ERL_FLAGS", "+S 2:2"}]
+      )
+
+    assert code == 0, output
+    assert output =~ "RECOVERED whole run"
+
+    assert %{rows: [[3, 3, 1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*), sum(effects), max(effects) FROM public.favn_run_crash_effects WHERE workspace_id=$1",
+               [f.id]
+             )
+
+    assert {:ok, final} =
+             FavnStoragePostgres.Runs.Store.get_run(%Q.GetRun{
+               workspace_context: f.context,
+               run_id: run.id
+             })
+
+    assert final.status == :ok
+    assert length(final.result.node_results) == 3
+    assert length(final.result.asset_results) == 3
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.execution_leases WHERE workspace_id=$1 AND status='active'",
+               [f.id]
+             )
+
+    assert %{rows: [[3]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_tasks WHERE workspace_id=$1 AND status='succeeded'",
+               [f.id]
+             )
+  end
+
   defp assert_barrier(port, phase, output) do
     receive do
       {^port, {:data, bytes}} ->

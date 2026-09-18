@@ -2307,6 +2307,103 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     assert regenerated.runtime_input_resolution_status == :failed
   end
 
+  test "reporting clock skew preserves completion receipts and original deadlines", fixture do
+    enqueued_at = DateTime.add(fixture.now, 10, :second)
+    enqueue = enqueue_command(fixture, "clock-skew", occurred_at: enqueued_at)
+    assert {:ok, _} = Store.enqueue(enqueue)
+    assert {:ok, claimed} = Store.claim(claim_command(fixture, "clock-skew", "clock-runner"))
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, claimed, "clock-start", :running))
+
+    result = %RelationInspectionResult{
+      required_runner_release_id: @release,
+      relation_ref: claimed.payload.relation,
+      asset_ref: claimed.payload.asset_ref,
+      row_count: 1,
+      inspected_at: fixture.now
+    }
+
+    assert {:ok, encoded} = Codec.encode_result(:relation_inspection, :succeeded, result)
+    command = complete_command(fixture, running, "clock-complete", encoded)
+    assert {:ok, completed} = Store.complete(command)
+    assert completed.terminal_at == enqueued_at
+    assert completed.deadline_at == enqueue.deadline_at
+    assert completed.assignment_generation == claimed.assignment_generation
+    assert {:ok, ^completed} = Store.complete(command)
+    assert {:ok, ^completed} = Store.complete(%{command | occurred_at: enqueued_at})
+
+    assert {:error, %{kind: :conflict}} =
+             Store.complete(%{
+               command
+               | outcome: :failed,
+                 error: RunnerError.cancelled(:operator_request)
+             })
+  end
+
+  test "cancellation clock skew preserves the first request across acknowledgement and replay",
+       fixture do
+    enqueued_at = DateTime.add(fixture.now, 10, :second)
+
+    assert {:ok, _} =
+             Store.enqueue(enqueue_command(fixture, "cancel-clock", occurred_at: enqueued_at))
+
+    assert {:ok, assigned} = Store.claim(claim_command(fixture, "cancel-clock", "clock-runner"))
+
+    command = %C.RequestRunnerTaskCancellation{
+      workspace_context: fixture.workspace_context,
+      command_id: "cancel-clock",
+      task_id: assigned.task_id,
+      reason: :operator_request,
+      issued_at: DateTime.add(fixture.now, 3, :second),
+      occurred_at: DateTime.add(fixture.now, 3, :second)
+    }
+
+    assert {:ok, cancelling} = Store.request_cancellation(command)
+    assert cancelling.cancellation_requested_at == enqueued_at
+
+    ack = %C.AcknowledgeRunnerTaskCancellation{
+      workspace_context: fixture.workspace_context,
+      command_id: "ack-clock",
+      task_id: assigned.task_id,
+      runner_instance_id: assigned.assigned_runner_instance_id,
+      runner_session_generation: assigned.assigned_runner_session_generation,
+      assignment_generation: assigned.assignment_generation,
+      issued_at: DateTime.add(fixture.now, 2, :second),
+      occurred_at: DateTime.add(fixture.now, 2, :second)
+    }
+
+    assert {:ok, acknowledged} = Store.acknowledge_cancellation(ack)
+    assert acknowledged.cancellation_acknowledged_at == enqueued_at
+    assert {:ok, ^acknowledged} = Store.acknowledge_cancellation(ack)
+
+    assert {:ok, repeated} =
+             Store.request_cancellation(%{
+               command
+               | command_id: "cancel-clock-again",
+                 occurred_at: DateTime.add(enqueued_at, 1, :second)
+             })
+
+    assert repeated.cancellation_requested_at == enqueued_at
+    assert repeated.cancellation_acknowledged_at == enqueued_at
+    assert repeated.deadline_at == assigned.deadline_at
+    assert repeated.assignment_expires_at == assigned.assignment_expires_at
+
+    assert {:ok, queued} =
+             Store.enqueue(enqueue_command(fixture, "queued-clock", occurred_at: enqueued_at))
+
+    assert {:ok, cancelled} =
+             Store.request_cancellation(%{
+               command
+               | command_id: "queued-clock-cancel",
+                 task_id: queued.task_id
+             })
+
+    assert cancelled.status == :cancelled
+    assert cancelled.terminal_at == enqueued_at
+    assert cancelled.cancellation_requested_at == enqueued_at
+  end
+
   test "terminal results are typed and persisted once with exact demand removal", fixture do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "complete"))
 

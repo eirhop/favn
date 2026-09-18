@@ -66,6 +66,7 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
       end
     end
 
+    def admit(_command), do: unavailable()
     def enqueue(_command), do: unavailable()
     def get(_query), do: unavailable()
     def transition(_command), do: unavailable()

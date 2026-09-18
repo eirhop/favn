@@ -140,9 +140,10 @@ defmodule FavnOrchestrator.Persistence.Commands.PutRunExecutionCheckpoint do
     :payload_hash,
     :occurred_at
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [transition: nil]
 
   @type t :: %__MODULE__{
+          transition: FavnOrchestrator.Persistence.Commands.CommitRunTransition.t() | nil,
           workspace_context: WorkspaceContext.t(),
           run_id: String.t(),
           owner_id: String.t(),

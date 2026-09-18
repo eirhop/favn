@@ -73,6 +73,10 @@ defmodule FavnOrchestrator.ResourceCircuitsTest do
       asset_step_id: "step-resource-circuit"
     }
 
+    assert {:ok, prepared} = ResourceCircuits.prepare_acquire(run, work, index)
+    refute Process.get(:resource_circuits_acquire)
+    assert length(prepared.requests) == 1
+
     assert {:ok, []} = ResourceCircuits.acquire(run, work, index)
 
     assert %{requests: [%ResourceCircuitRequest{} = request]} =

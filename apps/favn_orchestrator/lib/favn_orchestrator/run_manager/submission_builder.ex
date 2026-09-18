@@ -22,6 +22,7 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.SubmissionOptions
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.RunServer.Execution.AdmissionIntent
   alias FavnOrchestrator.Runs
   alias FavnOrchestrator.TargetGenerations
 
@@ -671,6 +672,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
 
   defp rerun_base_metadata(%RunState{metadata: metadata}) when is_map(metadata) do
     Map.drop(metadata, [
+      AdmissionIntent.metadata_key(),
+      "recovery_attention",
+      :recovery_attention,
       :terminal_event_type,
       "terminal_event_type",
       :cancelled,
@@ -975,7 +979,9 @@ defmodule FavnOrchestrator.RunManager.SubmissionBuilder do
     end
   end
 
-  defp validate_metadata(value) when is_map(value), do: :ok
+  defp validate_metadata(value) when is_map(value),
+    do: AdmissionIntent.validate_submission_metadata(value)
+
   defp validate_metadata(_value), do: {:error, :invalid_run_metadata}
 
   defp reject_backfill_parent_rerun(%RunState{submit_kind: submit_kind})

@@ -34,6 +34,8 @@ defmodule FavnOrchestrator.RunManager.SubmissionOptionsTest do
       {[params: []], :invalid_run_params},
       {[trigger: []], :invalid_pipeline_trigger},
       {[metadata: []], :invalid_run_metadata},
+      {[metadata: %{"execution_admission_intent" => %{}}], :reserved_run_metadata},
+      {[metadata: %{execution_admission_intent: %{}}], :reserved_run_metadata},
       {[dependencies: :invalid], :invalid_dependencies},
       {[exact_windows: []], :invalid_exact_windows},
       {[parent_run_id: 1], :invalid_parent_run_id},

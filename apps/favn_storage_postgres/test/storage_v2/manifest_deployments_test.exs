@@ -60,6 +60,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnStoragePostgres.Backend
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Registry.Store
+  alias FavnStoragePostgres.RunnerTasks.Store, as: TaskStore
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.StorageV2.Migrations
 
@@ -83,7 +84,8 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   setup do
-    :ok = Sandbox.checkout(Repo, isolation: "REPEATABLE READ")
+    sandbox_owner = Sandbox.start_owner!(Repo, shared: true, isolation: "REPEATABLE READ")
+    on_exit(fn -> Sandbox.stop_owner(sandbox_owner) end)
     unique = Integer.to_string(System.unique_integer([:positive]))
     workspace_id = "manifest-deployments-#{unique}"
 
@@ -571,7 +573,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "first-party archive deployment activates and replays after inspection", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-activation-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
     archive_body = File.read!(archive_path)
@@ -608,7 +609,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     runner_id = "manifest-inspection-runner-#{System.unique_integer([:positive])}"
 
     runner_agent =
-      spawn_link(fn ->
+      spawn(fn ->
         receive do
           :stop -> :ok
         end
@@ -723,7 +724,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "first-party archive deployment reports a runner-start timeout", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-timeout-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
     archive_body = File.read!(archive_path)
@@ -775,7 +775,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "activation capacity rejection releases its durable claim", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-capacity-release-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
     archive_body = File.read!(archive_path)
@@ -813,7 +812,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "activation preparation timeout releases its durable claim", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "archive-preparation-timeout-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
 
@@ -846,7 +844,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   end
 
   test "reclaim after the durable deadline cancels existing queued inspection demand", context do
-    Sandbox.mode(Repo, {:shared, self()})
     operation_id = "expired-reclaim-#{System.unique_integer([:positive])}"
 
     assert {:ok, :accepted, _} =
@@ -912,7 +909,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
   test "an active inspection timeout does not freeze a decision before cancellation is terminal",
        context do
-    Sandbox.mode(Repo, {:shared, self()})
     context = with_sibling_asset(context)
     operation_id = "archive-active-timeout-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
@@ -938,7 +934,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     runner_id = "manifest-stalled-runner-#{System.unique_integer([:positive])}"
 
     runner_agent =
-      spawn_link(fn ->
+      spawn(fn ->
         receive do
           :stop -> :ok
         end
@@ -1318,7 +1314,76 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
                command.operation_id
              )
 
+    assert {:error, %{details: %{reason: :deployment_inspection_admission_closed}}} =
+             ensure_owned_inspection(context, command.operation_id, 1)
+
+    assert {:ok, %{status: :cancelled}} =
+             OperationRunnerTasks.fetch(context.workspace_context, hd(tasks).task_id)
+
     assert length(Enum.uniq_by(tasks, & &1.task_id)) == 101
+  end
+
+  test "closed deployment rejects completed-task admission replay but retains evidence",
+       context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-completed-replay")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    task = owned_inspection(context, command.operation_id, 1)
+    assert {:ok, assigned} = TaskStore.claim(owned_claim(context))
+    now = DateTime.utc_now()
+
+    assert {:ok, _} =
+             TaskStore.transition(%FavnOrchestrator.Persistence.Commands.TransitionRunnerTask{
+               workspace_context: context.workspace_context,
+               command_id: "completed-replay-start",
+               task_id: task.task_id,
+               runner_instance_id: assigned.assigned_runner_instance_id,
+               runner_session_generation: assigned.assigned_runner_session_generation,
+               assignment_generation: assigned.assignment_generation,
+               transition: :running,
+               issued_at: now,
+               occurred_at: now
+             })
+
+    result = %RelationInspectionResult{
+      asset_ref: task.payload.asset_ref,
+      relation_ref: task.payload.relation,
+      required_runner_release_id: task.required_runner_release_id,
+      row_count: 1,
+      inspected_at: now
+    }
+
+    assert {:ok, encoded} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.encode_result(
+               :relation_inspection,
+               :succeeded,
+               result
+             )
+
+    assert {:ok, _} =
+             TaskStore.complete(%FavnOrchestrator.Persistence.Commands.CompleteRunnerTask{
+               workspace_context: context.workspace_context,
+               command_id: "completed-replay-finish",
+               task_id: task.task_id,
+               runner_instance_id: assigned.assigned_runner_instance_id,
+               runner_session_generation: assigned.assigned_runner_session_generation,
+               assignment_generation: assigned.assignment_generation,
+               result_version: 1,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: encoded,
+               issued_at: now,
+               occurred_at: now
+             })
+
+    assert {:ok, _} = cancel_owned(context, command.operation_id)
+
+    assert {:error, %{details: %{reason: :deployment_inspection_admission_closed}}} =
+             ensure_owned_inspection(context, command.operation_id, 1)
+
+    assert {:ok, %{status: :succeeded, result: ^result}} =
+             OperationRunnerTasks.fetch(context.workspace_context, task.task_id)
   end
 
   test "closed owner fences replayed claim and running transition but permits settlement",
@@ -1361,7 +1426,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
 
   test "local dispatcher records committed outcome before cancellation can report failure",
        context do
-    Sandbox.mode(Repo, {:shared, self()})
     start_owned_runtime()
     assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
     command = local_command(context, "local-commit")
