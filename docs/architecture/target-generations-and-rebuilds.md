@@ -81,8 +81,12 @@ bounded `physical_inspection_unavailable` decision and returns an unresolved
 inspection summary. After correcting runner or data-system availability, the
 operator repeats manifest activation with a new idempotency key. Reusing the
 old key intentionally replays the old audited command result. The repeated
-activation reuses the durable inspection-task identity, reads its live state,
-and safely requeues a terminal `safe_to_retry` failure.
+activation uses fresh inspection identities for a new durable deployment
+operation. Reclaiming the same live operation reuses its task identities only
+while its pinned binding versions and original deadline remain valid.
+Closing an operation prevents enqueue, claim and retry of its inspections.
+The PostgreSQL [ownership contract](../storage/postgresql/data-model.md#deployment-inspection-ownership)
+describes the shared local/archive persistence boundary.
 
 A target without an active generation has nothing to rebuild. Operator views
 must offer activation/inspection retry guidance for that state, not a rebuild

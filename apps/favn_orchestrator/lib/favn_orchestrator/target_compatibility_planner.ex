@@ -58,9 +58,18 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          {:ok, deployment_targets} <- DeploymentPlanner.plan(version, selection),
          {:ok, persisted} <- persisted_targets(version, deployment_targets),
          {:ok, bindings} <- fetch_bindings(workspace_context, persisted),
+         :ok <-
+           FavnOrchestrator.ManifestDeployments.pin_inspection_base(
+             workspace_context,
+             Keyword.get(opts, :deployment_operation_id),
+             bindings
+           ),
          {:ok, {active_versions, historical_descriptors}} <-
            active_versions(platform_context, bindings) do
-      operation_id = Keyword.get(opts, :operation_id, version.manifest_version_id)
+      operation_id = %FavnOrchestrator.DeploymentInspectionIdentity{
+        operation_id: Keyword.get(opts, :operation_id, version.manifest_version_id),
+        owner_id: Keyword.get(opts, :deployment_operation_id)
+      }
 
       progress = Keyword.get(opts, :progress)
       total = length(persisted)
@@ -530,7 +539,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
          target_id,
          deadline_at
        ) do
-    domain_identity = {:deployment_target_inspection, operation_id, target_id}
+    domain_identity = {:deployment_target_inspection, operation_id.operation_id, target_id}
 
     task_id =
       OperationRunnerTasks.task_id(
@@ -550,6 +559,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
           request,
           domain_identity,
           platform_context: platform_context,
+          deployment_operation_id: operation_id.owner_id,
           deadline_at: deadline_at
         )
 
@@ -563,6 +573,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
             request,
             domain_identity,
             platform_context: platform_context,
+            deployment_operation_id: operation_id.owner_id,
             deadline_at: deadline_at
           )
         end
@@ -641,7 +652,7 @@ defmodule FavnOrchestrator.TargetCompatibilityPlanner do
         OperationRunnerTasks.task_id(
           context.workspace_id,
           :relation_inspection,
-          {:deployment_target_inspection, operation_id, target.target_id},
+          {:deployment_target_inspection, operation_id.operation_id, target.target_id},
           version
         )
 

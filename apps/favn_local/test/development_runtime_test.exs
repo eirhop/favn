@@ -5,6 +5,32 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
   alias FavnLocal.DevelopmentRuntime
   alias FavnOrchestrator.RunnerRegistry
 
+  defmodule SlowReload do
+    use GenServer
+    def init(parent), do: {:ok, parent}
+
+    def handle_call({:reload, _, _}, _from, parent) do
+      send(parent, :reload_still_running)
+      {:noreply, parent}
+    end
+
+    def handle_call(:status, _from, parent),
+      do: {:reply, %{status: :reloading, deployment_operation_id: "local-observed"}, parent}
+  end
+
+  test "reload observer timeout returns the operation identity without stopping its owner" do
+    {:ok, pid} = GenServer.start_link(SlowReload, self(), name: DevelopmentRuntime)
+    on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
+    publication = %Publication{version: nil, execution_packages: []}
+
+    assert {:error, {:reload_pending, %{deployment_operation_id: "local-observed"}}} =
+             DevelopmentRuntime.reload(publication, "release", 1)
+
+    assert_receive :reload_still_running
+    assert Process.alive?(pid)
+    assert DevelopmentRuntime.status().status == :reloading
+  end
+
   setup do
     previous = System.get_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS")
     System.delete_env("FAVN_DEV_RUNNER_START_TIMEOUT_MS")
@@ -120,6 +146,68 @@ defmodule FavnLocal.DevelopmentRuntimeTest do
 
     assert {:noreply, %{failure: {:startup_timeout, :registration}}} =
              DevelopmentRuntime.handle_info(:startup_deadline, expired)
+  end
+
+  test "startup cancellation start failure returns an explicit unknown with its operation" do
+    state = %{
+      status: :starting,
+      deployment_owner: %{operation_id: "local-crash", session_id: "session"},
+      deadline: System.monotonic_time(:millisecond) - 1,
+      task: nil,
+      runner: nil,
+      candidate: nil,
+      retiring: nil,
+      ready_waiters: [],
+      request: nil,
+      failure: nil
+    }
+
+    assert {:noreply, waiting} = DevelopmentRuntime.handle_info(:startup_deadline, state)
+    ref = waiting.cancellation_task.ref
+    assert_receive {:cancellation_start_failed, ^ref} = message
+    assert {:noreply, failed} = DevelopmentRuntime.handle_info(message, waiting)
+
+    assert {:startup_interrupted, _, %{activation: :unknown, operation_id: "local-crash"}} =
+             failed.failure
+
+    refute Map.has_key?(failed, :cancellation_task)
+  end
+
+  test "cancellation worker DOWN and deadline finish once and ignore late replies" do
+    for message_kind <- [:down, :timeout] do
+      ref = make_ref()
+      timer = Process.send_after(self(), :unused, 60_000)
+
+      state = %{
+        status: :failed,
+        deployment_owner: %{operation_id: "local-crash", session_id: "session"},
+        task: nil,
+        runner: nil,
+        candidate: nil,
+        ready_waiters: [],
+        request: nil,
+        failure: nil,
+        cancellation_task: %{
+          ref: ref,
+          pid: nil,
+          timer: timer,
+          continuation: {:startup, :deadline}
+        }
+      }
+
+      message =
+        if message_kind == :down,
+          do: {:DOWN, ref, :process, self(), :killed},
+          else: {:cancellation_timeout, ref}
+
+      assert {:noreply, failed} = DevelopmentRuntime.handle_info(message, state)
+
+      assert {:startup_interrupted, :deadline,
+              %{activation: :unknown, operation_id: "local-crash"}} = failed.failure
+
+      assert {:noreply, ^failed} =
+               DevelopmentRuntime.handle_info({ref, {:ok, :cancelled_before_acceptance}}, failed)
+    end
   end
 
   defp child do

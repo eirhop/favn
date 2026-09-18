@@ -21,6 +21,7 @@ defmodule FavnStoragePostgres.Schemas.RunnerTask do
     field(:task_kind, :string)
     field(:run_id, :string)
     field(:operation_id, :string)
+    field(:deployment_operation_id, :string)
     field(:asset_step_id, :string)
     field(:runner_pool, :string)
     field(:required_runner_release_id, :string)

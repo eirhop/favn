@@ -3,6 +3,113 @@ defmodule FavnOrchestrator.LifecycleTest do
 
   alias FavnOrchestrator.Lifecycle
 
+  test "deployment delegation rejects other owners and closes with its parent across drain and stop" do
+    name = :"delegation_lifecycle_#{System.unique_integer([:positive])}"
+    start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 5_000})
+    assert :ok = Lifecycle.mark_accepting(name)
+    token = String.duplicate("e", 43)
+    assert {:ok, ^token} = Lifecycle.begin_maintenance(:deployment, token, name)
+    assert {:ok, permit} = Lifecycle.acquire_maintenance_admission(token, name)
+
+    assert Task.async(fn -> Lifecycle.delegate_deployment(permit, "ws", "op", name) end)
+           |> Task.await() ==
+             {:error, :invalid_admission_permit}
+
+    assert :ok = Lifecycle.delegate_deployment(permit, "ws", "op", name)
+    assert {:ok, second} = Lifecycle.acquire_maintenance_admission(token, name)
+
+    assert {:error, :deployment_admission_conflict} =
+             Lifecycle.delegate_deployment(second, "ws", "op", name)
+
+    assert :ok = Lifecycle.release_admission(second, name)
+    assert :ok = Lifecycle.drain(name)
+
+    assert {:error, :invalid_admission_permit} =
+             Lifecycle.delegate_deployment(permit, "ws", "later", name)
+
+    parent = self()
+
+    child =
+      spawn(fn ->
+        Lifecycle.with_deployment_admission(
+          "ws",
+          "op",
+          fn ->
+            send(parent, :child_admitted)
+            receive do: (:finish -> :ok)
+          end,
+          name
+        )
+      end)
+
+    assert_receive :child_admitted
+    assert :ok = Lifecycle.release_admission(permit, name)
+    assert %{active_admissions: 1} = Lifecycle.diagnostics(name)
+    Process.exit(child, :kill)
+    monitor = Process.monitor(child)
+    assert_receive {:DOWN, ^monitor, :process, ^child, _}
+    # A same-sender call is a barrier after explicitly delivering the monitored exit.
+    eventually_no_admissions(name)
+
+    assert Task.async(fn ->
+             Lifecycle.with_deployment_admission("ws", "op", fn -> :wrong end, name)
+           end)
+           |> Task.await() ==
+             {:error, :runtime_draining}
+
+    assert :ok = Lifecycle.stop(name)
+
+    assert Task.async(fn ->
+             Lifecycle.with_deployment_admission("ws", "op", fn -> :wrong end, name)
+           end)
+           |> Task.await() ==
+             {:error, :runtime_draining}
+  end
+
+  defp eventually_no_admissions(name, remaining \\ 100)
+  defp eventually_no_admissions(_name, 0), do: flunk("child admission was not released")
+
+  defp eventually_no_admissions(name, remaining) do
+    unless Lifecycle.diagnostics(name).active_admissions == 0 do
+      Process.sleep(1)
+      eventually_no_admissions(name, remaining - 1)
+    end
+  end
+
+  test "delegated deployment admission is scoped, monitored and preserves maintenance authorization" do
+    name = :"deployment_lifecycle_#{System.unique_integer([:positive])}"
+    start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 5_000})
+    assert :ok = Lifecycle.mark_accepting(name)
+    token = String.duplicate("d", 43)
+    assert {:ok, ^token} = Lifecycle.begin_maintenance(:deployment, token, name)
+    assert {:ok, permit} = Lifecycle.acquire_maintenance_admission(token, name)
+    assert :ok = Lifecycle.delegate_deployment(permit, "workspace", "operation", name)
+
+    assert Task.async(fn ->
+             Lifecycle.with_deployment_admission(
+               "workspace",
+               "operation",
+               fn ->
+                 Lifecycle.with_admission(fn -> :activated end, name)
+               end,
+               name
+             )
+           end)
+           |> Task.await() == :activated
+
+    assert Task.async(fn ->
+             Lifecycle.with_deployment_admission("other", "operation", fn -> :wrong end, name)
+           end)
+           |> Task.await() == {:error, :runtime_maintenance}
+
+    assert :ok = Lifecycle.release_admission(permit, name)
+
+    assert Task.async(fn ->
+             Lifecycle.with_deployment_admission("workspace", "operation", fn -> :wrong end, name)
+           end)
+           |> Task.await() == {:error, :runtime_maintenance}
+  end
+
   test "admission permits finish across a monotonic drain boundary" do
     name = unique_name()
     start_supervised!({Lifecycle, name: name, shutdown_drain_timeout_ms: 5_000})

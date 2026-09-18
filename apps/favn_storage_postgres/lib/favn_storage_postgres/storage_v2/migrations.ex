@@ -108,7 +108,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_904_010_000, AddRunCancellationV2},
     {20_260_904_020_000, AddCrashSafeRunnerTasksV2},
     {20_260_915_000_000, ReferenceRunnerTaskPackagesV2},
-    {20_260_915_010_000, AddRetentionV2}
+    {20_260_915_010_000, AddRetentionV2},
+    {20_260_918_000_000, FavnStoragePostgres.Migrations.OwnDeploymentInspectionsV2}
   ]
   @required_tables ~w(
     retention_floors
@@ -186,6 +187,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_operator_commands
     workspace_provisioning_operations
     manifest_deployment_operations
+    local_deployment_cancellations
     manifest_deployment_upload_leases
     manifest_activation_leases
     idempotency_records
@@ -266,6 +268,9 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     auth_sessions_workspace_actor_session_uidx
     auth_external_identities_actor_uidx
     workspace_provisioning_operations_workspace_uidx
+    runner_tasks_deployment_owner_idx
+    manifest_deployment_cleanup_idx
+    manifest_deployment_local_owner_idx
     manifest_deployment_operations_recovery_idx
     manifest_deployment_upload_leases_expiry_idx
     manifest_activation_leases_expiry_idx
@@ -335,6 +340,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     maintenance_jobs_queue_idx
   )
   @required_columns %{
+    "local_deployment_cancellations" => ~w(workspace_id operation_id cancelled_at reason),
     "retention_floors" => ~w(workspace_id stream publication_id batch_offset),
     "schema_migrations" => ~w(version inserted_at),
     "admission_waiters" =>
@@ -396,13 +402,13 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "manifest_versions" =>
       ~w(retiring manifest_version_id content_hash schema_version runner_contract_version runner_releases payload_version asset_count pipeline_count schedule_count atom_strings manifest inserted_at),
     "manifest_deployment_operations" =>
-      ~w(workspace_id operation_id archive_sha256 request_fingerprint service_identity manifest_version_id manifest_content_hash runner_releases state deployment_id failure_class activation_diagnostics claim_owner claim_fence claim_expires_at inspection_total inspection_completed accepted_at activating_at terminal_at inserted_at updated_at),
+      ~w(cleanup_cursor inspection_binding_hash source local_session_id local_expires_at inspection_deadline_at cancellation_requested_at cleanup_state activation_receipt expected_runtime_revision request workspace_id operation_id archive_sha256 request_fingerprint service_identity manifest_version_id manifest_content_hash runner_releases state deployment_id failure_class activation_diagnostics claim_owner claim_fence claim_expires_at inspection_total inspection_completed accepted_at activating_at terminal_at inserted_at updated_at),
     "manifest_deployment_upload_leases" =>
       ~w(lease_id workspace_id service_identity expires_at inserted_at updated_at),
     "manifest_activation_leases" =>
       ~w(workspace_id operation_id owner fencing_token expires_at inserted_at updated_at),
     "runner_tasks" =>
-      ~w(retiring workspace_id task_id domain_identity task_kind run_id operation_id asset_step_id runner_pool required_runner_release_id required_capability retry_class status enqueued_at deadline_at payload_version payload payload_hash orchestration_context orchestration_context_hash manifest_version_id manifest_content_hash write_claim_key write_claim_fence write_target_id write_operation_id write_lock_fence persistence_failure assigned_runner_instance_id assigned_runner_session_generation assignment_generation assigned_at assignment_expires_at cancellation_requested_at cancellation_acknowledged_at runtime_input_resolution_id runtime_input_resolution_status runtime_input_payload_fingerprint runtime_input_error runtime_inputs_resolved_at last_command_id result_version result error terminal_at inserted_at updated_at),
+      ~w(retiring workspace_id task_id domain_identity task_kind run_id deployment_operation_id operation_id asset_step_id runner_pool required_runner_release_id required_capability retry_class status enqueued_at deadline_at payload_version payload payload_hash orchestration_context orchestration_context_hash manifest_version_id manifest_content_hash write_claim_key write_claim_fence write_target_id write_operation_id write_lock_fence persistence_failure assigned_runner_instance_id assigned_runner_session_generation assignment_generation assigned_at assignment_expires_at cancellation_requested_at cancellation_acknowledged_at runtime_input_resolution_id runtime_input_resolution_status runtime_input_payload_fingerprint runtime_input_error runtime_inputs_resolved_at last_command_id result_version result error terminal_at inserted_at updated_at),
     "runner_task_commands" =>
       ~w(scope_id command_id operation request_hash result issued_at inserted_at),
     "runner_task_command_tasks" =>
@@ -612,6 +618,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     workspace_provisioning_operations_workspace_fk workspace_provisioning_operations_actor_fk
     workspace_provisioning_operations_values_valid
     manifest_deployment_operations_workspace_fk manifest_deployment_operations_manifest_fk
+    manifest_deployment_owner_valid runner_tasks_deployment_owner_fk runner_tasks_deployment_owner_kind
     manifest_deployment_operations_values_valid manifest_deployment_upload_leases_workspace_fk
     manifest_deployment_upload_leases_values_valid manifest_activation_leases_workspace_fk
     manifest_activation_leases_values_valid
@@ -619,7 +626,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "c1bd5d700242f66fb221e058d61719949ea29f92d7be2fe2feba40e09e57dafe"
+  @expected_definition_fingerprint "8bbc0ea2086cb54384655a3ad3dac5adac8242a93f12a1404aef722e73beec23"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

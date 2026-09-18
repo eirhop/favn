@@ -28,6 +28,7 @@ defmodule FavnOrchestrator.Lifecycle do
           status: state_name(),
           admissions: %{optional(reference()) => {pid(), reference()}},
           monitors: %{optional(reference()) => reference()},
+          deployment_admissions: %{{String.t(), String.t()} => reference()},
           maintenance: nil | %{kind: atom(), token: String.t(), started_at: DateTime.t()},
           changed_at: DateTime.t(),
           shutdown_drain_timeout_ms: pos_integer(),
@@ -109,6 +110,33 @@ defmodule FavnOrchestrator.Lifecycle do
     :exit, _reason -> {:error, :runtime_not_accepting}
   end
 
+  @doc "Delegates an owned admission permit to one workspace deployment on this node."
+  @spec delegate_deployment(reference(), String.t(), String.t(), GenServer.server()) ::
+          :ok | {:error, atom()}
+  def delegate_deployment(permit, workspace, operation, server \\ __MODULE__) do
+    GenServer.call(server, {:delegate_deployment, permit, {workspace, operation}})
+  catch
+    :exit, _ -> {:error, :runtime_not_accepting}
+  end
+
+  @doc "Runs one deployment under delegated or ordinary monitored admission."
+  @spec with_deployment_admission(String.t(), String.t(), (-> result), GenServer.server()) ::
+          result | {:error, admission_error()}
+        when result: term()
+  def with_deployment_admission(workspace, operation, fun, server \\ __MODULE__) do
+    case GenServer.call(server, {:acquire_deployment, {workspace, operation}}) do
+      {:ok, permit} ->
+        try do
+          fun.()
+        after
+          release_admission(permit, server)
+        end
+
+      error ->
+        error
+    end
+  end
+
   @doc "Begins or resumes one maintenance boundary using an opaque owner token."
   @spec begin_maintenance(atom(), String.t(), GenServer.server()) ::
           {:ok, String.t()} | {:error, maintenance_error()}
@@ -185,6 +213,7 @@ defmodule FavnOrchestrator.Lifecycle do
        status: :starting,
        admissions: %{},
        monitors: %{},
+       deployment_admissions: %{},
        maintenance: nil,
        changed_at: DateTime.utc_now(),
        shutdown_drain_timeout_ms: Keyword.fetch!(opts, :shutdown_drain_timeout_ms),
@@ -288,6 +317,32 @@ defmodule FavnOrchestrator.Lifecycle do
   def handle_call({:acquire, _owner, _token}, _from, state),
     do: {:reply, admission_error(state.status), state}
 
+  def handle_call({:delegate_deployment, permit, scope}, {caller, _}, state) do
+    case Map.get(state.admissions, permit) do
+      {^caller, _monitor} when node(caller) == node() and state.status == :accepting ->
+        case Map.get(state.deployment_admissions, scope) do
+          existing when existing == nil or existing == permit ->
+            {:reply, :ok,
+             %{state | deployment_admissions: Map.put(state.deployment_admissions, scope, permit)}}
+
+          _ ->
+            {:reply, {:error, :deployment_admission_conflict}, state}
+        end
+
+      _ ->
+        {:reply, {:error, :invalid_admission_permit}, state}
+    end
+  end
+
+  def handle_call({:acquire_deployment, scope}, {caller, _} = from, state) do
+    permit = Map.get(state.deployment_admissions, scope)
+
+    if node(caller) == node() and state.status in [:accepting, :draining] and
+         Map.has_key?(state.admissions, permit),
+       do: admit(caller, state),
+       else: handle_call({:acquire, caller, nil}, from, state)
+  end
+
   def handle_call({:begin_maintenance, kind, token}, _from, %{status: :accepting} = state) do
     case state.maintenance do
       nil ->
@@ -389,7 +444,14 @@ defmodule FavnOrchestrator.Lifecycle do
 
       {{_owner, monitor}, admissions} ->
         if demonitor?, do: Process.demonitor(monitor, [:flush])
-        %{state | admissions: admissions, monitors: Map.delete(state.monitors, monitor)}
+
+        %{
+          state
+          | admissions: admissions,
+            monitors: Map.delete(state.monitors, monitor),
+            deployment_admissions:
+              Map.reject(state.deployment_admissions, fn {_scope, parent} -> parent == permit end)
+        }
     end
   end
 

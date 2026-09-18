@@ -186,6 +186,10 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 - `mix favn.postgres.upgrade` explicitly applies migrations and runtime grants
   with the development migrator identity, then verifies the exact schema with
   the restricted runtime identity. Startup never invokes it.
+- Local startup/reload and archive deployments durably own their inspections.
+  Cancellation fences admission, preserves exact activation receipts, and blocks
+  replacement until cleanup settles. See the
+  [recovery runbook](production/deployment-inspection-recovery.md).
 - A second `iex -S mix` session can use the public `Favn` facade to submit,
   list, inspect, cancel, and diagnose runs through the same authenticated
   Orchestrator HTTP boundary without starting another runner.

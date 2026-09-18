@@ -21,6 +21,7 @@ defmodule FavnLocal.DevelopmentRuntime do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunnerRegistry
+  alias FavnOrchestrator.ManifestDeployments
   alias FavnOrchestrator.TargetCompatibilityPlanner
 
   @probe_interval_ms 100
@@ -55,8 +56,12 @@ defmodule FavnLocal.DevelopmentRuntime do
   @spec reload(Publication.t(), String.t(), timeout()) ::
           {:ok, ReloadResult.t()} | {:error, term()}
   def reload(%Publication{} = publication, runner_release_id, timeout_ms \\ @request_timeout_ms)
-      when is_binary(runner_release_id),
-      do: GenServer.call(__MODULE__, {:reload, publication, runner_release_id}, timeout_ms)
+      when is_binary(runner_release_id) do
+    GenServer.call(__MODULE__, {:reload, publication, runner_release_id}, timeout_ms)
+  catch
+    :exit, {:timeout, _call} ->
+      {:error, {:reload_pending, status()}}
+  end
 
   def stop(timeout_ms \\ @request_timeout_ms),
     do: GenServer.call(__MODULE__, :stop, timeout_ms)
@@ -131,13 +136,16 @@ defmodule FavnLocal.DevelopmentRuntime do
         from,
         %{status: :ready, runner: %{release_id: release_id}} = state
       ) do
+    state = begin_deployment_owner(state)
+
     task =
       Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
         LocalPublication.reload(
           publication,
           state.publication,
           state.deployment,
-          state.config.workspace_id
+          state.config.workspace_id,
+          state.deployment_owner
         )
       end)
 
@@ -170,21 +178,11 @@ defmodule FavnLocal.DevelopmentRuntime do
   def handle_call(:stop, _from, %{status: :stopping} = state), do: {:reply, :ok, state}
 
   def handle_call(:stop, from, state) do
-    reason =
-      if state.task, do: {:reload_outcome_unknown, :reload_interrupted}, else: :reload_interrupted
-
-    reply_request(state, {:error, reason})
-    state = detach_task(state)
-    _ = FavnOrchestrator.drain()
-    runners = [state.runner, state.candidate, state.retiring] |> Enum.reject(&is_nil/1)
-    Enum.each(runners, &stop_runner/1)
-    ports = MapSet.new(runners, & &1.port)
-
-    if MapSet.size(ports) == 0 do
-      start_shutdown(%{state | status: :stopping, request: {:stop, from}})
-    else
-      {:noreply, %{state | status: :stopping, request: {:stop, from}, stopping_ports: ports}}
-    end
+    {:noreply,
+     state
+     |> start_cancellation(:local_stop, {:stop, from})
+     |> detach_task()
+     |> Map.put(:status, :stopping)}
   end
 
   def handle_call(:status, _from, state), do: {:reply, summary(state), state}
@@ -303,7 +301,7 @@ defmodule FavnLocal.DevelopmentRuntime do
 
   def handle_info({ref, result}, %{task: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
-    deployment_finished(%{state | task: nil}, result)
+    deployment_finished(Map.put(%{state | task: nil}, :deployment_owner, nil), result)
   end
 
   def handle_info(
@@ -314,6 +312,34 @@ defmodule FavnLocal.DevelopmentRuntime do
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %{ref: ref}} = state),
     do: deployment_finished(%{state | task: nil}, {:error, {:deployment_task_failed, reason}})
+
+  def handle_info({ref, result}, %{cancellation_task: %{ref: ref}} = state),
+    do: finish_cancellation(state, result)
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, _reason},
+        %{cancellation_task: %{ref: ref}} = state
+      ),
+      do: finish_cancellation(state, {:error, :cancellation_worker_failed})
+
+  def handle_info({:cancellation_timeout, ref}, %{cancellation_task: %{ref: ref}} = state),
+    do: finish_cancellation(state, {:error, :cancellation_timeout})
+
+  def handle_info({:cancellation_start_failed, ref}, %{cancellation_task: %{ref: ref}} = state),
+    do: finish_cancellation(state, {:error, :cancellation_worker_unavailable})
+
+  def handle_info({:renew_deployment_owner, owner}, state) do
+    if Map.get(state, :deployment_owner) == owner and state.status in [:starting, :reloading] do
+      Task.Supervisor.start_child(FavnLocal.TaskSupervisor, fn ->
+        with {:ok, context} <- local_context(state),
+             do: ManifestDeployments.renew_local(context, owner.operation_id, owner.session_id)
+      end)
+
+      schedule({:renew_deployment_owner, owner}, 15_000)
+    end
+
+    {:noreply, state}
+  end
 
   def handle_info(_message, state), do: {:noreply, state}
 
@@ -330,7 +356,27 @@ defmodule FavnLocal.DevelopmentRuntime do
     :ok
   end
 
+  defp finish_stop(from, state) do
+    reason =
+      {:reload_interrupted, Map.get(state, :deployment_cancellation, %{activation: :unknown})}
+
+    reply_request(state, {:error, reason})
+    state = detach_task(state)
+    _ = FavnOrchestrator.drain()
+    runners = [state.runner, state.candidate, state.retiring] |> Enum.reject(&is_nil/1)
+    Enum.each(runners, &stop_runner/1)
+    ports = MapSet.new(runners, & &1.port)
+
+    if MapSet.size(ports) == 0 do
+      start_shutdown(%{state | status: :stopping, request: {:stop, from}})
+    else
+      {:noreply, %{state | status: :stopping, request: {:stop, from}, stopping_ports: ports}}
+    end
+  end
+
   defp start_deployment(state) do
+    state = begin_deployment_owner(state)
+
     publication =
       case state.request do
         {_from, publication, _release_id} -> publication
@@ -349,7 +395,12 @@ defmodule FavnLocal.DevelopmentRuntime do
 
     task =
       Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
-        LocalPublication.deploy(publication, state.config.workspace_id)
+        LocalPublication.deploy(
+          publication,
+          state.config.workspace_id,
+          nil,
+          state.deployment_owner
+        )
       end)
 
     {:noreply, %{state | task: task}}
@@ -540,14 +591,13 @@ defmodule FavnLocal.DevelopmentRuntime do
   end
 
   defp abort_candidate(state, reason) do
-    if state.candidate, do: stop_runner(state.candidate)
+    unknown? = not is_nil(state.task) or match?({:reload_outcome_unknown, _}, reason)
+    if state.candidate && not unknown?, do: stop_runner(state.candidate)
 
     ignored_ports =
-      if state.candidate,
+      if state.candidate && not unknown?,
         do: MapSet.put(state.ignored_ports, state.candidate.port),
         else: state.ignored_ports
-
-    unknown? = not is_nil(state.task) or match?({:reload_outcome_unknown, _}, reason)
 
     reason =
       if unknown? and not match?({:reload_outcome_unknown, _}, reason),
@@ -561,7 +611,7 @@ defmodule FavnLocal.DevelopmentRuntime do
     {:noreply,
      %{
        state
-       | candidate: nil,
+       | candidate: if(unknown?, do: state.candidate),
          status: if(unknown?, do: :failed, else: :ready),
          ignored_ports: ignored_ports,
          request: nil,
@@ -675,6 +725,9 @@ defmodule FavnLocal.DevelopmentRuntime do
       end)
 
     {:noreply, %{state | task: task, request: {:stop, from}}}
+  catch
+    :exit, _ ->
+      fail(state, {:shutdown_worker_unavailable, Map.get(state, :deployment_cancellation)})
   end
 
   defp stop_deployment(%{task: %Task{} = task} = state) do
@@ -683,6 +736,62 @@ defmodule FavnLocal.DevelopmentRuntime do
   end
 
   defp stop_deployment(state), do: state
+
+  defp start_cancellation(state, reason, continuation) do
+    task =
+      try do
+        Task.Supervisor.async_nolink(FavnLocal.TaskSupervisor, fn ->
+          cancel_owner(state, reason)
+        end)
+      catch
+        :exit, _reason ->
+          ref = make_ref()
+          send(self(), {:cancellation_start_failed, ref})
+          %{ref: ref, pid: nil}
+      end
+
+    timer = Process.send_after(self(), {:cancellation_timeout, task.ref}, 10_000)
+
+    Map.put(state, :cancellation_task, %{
+      ref: task.ref,
+      pid: task.pid,
+      timer: timer,
+      continuation: continuation
+    })
+  end
+
+  defp finish_cancellation(%{cancellation_task: task} = state, result) do
+    Process.cancel_timer(task.timer)
+    Process.demonitor(task.ref, [:flush])
+    if is_pid(task.pid) and Process.alive?(task.pid), do: Process.exit(task.pid, :kill)
+    state = Map.delete(state, :cancellation_task)
+
+    outcome =
+      cancellation_outcome(result)
+      |> Map.put(:operation_id, get_in(state, [:deployment_owner, :operation_id]))
+
+    case task.continuation do
+      {:stop, from} ->
+        finish_stop(from, Map.put(state, :deployment_cancellation, outcome))
+
+      {:startup, reason} ->
+        Enum.each([state.runner, state.candidate] |> Enum.reject(&is_nil/1), &stop_runner/1)
+
+        fail(
+          stop_deployment(state) |> Map.put(:deployment_owner, nil),
+          {:startup_interrupted, reason, outcome}
+        )
+    end
+  end
+
+  defp fail(%{status: :starting, deployment_owner: owner} = state, reason)
+       when not is_nil(owner) do
+    {:noreply,
+     state
+     |> start_cancellation(:startup_timeout, {:startup, reason})
+     |> detach_task()
+     |> Map.put(:status, :failed)}
+  end
 
   defp fail(state, reason) do
     reason =
@@ -783,10 +892,50 @@ defmodule FavnLocal.DevelopmentRuntime do
       runner_node: state.runner.node,
       runner_release_id: state.runner.release_id,
       workspace_id: state.config.workspace_id,
+      deployment_operation_id: Map.get(state, :deployment_operation_id),
       view_url: "http://127.0.0.1:#{state.config.view_port}",
       orchestrator_url: "http://127.0.0.1:#{state.config.orchestrator_port}"
     }
   end
 
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp begin_deployment_owner(state) do
+    id = "local-" <> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    owner = %{operation_id: id, session_id: id}
+    schedule({:renew_deployment_owner, owner}, 15_000)
+    state |> Map.put(:deployment_owner, owner) |> Map.put(:deployment_operation_id, id)
+  end
+
+  defp local_context(state),
+    do:
+      FavnOrchestrator.Persistence.WorkspaceContext.new(state.config.workspace_id, "favn-local", [
+        :platform_operator
+      ])
+
+  defp cancel_owner(state, reason) do
+    case Map.get(state, :deployment_owner) do
+      nil ->
+        :ok
+
+      owner ->
+        with {:ok, context} <- local_context(state),
+             do: ManifestDeployments.cancel(context, owner.operation_id, reason)
+    end
+  end
+
+  defp cancellation_outcome({:ok, %{activation_receipt: receipt, operation_id: id}})
+       when not is_nil(receipt),
+       do: %{operation_id: id, activation: :committed, receipt: receipt}
+
+  defp cancellation_outcome({:ok, %{operation_id: id, state: state, cleanup_state: cleanup}}),
+    do: %{
+      operation_id: id,
+      activation: if(state == :unknown, do: :unknown, else: :not_committed),
+      cleanup: cleanup
+    }
+
+  defp cancellation_outcome({:ok, :cancelled_before_acceptance}), do: %{activation: :not_accepted}
+  defp cancellation_outcome(:ok), do: %{activation: :not_requested}
+  defp cancellation_outcome({:error, _reason}), do: %{activation: :unknown}
 end

@@ -340,25 +340,145 @@ Implementation requires its own final review.
 
 ## Implementation outcome
 
-Not implemented. This task is limited to the reviewed plan and draft PR.
+Local startup and reload now accept an operation before submitting inspections.
+A renewable 45-second local session owns that operation; archive operations keep
+their detached-client policy. The existing dispatcher owns activation, original
+inspection deadlines, worker reclaim and the exact runtime receipt.
+
+PostgreSQL serializes operation admission, cancellation and activation before
+task locks. A closed owner cannot enqueue, claim, retry or start more inspection
+work. Cleanup cancels queued work in pages of 100, rotates cancellation delivery
+across assigned work, and preserves unknown execution. Replacement activation
+waits for predecessor settlement across both sources. Legacy unknown activation
+remains a blocker even when its task cleanup has settled.
+
+Activation records the actual deployment ID and runtime revision in the same
+transaction as the workspace change. Cancellation replays a committed receipt;
+it cannot describe a committed activation as rolled back. Successful activation
+with entirely terminal inspection evidence settles cleanup immediately.
+
+Local observation reports operation identity and distinguishes a caller timeout
+from owner cancellation. Stop/startup cancellation runs in a monitored worker
+with a ten-second fallback that reports unknown and the operation identity.
+The GenServer continues processing status, timers and runner shutdown. Verified
+operator quiescence is scoped to exact task assignment generations, audited,
+idempotent and fences late execution.
+
+The proposed ownership diagram remains the final flow. The extra pre-acceptance
+fence below closes the publication/stop race:
+
+```mermaid
+sequenceDiagram
+    participant Local as Local session
+    participant Store as PostgreSQL
+    participant Publisher as Publication worker
+    Local->>Store: Record stop for operation identity
+    Store-->>Local: Durable cancellation
+    Publisher->>Store: Accept delayed publication
+    Store-->>Publisher: Reject stopped identity
+```
+
+Canonical behavior is documented in the local development guide, PostgreSQL
+data model and retention catalog, target-generation architecture, and the
+[recovery runbook](../../production/deployment-inspection-recovery.md).
+No consumer database or running consumer project was changed.
 
 ## Deviations from the approved plan
 
-No implementation deviations. The approved planning commit is preserved above.
+| Baseline | Implementation and reason | Review |
+| --- | --- | --- |
+| Persist acceptance before inspection dispatch | Also persist a workspace/operation cancellation tombstone before acceptance. Publication can be delayed beyond stop; the tombstone prevents resurrection without inventing a manifest owner. | Independent reviewer approved |
+| Pin base binding versions | Persist one deterministic binding-version hash, alongside the original runtime revision and manifest/request pins. Reclaim rejects a changed base. | Independent reviewer approved |
+| Preserve maintenance admission through shared activation | Delegate an existing monitored permit in memory to the exact workspace/operation. The caller must own it; it cannot overwrite a different grant. Parent release/DOWN removes delegation; acquired child permits remain monitored. No maintenance secret is persisted. | Independent reviewer approved |
+| Reuse shared dispatcher | Local source keeps exclusive slots, bounded workers and size checks but bypasses archive finite-cgroup admission, preserving native development on machines without a finite cgroup. Archive admission is unchanged. | Independent reviewer approved |
+| Reuse dispatcher polling | Remove immediate completion/DOWN polling, leaving one periodic timer chain. Previously each immediate poll created another repeating timer under retry. Refill can take up to one second. | Independent reviewer approved |
+| Bounded asynchronous cleanup | Rotate a persisted cleanup cursor across cancellation notifications and settle successful all-terminal evidence in the commit transaction. This prevents notification starvation and unnecessary local replacement rejection. | Independent reviewer approved |
+| Separate many-table external consumer interruption qualification | Not run in this change. Verification uses a 101-inspection PostgreSQL fixture plus real local lifecycle acceptance; the latter has no external many-table SQL workload. Run the external scenario before claiming that operational qualification or deploying this upgrade to that consumer. | Independent reviewer accepts the explicit proof boundary; criterion remains unqualified |
+| Existing task snapshot compatibility | Write version-two ownership-aware snapshots while decoding version one without the added nil owner field; retain old unowned enqueue hashes. | Independent reviewer approved |
+
+The approved planning commit above is unchanged.
+
+### Actual complexity
+
+Counts below are Git additions/deletions before final review, including new
+files and excluding this record. Supporting tests are grouped in slice 4 except
+local tests in slice 3; slice 1 includes contract/facade/schema/migration files.
+The ownership module is counted wholly in slice 2 rather than dividing functions
+between acceptance and settlement.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1: contracts, facade and schema | 422 | 12 | 0 | 0 |
+| 2: ownership, fencing and dispatcher | 1126 | 83 | 0 | 0 |
+| 3: local lifecycle | 259 | 51 | 112 | 7 |
+| 4: shared verification and canonical docs | 0 | 0 | 1041 | 3 |
+
+Slice 2 exceeds its 550-line upper estimate. The explicit ownership module
+accounts for 504 lines, including acceptance that the estimate assigned to
+slice 1. The additional stop-before-acceptance fence, exact attested legacy/
+unknown settlement, scoped permit delegation, monitored cancellation failures,
+and fair cancellation delivery were required by reviewed race findings.
+Shared runner-task changes preserve existing receipt/recovery behavior rather
+than adding a second task protocol. The implementation adds one ownership
+module and one small typed inspection identity; it does not add a new dispatcher.
+
+Deletions are lower than estimated because the existing dispatcher, publication
+steps, runner shutdown and task state transitions remain in use. Only local
+activation observation and the relevant locking/admission paths changed.
+Supporting changes concentrate in real PostgreSQL and lifecycle tests instead
+of adding another fixture framework. Final review must challenge this overrun;
+it is not hidden by the test total.
 
 ## Verification evidence
 
-Source and issue inspection completed. All repository-relative links resolve;
-whitespace checks pass. Both diagrams render successfully with Mermaid 11 in
-headless Chrome. Independent plan review accepted the corrected plan. Both
-GitHub-rendered diagrams were verified in Chrome after draft PR creation: the
-current diagram has eight nodes and the proposed diagram has twelve, with the
-expected labels and no rendering errors.
-No implementation tests, migration, live consumer restart or production
-qualification have been performed for this plan.
+### Static and focused integration checks
+
+- Formatting, warnings-as-errors compilation, CI warning-level Credo/Sobelow
+  checks and the test-tier coverage guard pass.
+- Four real PostgreSQL transaction races pass: cancel before enqueue, enqueue
+  before cancel, cancel before activation, and activation before cancel.
+  Barriers assert distinct backend PIDs and verify PostgreSQL reports the
+  contender blocked before allowing the winning transaction to commit.
+- The owning deployment/retention suite passed 43 tests on a fresh disposable
+  database before the final combined run.
+- Local fast suite passed 48 tests, including caller timeout, cancellation worker
+  startup failure, worker death/deadline and ignored late completion.
+- Lifecycle suite passed nine tests, including delegated maintenance admission,
+  wrong owner/scope, conflicting grant, parent release, child death and drain.
+- The combined focused orchestrator rerun passed 43 tests and local fast rerun
+  passed 48 tests. The combined PostgreSQL suite passed 116 tests, including snapshot-v1
+  replay, bounded cleanup, activation/cancellation races and retention.
+
+Tests use PostgreSQL 18 in a dedicated disposable container. Storage fixtures
+and restricted-role local acceptance use separate databases: starting the
+actual control plane against retained storage-test fixtures can recover those
+fixtures and invalidate timing/queue assertions. Early environment failures
+(runtime-role grants and missing asset binaries) were corrected before rerun.
+
+### Acceptance and live proof boundary
+
+The local acceptance suite passed both tests, including an external deployment
+under a valid maintenance token. It exercises real runner startup, unchanged/
+manifest/runner reload, failed candidate handling and interrupted shutdown.
+
+The 101-inspection fixture proves bounded cleanup and stable detail pages in
+PostgreSQL. A separate many-table consumer interrupted repeatedly against a real
+external SQL backend has not been run. No production environment or customer
+consumer has been restarted. These results are regression qualification, not
+a blanket production-readiness claim.
+
+### CI and rendered documentation
+
+CI has not yet qualified the implementation head. The baseline GitHub diagrams
+were rendered and reviewed; the final record diagram and links will be checked
+after the implementation is pushed.
 
 ## Final review
 
-Implementation review is not applicable yet. It must compare the eventual code,
-tests, canonical docs and actual complexity with the approved planning commit
-before the PR becomes ready for review.
+Independent agent `review_startup_timeout` compared the implementation, tests,
+canonical docs, record and complexity with the approved baseline. Verdict:
+implementation and design deviations approved; no remaining production
+correctness findings. The focused diagnostic/lifecycle recheck passed 13 tests, including transition
+logging and repeated-warning coalescing. Readiness remains conditional on
+final-head CI. The external consumer proof
+boundary above must remain explicit.

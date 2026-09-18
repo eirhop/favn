@@ -1,7 +1,15 @@
 defmodule FavnOrchestrator.Persistence.Results.ManifestDeployment do
   @moduledoc "Durable status for one caller-named manifest deployment operation."
 
-  @type state :: :accepted | :activating | :succeeded | :needs_attention | :failed | :unknown
+  @type state ::
+          :accepted
+          | :activating
+          | :succeeded
+          | :needs_attention
+          | :failed
+          | :unknown
+          | :cancelling
+          | :cancelled
 
   @enforce_keys [
     :workspace_id,
@@ -34,6 +42,15 @@ defmodule FavnOrchestrator.Persistence.Results.ManifestDeployment do
     :accepted_at,
     :activating_at,
     :terminal_at,
+    :source,
+    :local_session_id,
+    :local_expires_at,
+    :inspection_deadline_at,
+    :cancellation_requested_at,
+    :cleanup_state,
+    :activation_receipt,
+    :expected_runtime_revision,
+    :request,
     :inserted_at,
     :updated_at
   ]
@@ -41,7 +58,7 @@ defmodule FavnOrchestrator.Persistence.Results.ManifestDeployment do
   @type t :: %__MODULE__{
           workspace_id: String.t(),
           operation_id: String.t(),
-          archive_sha256: String.t(),
+          archive_sha256: String.t() | nil,
           request_fingerprint: String.t(),
           service_identity: String.t(),
           manifest_version_id: String.t() | nil,
@@ -56,6 +73,15 @@ defmodule FavnOrchestrator.Persistence.Results.ManifestDeployment do
           claim_expires_at: DateTime.t() | nil,
           inspection_total: non_neg_integer(),
           inspection_completed: non_neg_integer(),
+          source: String.t() | nil,
+          local_session_id: String.t() | nil,
+          local_expires_at: DateTime.t() | nil,
+          inspection_deadline_at: DateTime.t() | nil,
+          cancellation_requested_at: DateTime.t() | nil,
+          cleanup_state: String.t() | nil,
+          activation_receipt: map() | nil,
+          expected_runtime_revision: non_neg_integer() | nil,
+          request: map() | nil,
           accepted_at: DateTime.t() | nil,
           activating_at: DateTime.t() | nil,
           terminal_at: DateTime.t() | nil,
@@ -170,7 +196,7 @@ defmodule FavnOrchestrator.Persistence.Commands.AcceptManifestDeployment do
           workspace_context: WorkspaceContext.t(),
           operation_id: String.t(),
           upload_lease_id: String.t(),
-          archive_sha256: String.t(),
+          archive_sha256: String.t() | nil,
           request_fingerprint: String.t(),
           version: Version.t(),
           occurred_at: DateTime.t()
@@ -195,7 +221,7 @@ defmodule FavnOrchestrator.Persistence.Commands.ClaimManifestDeployment do
   alias FavnOrchestrator.Persistence.PlatformContext
 
   @enforce_keys [:platform_context, :owner, :expires_at, :occurred_at]
-  defstruct [:platform_context, :owner, :expires_at, :occurred_at]
+  defstruct [:platform_context, :owner, :expires_at, :occurred_at, inspection_timeout_ms: 300_000]
 
   @type t :: %__MODULE__{
           platform_context: PlatformContext.t(),
@@ -338,4 +364,67 @@ defmodule FavnOrchestrator.Persistence.Commands.ReleaseManifestActivationLease d
           owner: String.t(),
           fence: pos_integer()
         }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.AcceptLocalManifestDeployment do
+  @moduledoc "Accepts a pinned local deployment before any inspection is dispatched."
+  @enforce_keys [
+    :workspace_context,
+    :operation_id,
+    :session_id,
+    :manifest_version_id,
+    :occurred_at,
+    :expires_at
+  ]
+  defstruct @enforce_keys
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.RenewLocalManifestDeployment do
+  @moduledoc "Renews only a live local session without reviving expired intent."
+  @enforce_keys [:workspace_context, :operation_id, :session_id, :occurred_at, :expires_at]
+  defstruct @enforce_keys
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.CancelManifestDeployment do
+  @moduledoc "Closes deployment admission before settling its owned inspections."
+  @enforce_keys [:workspace_context, :operation_id, :reason, :occurred_at]
+  defstruct @enforce_keys
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.ReconcileManifestDeployments do
+  @moduledoc "Reconciles one bounded page of interrupted deployment owners."
+  @enforce_keys [:platform_context, :occurred_at]
+  defstruct @enforce_keys
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.DeploymentInspections do
+  @moduledoc "Reads at most 100 owned inspection identities and aggregate status counts."
+  @enforce_keys [:workspace_context, :operation_id]
+  defstruct @enforce_keys ++ [after_task_id: nil, limit: 100]
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.PinDeploymentInspectionBase do
+  @moduledoc "Pins target-binding versions before owned inspections are dispatched."
+  @enforce_keys [:workspace_context, :operation_id, :binding_hash]
+  defstruct @enforce_keys
+  @type t :: %__MODULE__{}
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.ResolveDeploymentInspections do
+  @moduledoc "Settles exact inspection assignments after operator-attested runner and backend quiescence."
+  @enforce_keys [
+    :workspace_context,
+    :task_assignments,
+    :runner_stopped,
+    :backend_stopped,
+    :evidence_reference,
+    :occurred_at
+  ]
+  defstruct @enforce_keys ++ [:operation_id]
+  @type t :: %__MODULE__{}
 end

@@ -134,6 +134,7 @@ defmodule FavnOrchestrator.Persistence.Commands.DeployManifest do
     :occurred_at,
     :idempotency,
     :activation_lease,
+    :deployment_claim,
     :activation_diagnostics,
     prepared_version: nil,
     expected_active_deployment_id: :unchecked,

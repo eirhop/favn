@@ -101,7 +101,7 @@ defmodule FavnOrchestrator.Manifests do
                     |> Keyword.put(:idempotency, idempotency)
                     |> Keyword.put(:activation_lease, activation_lease),
                     prepared,
-                    3
+                    if(Keyword.has_key?(opts, :deployment_claim), do: 1, else: 3)
                   )
                 end)
               end)
@@ -147,6 +147,8 @@ defmodule FavnOrchestrator.Manifests do
              operation_id:
                Keyword.get(opts, :activation_operation_id) ||
                  Keyword.get(opts, :deployment_id) || manifest_version_id,
+             deployment_operation_id:
+               get_in(Keyword.get(opts, :deployment_claim), [:operation_id]),
              progress: Keyword.get(opts, :activation_progress),
              inspection_timeout_ms:
                Keyword.get(

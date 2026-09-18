@@ -793,7 +793,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
       case :atomics.add_get(attempts, 1, 1) do
         1 ->
           send(test_pid, {:capacity_check, 1, self()})
-          receive do: (:reject -> {:error, :manifest_capacity_unavailable})
+          receive do: (:reject -> {:error, :memory_capacity_unknown})
 
         attempt ->
           send(test_pid, {:capacity_check, attempt, self()})
@@ -1220,6 +1220,555 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
                owner: "owner-one",
                fence: 1
              })
+  end
+
+  test "local acceptance is pinned, leased, and cannot replace unsettled cancellation", context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-first")
+    assert {:ok, :accepted, first} = Store.accept_local_manifest_deployment(command)
+    assert first.source == "local"
+    assert first.archive_sha256 == nil
+    assert {:ok, :replay, ^first} = Store.accept_local_manifest_deployment(command)
+
+    assert {:error, %{details: %{reason: :deployment_operation_conflict}}} =
+             Store.accept_local_manifest_deployment(%{command | session_id: "different"})
+
+    assert {:error, %{details: %{reason: :local_deployment_pending}}} =
+             Store.accept_local_manifest_deployment(%{command | operation_id: "local-next"})
+
+    assert {:ok, %{state: :cancelling}} = cancel_owned(context, first.operation_id)
+
+    assert {:error, %{details: %{reason: :local_deployment_pending}}} =
+             Store.accept_local_manifest_deployment(%{command | operation_id: "local-next"})
+
+    assert {:ok, _} = reconcile_owned(context)
+
+    assert {:ok, :accepted, _} =
+             Store.accept_local_manifest_deployment(%{command | operation_id: "local-next"})
+  end
+
+  test "expiry cancels a local owner and renewal cannot revive it", context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-expired")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    future = DateTime.add(command.occurred_at, 46, :second)
+
+    assert {:error, %{details: %{reason: :local_deployment_session_expired}}} =
+             Store.renew_local_manifest_deployment(
+               %FavnOrchestrator.Persistence.Commands.RenewLocalManifestDeployment{
+                 workspace_context: context.workspace_context,
+                 operation_id: command.operation_id,
+                 session_id: command.session_id,
+                 occurred_at: future,
+                 expires_at: DateTime.add(future, 45, :second)
+               }
+             )
+
+    assert {:ok, _} = reconcile_owned(context, future)
+
+    assert {:ok, %{state: :cancelled, cleanup_state: "settled"}} =
+             FavnOrchestrator.ManifestDeployments.get_local(
+               context.workspace_context,
+               command.operation_id
+             )
+  end
+
+  test "owned queued inspections cancel in bounded pages and close enqueue replay", context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-queued")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    tasks = for n <- 1..101, do: owned_inspection(context, command.operation_id, n)
+
+    assert {:ok, %{tasks: page, counts: %{"queued" => 101}}} =
+             FavnOrchestrator.ManifestDeployments.inspections(
+               context.workspace_context,
+               command.operation_id
+             )
+
+    assert length(page) == 100
+
+    assert {:ok, %{tasks: [_last]}} =
+             FavnOrchestrator.ManifestDeployments.inspections(
+               context.workspace_context,
+               command.operation_id,
+               after_task_id: List.last(page).task_id
+             )
+
+    assert {:ok, _} = cancel_owned(context, command.operation_id)
+
+    assert {:error, %{details: %{reason: :deployment_inspection_admission_closed}}} =
+             ensure_owned_inspection(context, command.operation_id, 1)
+
+    assert {:ok, _} = reconcile_owned(context)
+
+    assert {:ok, %{counts: %{"cancelled" => 100, "queued" => 1}}} =
+             FavnOrchestrator.ManifestDeployments.inspections(
+               context.workspace_context,
+               command.operation_id
+             )
+
+    assert {:ok, _} = reconcile_owned(context)
+
+    assert {:ok, %{counts: %{"cancelled" => 101}}} =
+             FavnOrchestrator.ManifestDeployments.inspections(
+               context.workspace_context,
+               command.operation_id
+             )
+
+    assert length(Enum.uniq_by(tasks, & &1.task_id)) == 101
+  end
+
+  test "closed owner fences replayed claim and running transition but permits settlement",
+       context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-assigned")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    task = owned_inspection(context, command.operation_id, 1)
+    claim = owned_claim(context)
+    assert {:ok, assigned} = FavnStoragePostgres.RunnerTasks.Store.claim(claim)
+    assert assigned.task_id == task.task_id
+    assert {:ok, _} = cancel_owned(context, command.operation_id)
+    assert {:error, %{kind: :fenced}} = FavnStoragePostgres.RunnerTasks.Store.claim(claim)
+
+    transition = %FavnOrchestrator.Persistence.Commands.TransitionRunnerTask{
+      workspace_context: context.workspace_context,
+      command_id: "closed-start",
+      task_id: task.task_id,
+      runner_instance_id: assigned.assigned_runner_instance_id,
+      runner_session_generation: assigned.assigned_runner_session_generation,
+      assignment_generation: assigned.assignment_generation,
+      transition: :running,
+      issued_at: DateTime.utc_now(),
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:error, _} = FavnStoragePostgres.RunnerTasks.Store.transition(transition)
+    assert {:ok, _} = reconcile_owned(context)
+
+    assert {:ok, %{status: :cancelling}} =
+             OperationRunnerTasks.fetch(context.workspace_context, task.task_id)
+
+    assert {:ok, %{cleanup_state: "settling"}} =
+             FavnOrchestrator.ManifestDeployments.get_local(
+               context.workspace_context,
+               command.operation_id
+             )
+  end
+
+  test "local dispatcher records committed outcome before cancellation can report failure",
+       context do
+    Sandbox.mode(Repo, {:shared, self()})
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-commit")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor})
+
+    start_supervised!(
+      {ManifestDeploymentDispatcher,
+       inspection_timeout_ms: 100, capacity_check: fn -> {:error, :memory_capacity_unknown} end}
+    )
+
+    operation =
+      await_operation(
+        context,
+        command.operation_id,
+        &(&1.state in [:succeeded, :needs_attention])
+      )
+
+    assert %{"deployment_id" => deployment_id, "runtime_revision" => revision} =
+             operation.activation_receipt
+
+    assert is_integer(revision)
+    assert {:ok, cancelled} = cancel_owned(context, command.operation_id)
+    assert cancelled.activation_receipt == operation.activation_receipt
+    assert cancelled.state == operation.state
+
+    assert {:ok, %{deployment_id: ^deployment_id, revision: ^revision}} =
+             Manifests.active_runtime(context.workspace_context)
+  end
+
+  test "cancellation before activation rejects a stale worker commit", context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-cancel-first")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    now = DateTime.utc_now()
+
+    claim = %ClaimManifestDeployment{
+      platform_context: context.platform_context,
+      owner: "worker",
+      occurred_at: now,
+      expires_at: DateTime.add(now, 45, :second)
+    }
+
+    assert {:ok, operation} = Store.claim_manifest_deployment(claim)
+    assert {:ok, _} = cancel_owned(context, command.operation_id)
+
+    assert {:error, _} =
+             Manifests.deploy(
+               context.platform_context,
+               context.workspace_context,
+               context.version.manifest_version_id,
+               FavnOrchestrator.ManifestDeployments.fixed_selection(),
+               deployment_id: operation.operation_id,
+               activation_operation_id: operation.operation_id,
+               deployment_claim: %{
+                 operation_id: operation.operation_id,
+                 owner: "worker",
+                 fence: operation.claim_fence
+               },
+               activation_inspection_timeout_ms: 1,
+               execution_pool_policy: %{approve_manifest_defaults: true}
+             )
+
+    assert {:error, _} = Manifests.active_runtime(context.workspace_context)
+  end
+
+  test "stop before local acceptance is durable and an existing cancelled operation still replays",
+       context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-stop-first")
+    assert {:ok, :cancelled_before_acceptance} = cancel_owned(context, command.operation_id)
+
+    assert {:error, %{details: %{reason: :local_deployment_cancelled_before_acceptance}}} =
+             Store.accept_local_manifest_deployment(command)
+
+    existing = %{command | operation_id: "local-existing"}
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(existing)
+    assert {:ok, cancelled} = cancel_owned(context, existing.operation_id)
+    assert {:ok, :replay, ^cancelled} = Store.accept_local_manifest_deployment(existing)
+  end
+
+  test "changed target bindings cannot reuse an owned inspection base", context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-bindings")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+
+    pin = %FavnOrchestrator.Persistence.Commands.PinDeploymentInspectionBase{
+      workspace_context: context.workspace_context,
+      operation_id: command.operation_id,
+      binding_hash: :crypto.hash(:sha256, "bindings-v1")
+    }
+
+    assert :ok = Store.pin_deployment_inspection_base(pin)
+    assert :ok = Store.pin_deployment_inspection_base(pin)
+
+    assert {:error, %{details: %{reason: :deployment_inspection_base_changed}}} =
+             Store.pin_deployment_inspection_base(%{
+               pin
+               | binding_hash: :crypto.hash(:sha256, "bindings-v2")
+             })
+  end
+
+  test "a delayed heartbeat cannot revive an actually expired local session", context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-delayed-renewal")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    now = DateTime.utc_now()
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.manifest_deployment_operations SET local_expires_at=$1 WHERE workspace_id=$2 AND operation_id=$3",
+      [DateTime.add(now, -5, :second), context.workspace_id, command.operation_id]
+    )
+
+    assert {:error, %{details: %{reason: :local_deployment_session_expired}}} =
+             Store.renew_local_manifest_deployment(
+               %FavnOrchestrator.Persistence.Commands.RenewLocalManifestDeployment{
+                 workspace_context: context.workspace_context,
+                 operation_id: command.operation_id,
+                 session_id: command.session_id,
+                 occurred_at: DateTime.add(now, -20, :second),
+                 expires_at: DateTime.add(now, 25, :second)
+               }
+             )
+  end
+
+  test "unknown inspection execution blocks replacement until exact quiescence is attested",
+       context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-unknown")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    task = owned_inspection(context, command.operation_id, 1)
+    assert {:ok, assigned} = FavnStoragePostgres.RunnerTasks.Store.claim(owned_claim(context))
+    assert {:ok, _} = cancel_owned(context, command.operation_id)
+    assert {:ok, _} = reconcile_owned(context)
+
+    release = %FavnOrchestrator.Persistence.Commands.ReleaseRunnerTask{
+      workspace_context: context.workspace_context,
+      command_id: "release-unknown",
+      task_id: task.task_id,
+      runner_instance_id: assigned.assigned_runner_instance_id,
+      runner_session_generation: assigned.assigned_runner_session_generation,
+      assignment_generation: assigned.assignment_generation,
+      disposition: :requeue,
+      reason: nil,
+      issued_at: DateTime.utc_now(),
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, %{status: :unknown}} = FavnStoragePostgres.RunnerTasks.Store.release(release)
+    assert {:ok, _} = reconcile_owned(context)
+
+    assert {:ok, %{cleanup_state: "unknown"}} =
+             FavnOrchestrator.ManifestDeployments.get_local(
+               context.workspace_context,
+               command.operation_id
+             )
+
+    assert {:error, _} =
+             Store.accept_local_manifest_deployment(%{command | operation_id: "replacement"})
+
+    resolution = %FavnOrchestrator.Persistence.Commands.ResolveDeploymentInspections{
+      workspace_context: context.workspace_context,
+      operation_id: command.operation_id,
+      task_assignments: %{task.task_id => assigned.assignment_generation},
+      runner_stopped: true,
+      backend_stopped: true,
+      evidence_reference: "test-quiescence-receipt",
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:error, _} =
+             Store.resolve_deployment_inspections(%{resolution | backend_stopped: false})
+
+    assert {:error, _} =
+             Store.resolve_deployment_inspections(%{
+               resolution
+               | task_assignments: %{task.task_id => 99}
+             })
+
+    assert {:ok, 1} = Store.resolve_deployment_inspections(resolution)
+    assert {:ok, 1} = Store.resolve_deployment_inspections(resolution)
+    assert {:ok, _} = reconcile_owned(context)
+
+    assert {:ok, %{state: :cancelled, cleanup_state: "settled"}} =
+             FavnOrchestrator.ManifestDeployments.get_local(
+               context.workspace_context,
+               command.operation_id
+             )
+
+    assert {:ok, :accepted, _} =
+             Store.accept_local_manifest_deployment(%{command | operation_id: "replacement"})
+  end
+
+  test "legacy backlog blocks local acceptance and requires verified assignment identities",
+       context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    task = owned_inspection(context, nil, 1)
+    command = local_command(context, "local-legacy")
+
+    assert {:error, %{details: %{reason: :legacy_deployment_inspections_pending}}} =
+             Store.accept_local_manifest_deployment(command)
+
+    resolution = %FavnOrchestrator.Persistence.Commands.ResolveDeploymentInspections{
+      workspace_context: context.workspace_context,
+      operation_id: nil,
+      task_assignments: %{task.task_id => 0},
+      runner_stopped: true,
+      backend_stopped: true,
+      evidence_reference: "legacy-inventory-reviewed",
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, 1} = Store.resolve_deployment_inspections(resolution)
+    assert {:ok, 1} = Store.resolve_deployment_inspections(resolution)
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+  end
+
+  test "deployment-owned terminal evidence is excluded from standalone retention", context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-retention")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    task = owned_inspection(context, command.operation_id, 1)
+    assert {:ok, _} = cancel_owned(context, command.operation_id)
+    assert {:ok, _} = reconcile_owned(context)
+    policy = %{excluded_workspace_ids: []}
+    cursor = %{"workspace_id" => context.workspace_id, "id" => task.task_id}
+
+    result =
+      FavnStoragePostgres.Maintenance.TaskRetention.delete!(
+        policy,
+        DateTime.add(DateTime.utc_now(), 86_400, :second),
+        cursor
+      )
+
+    assert %{deleted_count: 0} = result
+
+    assert {:ok, %{status: :cancelled}} =
+             OperationRunnerTasks.fetch(context.workspace_context, task.task_id)
+  end
+
+  test "unsettled archive inspections block archive claims and local replacement", context do
+    start_owned_runtime()
+    command = accept_command(context)
+    assert {:ok, :accepted, first} = Store.accept_manifest_deployment(command)
+    task = owned_inspection(context, first.operation_id, 1)
+    assert {:ok, assigned} = FavnStoragePostgres.RunnerTasks.Store.claim(owned_claim(context))
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.manifest_deployment_operations SET state='failed', failure_class='test_failure', terminal_at=clock_timestamp() WHERE workspace_id=$1 AND operation_id=$2",
+      [context.workspace_id, first.operation_id]
+    )
+
+    assert {:ok, :accepted, _} =
+             Store.accept_manifest_deployment(%{command | operation_id: "archive-next"})
+
+    claim = %ClaimManifestDeployment{
+      platform_context: context.platform_context,
+      owner: "next-worker",
+      occurred_at: DateTime.utc_now(),
+      expires_at: DateTime.add(DateTime.utc_now(), 45, :second)
+    }
+
+    assert {:ok, nil} = Store.claim_manifest_deployment(claim)
+
+    assert {:error, %{details: %{reason: :local_deployment_pending}}} =
+             Store.accept_local_manifest_deployment(local_command(context, "local-next"))
+
+    assert {:ok, _} = reconcile_owned(context)
+
+    resolution = %FavnOrchestrator.Persistence.Commands.ResolveDeploymentInspections{
+      workspace_context: context.workspace_context,
+      operation_id: first.operation_id,
+      task_assignments: %{task.task_id => assigned.assignment_generation},
+      runner_stopped: true,
+      backend_stopped: true,
+      evidence_reference: "verified-stopped",
+      occurred_at: DateTime.utc_now()
+    }
+
+    assert {:ok, 1} = Store.resolve_deployment_inspections(resolution)
+    assert {:ok, _} = reconcile_owned(context)
+    assert {:ok, %{operation_id: "archive-next"}} = Store.claim_manifest_deployment(claim)
+  end
+
+  test "legacy unknown activation still blocks an archive successor after cleanup settles",
+       context do
+    command = accept_command(context)
+    assert {:ok, :accepted, first} = Store.accept_manifest_deployment(command)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.manifest_deployment_operations SET state='unknown', request='{}', failure_class='legacy_unknown', terminal_at=clock_timestamp() WHERE workspace_id=$1 AND operation_id=$2",
+      [context.workspace_id, first.operation_id]
+    )
+
+    assert {:ok, _} = reconcile_owned(context)
+
+    assert {:ok, :accepted, _} =
+             Store.accept_manifest_deployment(%{command | operation_id: "unknown-successor"})
+
+    assert {:ok, nil} =
+             Store.claim_manifest_deployment(%ClaimManifestDeployment{
+               platform_context: context.platform_context,
+               owner: "new-worker",
+               occurred_at: DateTime.utc_now(),
+               expires_at: DateTime.add(DateTime.utc_now(), 45, :second)
+             })
+  end
+
+  defp start_owned_runtime do
+    start_supervised!(
+      {Runtime, %Runtime{backend: Backend, options: [], stores: Backend.stores()}}
+    )
+
+    start_runner_control_plane()
+  end
+
+  defp local_command(context, operation_id) do
+    now = DateTime.utc_now()
+
+    %FavnOrchestrator.Persistence.Commands.AcceptLocalManifestDeployment{
+      workspace_context: context.workspace_context,
+      operation_id: operation_id,
+      session_id: "session-" <> operation_id,
+      manifest_version_id: context.version.manifest_version_id,
+      occurred_at: now,
+      expires_at: DateTime.add(now, 45, :second)
+    }
+  end
+
+  defp cancel_owned(context, operation_id) do
+    Store.cancel_manifest_deployment(
+      %FavnOrchestrator.Persistence.Commands.CancelManifestDeployment{
+        workspace_context: context.workspace_context,
+        operation_id: operation_id,
+        reason: :local_stop,
+        occurred_at: DateTime.utc_now()
+      }
+    )
+  end
+
+  defp reconcile_owned(_context, now \\ DateTime.utc_now()) do
+    Store.reconcile_manifest_deployments(
+      %FavnOrchestrator.Persistence.Commands.ReconcileManifestDeployments{
+        platform_context: SystemContext.platform(:manifest_test, roles: [:platform_operator]),
+        occurred_at: now
+      }
+    )
+  end
+
+  defp owned_inspection(context, operation_id, n) do
+    assert {:ok, task} = ensure_owned_inspection(context, operation_id, n)
+    task
+  end
+
+  defp ensure_owned_inspection(context, operation_id, n) do
+    asset = hd(context.version.manifest.assets)
+    {:ok, binding} = OperationRunnerTasks.binding(context.version, asset)
+
+    request = %RelationInspectionRequest{
+      manifest_version_id: context.version.manifest_version_id,
+      manifest_content_hash: context.version.content_hash,
+      required_runner_release_id: binding.required_runner_release_id,
+      asset_ref: asset.ref,
+      include: [:relation, :columns, :table_metadata],
+      sample_limit: 0
+    }
+
+    OperationRunnerTasks.ensure(
+      context.workspace_context,
+      context.version,
+      asset.ref,
+      :relation_inspection,
+      request,
+      {:deployment_target_inspection, operation_id, n},
+      deployment_operation_id: operation_id,
+      deadline_at: DateTime.add(DateTime.utc_now(), 300, :second),
+      platform_context: context.platform_context
+    )
+  end
+
+  defp owned_claim(context) do
+    asset = hd(context.version.manifest.assets)
+    {:ok, binding} = OperationRunnerTasks.binding(context.version, asset)
+
+    %FavnOrchestrator.Persistence.Commands.ClaimRunnerTask{
+      platform_context: context.platform_context,
+      command_id: "claim-owned",
+      runner_instance_id: "runner-owned",
+      runner_session_generation: 1,
+      runner_pool: binding.runner_pool,
+      required_runner_release_id: binding.required_runner_release_id,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"],
+      lease_duration_ms: 30_000,
+      issued_at: DateTime.utc_now(),
+      occurred_at: DateTime.utc_now()
+    }
   end
 
   defp accept_command(context) do

@@ -3,7 +3,9 @@ defmodule FavnLocal.Publication do
 
   alias Favn.Manifest.Publication
   alias FavnOrchestrator.ExecutionPackages
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.Manifests
+  alias FavnOrchestrator.ManifestDeployments
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -16,9 +18,11 @@ defmodule FavnLocal.Publication do
     end
   end
 
-  @spec reload(Publication.t(), Publication.t(), map(), String.t()) ::
+  @type ownership :: %{operation_id: String.t(), session_id: String.t()}
+
+  @spec reload(Publication.t(), Publication.t(), map(), String.t(), ownership() | nil) ::
           {:ok, map()} | {:error, term()}
-  def reload(publication, previous, deployment, workspace_id) do
+  def reload(publication, previous, deployment, workspace_id, ownership \\ nil) do
     with {:ok, unchanged?} <- unchanged?(publication, previous, deployment, workspace_id) do
       if unchanged? do
         {:ok,
@@ -33,7 +37,7 @@ defmodule FavnLocal.Publication do
            }
          })}
       else
-        with {:ok, result} <- deploy(publication, workspace_id) do
+        with {:ok, result} <- deploy(publication, workspace_id, nil, ownership) do
           {:ok, Map.put(result, :reload_status, :manifest_deployed)}
         end
       end
@@ -55,22 +59,35 @@ defmodule FavnLocal.Publication do
     end
   end
 
-  @spec deploy(Publication.t(), String.t(), String.t() | nil) ::
+  @spec deploy(Publication.t(), String.t(), String.t() | nil, ownership() | nil) ::
           {:ok, map()} | {:error, term()}
-  def deploy(%Publication{} = publication, workspace_id, maintenance_token \\ nil)
+  def deploy(
+        %Publication{} = publication,
+        workspace_id,
+        maintenance_token \\ nil,
+        ownership \\ nil
+      )
       when is_binary(workspace_id) do
     with {:ok, platform} <-
            PlatformContext.new("favn-local", "favn-local", [:platform_admin]),
          {:ok, workspace} <-
            WorkspaceContext.new(workspace_id, "favn-local", [:platform_operator]),
-         {:ok, permit} <- acquire_admission(maintenance_token),
-         result <- deploy_with_permit(platform, workspace, publication) do
-      release_admission(permit)
-      result
+         %{operation_id: operation_id} <- ownership,
+         {:ok, permit} <- acquire_admission(maintenance_token) do
+      try do
+        with :ok <- Lifecycle.delegate_deployment(permit, workspace_id, operation_id) do
+          deploy_with_permit(platform, workspace, publication, ownership)
+        end
+      after
+        release_admission(permit)
+      end
+    else
+      nil -> {:error, :local_deployment_owner_required}
+      error -> error
     end
   end
 
-  defp deploy_with_permit(platform, workspace, publication) do
+  defp deploy_with_permit(platform, workspace, publication, ownership) do
     version = publication.version
     started_at = now_ms()
 
@@ -84,20 +101,19 @@ defmodule FavnLocal.Publication do
       with {:ok, _status, canonical} <- publication_result do
         {manifest_activation_ms, activation_result} =
           timed(fn ->
-            Manifests.deploy(
-              platform,
-              workspace,
-              canonical.manifest_version_id,
-              %{
-                common_assets: "all",
-                common_pipelines: "all",
-                workspace_assets: [],
-                workspace_pipelines: []
-              },
-              deployment_id: deployment_attempt_id(canonical.manifest_version_id),
-              configuration: %{},
-              execution_pool_policy: %{approve_manifest_defaults: true}
-            )
+            with %{operation_id: operation_id, session_id: session_id} <- ownership,
+                 {:ok, _status, _operation} <-
+                   ManifestDeployments.accept_local(
+                     workspace,
+                     operation_id,
+                     session_id,
+                     canonical.manifest_version_id
+                   ) do
+              await_activation(workspace, operation_id, now_ms() + 330_000)
+            else
+              nil -> {:error, :local_deployment_owner_required}
+              {:error, _reason} = error -> error
+            end
           end)
 
         deployment_result(
@@ -155,7 +171,7 @@ defmodule FavnLocal.Publication do
 
   defp now_ms, do: System.monotonic_time(:millisecond)
 
-  defp acquire_admission(nil), do: {:ok, nil}
+  defp acquire_admission(nil), do: Lifecycle.acquire_admission()
 
   defp acquire_admission(token) when is_binary(token) do
     FavnOrchestrator.Lifecycle.acquire_maintenance_admission(token)
@@ -164,8 +180,53 @@ defmodule FavnLocal.Publication do
   defp release_admission(nil), do: :ok
   defp release_admission(permit), do: FavnOrchestrator.Lifecycle.release_admission(permit)
 
-  defp deployment_attempt_id(manifest_version_id) do
-    suffix = 12 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
-    "deployment:local:#{manifest_version_id}:#{suffix}"
+  defp await_activation(workspace, operation_id, deadline) do
+    case ManifestDeployments.get_local(workspace, operation_id) do
+      {:ok, %{state: state, activation_receipt: receipt}}
+      when state in [:succeeded, :needs_attention] and not is_nil(receipt) ->
+        case Manifests.active_runtime(workspace) do
+          {:ok, runtime}
+          when runtime.deployment_id == :erlang.map_get("deployment_id", receipt) and
+                 runtime.revision == :erlang.map_get("runtime_revision", receipt) ->
+            {:ok, runtime}
+
+          {:ok, _runtime} ->
+            {:error, {:deployment_superseded, operation_id}}
+
+          {:error, reason} ->
+            {:error, {:reload_outcome_unknown, %{operation_id: operation_id, reason: reason}}}
+        end
+
+      {:ok, %{state: state, failure_class: reason}}
+      when state in [:failed, :cancelled, :unknown] ->
+        {:error, {:deployment_operation, operation_id, state, reason}}
+
+      {:ok, _operation} ->
+        if now_ms() >= deadline do
+          case ManifestDeployments.cancel(workspace, operation_id, :startup_timeout) do
+            {:ok, %{activation_receipt: receipt}} when not is_nil(receipt) ->
+              await_activation(workspace, operation_id, deadline)
+
+            {:ok, %{state: state, cleanup_state: cleanup}} when state != :unknown ->
+              {:error,
+               {:deployment_interrupted,
+                %{operation_id: operation_id, activation: :not_committed, cleanup: cleanup}}}
+
+            _unknown ->
+              {:error,
+               {:reload_outcome_unknown,
+                %{operation_id: operation_id, reason: :operation_wait_timeout}}}
+          end
+        else
+          # This bounded observer runs in a supervised task, never in the runtime GenServer.
+          receive do
+          after
+            250 -> await_activation(workspace, operation_id, deadline)
+          end
+        end
+
+      {:error, reason} ->
+        {:error, {:reload_outcome_unknown, %{operation_id: operation_id, reason: reason}}}
+    end
   end
 end

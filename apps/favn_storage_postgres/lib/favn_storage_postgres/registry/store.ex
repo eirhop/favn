@@ -1031,6 +1031,7 @@ defmodule FavnStoragePostgres.Registry.Store do
          evidence_bindings,
          manifest_summary
        ) do
+    deployment_owner = FavnStoragePostgres.Registry.DeploymentOwnership.activation!(command)
     verify_manifest_activation_lease!(command)
 
     locked_ids =
@@ -1041,6 +1042,11 @@ defmodule FavnStoragePostgres.Registry.Store do
 
     locked_runtime_state = lock_runtime_state!(command.workspace_context.workspace_id)
     verify_expected_active_deployment!(command, locked_runtime_state)
+
+    if deployment_owner &&
+         deployment_owner.expected_runtime_revision != locked_runtime_state.revision do
+      Repo.rollback(Error.new(:conflict, "deployment base revision changed"))
+    end
 
     FavnStoragePostgres.RuntimeCatalogGuard.validate_deployment!(
       command.workspace_context.workspace_id,
@@ -1100,13 +1106,17 @@ defmodule FavnStoragePostgres.Registry.Store do
       })
     end
 
-    runtime_result(
-      runtime_state,
-      command.manifest_version_id,
-      manifest_summary,
-      command.activation_diagnostics,
-      execution_pool_diagnostics!(configuration)
-    )
+    runtime =
+      runtime_result(
+        runtime_state,
+        command.manifest_version_id,
+        manifest_summary,
+        command.activation_diagnostics,
+        execution_pool_diagnostics!(configuration)
+      )
+
+    :ok = FavnStoragePostgres.Registry.DeploymentOwnership.receipt!(deployment_owner, runtime)
+    runtime
   end
 
   defp verify_manifest_activation_lease!(%DeployManifest{
@@ -2880,11 +2890,15 @@ defmodule FavnStoragePostgres.Registry.Store do
                  [operation],
                  (operation.state == "accepted" and
                     fragment(
-                      "NOT EXISTS (SELECT 1 FROM favn_control.manifest_deployment_operations AS active WHERE active.workspace_id = ? AND active.state = 'activating')",
+                      "NOT EXISTS (SELECT 1 FROM favn_control.manifest_deployment_operations AS active WHERE active.workspace_id = ? AND (active.state IN ('activating', 'unknown') OR (active.state NOT IN ('accepted', 'activating') AND active.cleanup_state != 'settled')))",
                       operation.workspace_id
                     )) or
                    (operation.state == "activating" and
                       operation.claim_expires_at <= ^command.occurred_at)
+               )
+               |> where(
+                 [operation],
+                 operation.source != "local" or operation.local_expires_at > ^command.occurred_at
                )
                |> order_by([operation], asc: operation.accepted_at)
                |> limit(1)
@@ -2895,30 +2909,61 @@ defmodule FavnStoragePostgres.Registry.Store do
                  nil
 
                operation ->
-                 fence = operation.claim_fence + 1
-
-                 changes = [
-                   state: "activating",
-                   claim_owner: command.owner,
-                   claim_fence: fence,
-                   claim_expires_at: database_datetime(command.expires_at),
-                   activating_at:
-                     operation.activating_at || database_datetime(command.occurred_at),
-                   updated_at: database_datetime(command.occurred_at)
-                 ]
-
-                 {1, _rows} =
-                   ManifestDeploymentOperation
-                   |> where(
-                     [row],
-                     row.workspace_id == ^operation.workspace_id and
-                       row.operation_id == ^operation.operation_id
+                 %{rows: [[workspace_locked]]} =
+                   SQL.query!(
+                     Repo,
+                     "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
+                     ["deployment-claim:" <> operation.workspace_id]
                    )
-                   |> Repo.update_all(set: changes)
 
-                 operation
-                 |> struct!(changes)
-                 |> manifest_deployment_result()
+                 blocked =
+                   Repo.exists?(
+                     from(other in ManifestDeploymentOperation,
+                       where:
+                         other.workspace_id == ^operation.workspace_id and
+                           other.operation_id != ^operation.operation_id and
+                           (other.state in ["activating", "unknown"] or
+                              (other.state not in ["accepted", "activating"] and
+                                 other.cleanup_state != "settled"))
+                     )
+                   )
+
+                 if workspace_locked and not blocked do
+                   fence = operation.claim_fence + 1
+
+                   changes = [
+                     state: "activating",
+                     claim_owner: command.owner,
+                     claim_fence: fence,
+                     claim_expires_at: database_datetime(command.expires_at),
+                     activating_at:
+                       operation.activating_at || database_datetime(command.occurred_at),
+                     inspection_deadline_at:
+                       operation.inspection_deadline_at ||
+                         DateTime.add(
+                           command.occurred_at,
+                           command.inspection_timeout_ms,
+                           :millisecond
+                         ),
+                     expected_runtime_revision:
+                       operation.expected_runtime_revision ||
+                         deployment_runtime_revision(operation.workspace_id),
+                     updated_at: database_datetime(command.occurred_at)
+                   ]
+
+                   {1, _rows} =
+                     ManifestDeploymentOperation
+                     |> where(
+                       [row],
+                       row.workspace_id == ^operation.workspace_id and
+                         row.operation_id == ^operation.operation_id
+                     )
+                     |> Repo.update_all(set: changes)
+
+                   operation
+                   |> struct!(changes)
+                   |> manifest_deployment_result()
+                 end
              end
            end) do
       {:ok, operation}
@@ -3230,6 +3275,15 @@ defmodule FavnStoragePostgres.Registry.Store do
       workspace_id: command.context.workspace_id,
       operation_id: command.operation_id,
       archive_sha256: archive_hash,
+      request: %{
+        "ownership_version" => 1,
+        "selection" =>
+          FavnOrchestrator.ManifestDeployments.fixed_selection()
+          |> Jason.encode!()
+          |> Jason.decode!(),
+        "configuration" => %{},
+        "approve_manifest_defaults" => true
+      },
       request_fingerprint: fingerprint,
       service_identity: command.context.service_identity,
       manifest_version_id: version.manifest_version_id,
@@ -3290,11 +3344,12 @@ defmodule FavnStoragePostgres.Registry.Store do
     end
   end
 
-  defp manifest_deployment_result(row) do
+  @doc false
+  def manifest_deployment_result(row) do
     %ManifestDeployment{
       workspace_id: row.workspace_id,
       operation_id: row.operation_id,
-      archive_sha256: Base.encode16(row.archive_sha256, case: :lower),
+      archive_sha256: if(row.archive_sha256, do: Base.encode16(row.archive_sha256, case: :lower)),
       request_fingerprint: Base.encode16(row.request_fingerprint, case: :lower),
       service_identity: row.service_identity,
       manifest_version_id: row.manifest_version_id,
@@ -3312,6 +3367,15 @@ defmodule FavnStoragePostgres.Registry.Store do
       accepted_at: row.accepted_at,
       activating_at: row.activating_at,
       terminal_at: row.terminal_at,
+      source: row.source,
+      local_session_id: row.local_session_id,
+      local_expires_at: row.local_expires_at,
+      inspection_deadline_at: row.inspection_deadline_at,
+      cancellation_requested_at: row.cancellation_requested_at,
+      cleanup_state: row.cleanup_state,
+      activation_receipt: row.activation_receipt,
+      expected_runtime_revision: row.expected_runtime_revision,
+      request: row.request,
       inserted_at: row.inserted_at,
       updated_at: row.updated_at
     }
@@ -3399,4 +3463,50 @@ defmodule FavnStoragePostgres.Registry.Store do
       Error.new(:invalid, "workspace attributes are invalid")
     end
   end
+
+  defp deployment_runtime_revision(workspace_id) do
+    case SQL.query!(
+           Repo,
+           "SELECT revision FROM favn_control.workspace_runtime_state WHERE workspace_id = $1",
+           [workspace_id]
+         ).rows do
+      [[revision]] -> revision
+      [] -> 0
+    end
+  end
+
+  @impl true
+  defdelegate accept_local_manifest_deployment(command),
+    to: FavnStoragePostgres.Registry.DeploymentOwnership,
+    as: :accept
+
+  @impl true
+  defdelegate renew_local_manifest_deployment(command),
+    to: FavnStoragePostgres.Registry.DeploymentOwnership,
+    as: :renew
+
+  @impl true
+  defdelegate cancel_manifest_deployment(command),
+    to: FavnStoragePostgres.Registry.DeploymentOwnership,
+    as: :cancel
+
+  @impl true
+  defdelegate reconcile_manifest_deployments(command),
+    to: FavnStoragePostgres.Registry.DeploymentOwnership,
+    as: :reconcile
+
+  @impl true
+  defdelegate deployment_inspections(query),
+    to: FavnStoragePostgres.Registry.DeploymentOwnership,
+    as: :inspections
+
+  @impl true
+  defdelegate pin_deployment_inspection_base(command),
+    to: FavnStoragePostgres.Registry.DeploymentOwnership,
+    as: :pin_base
+
+  @impl true
+  defdelegate resolve_deployment_inspections(command),
+    to: FavnStoragePostgres.Registry.DeploymentOwnership,
+    as: :resolve
 end
