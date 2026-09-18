@@ -274,7 +274,7 @@ defmodule FavnOrchestrator.OperationRunnerTasksTest do
                ensure.(changed_parent)
     end
 
-    assert length(Agent.get(fixture.agent, & &1.commands)) == 3
+    assert length(Agent.get(fixture.agent, & &1.commands)) == 5
     assert Agent.get(fixture.agent, & &1.retries) == []
   end
 

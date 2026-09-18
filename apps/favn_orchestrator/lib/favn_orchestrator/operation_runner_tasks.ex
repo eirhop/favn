@@ -118,7 +118,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
     with {:ok, _receipt} <- RunnerTasks.enqueue(command), do: fetch(context, command.task_id)
   end
 
-  defp ensure_persisted(_context, existing, command) do
+  defp ensure_persisted(context, existing, command) do
     fields = [
       :task_id,
       :domain_identity,
@@ -154,6 +154,9 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
         existing.payload_version != PersistenceCodec.payload_version() or
           existing.orchestration_context_hash != context_hash ->
         {:error, {:operation_runner_task_identity_mismatch, existing.task_id}}
+
+      not is_nil(existing.deployment_operation_id) ->
+        ensure_persisted(context, nil, command)
 
       true ->
         {:ok, existing}

@@ -996,3 +996,21 @@ Explicit normal runtime shutdown now clears the registry. The analogous lost-rep
 fixture has the same cleanup. The original five-second barrier remains unchanged;
 no production workaround or increased timeout was added. Full suites and exact-head
 CI are being rerun after these corrections.
+
+The complete rebased PostgreSQL suite then caught one additional #735 interaction:
+immutable task reuse bypassed the closed-deployment check at `ensure`, although
+claim/start remained fenced. All deployment-owned replays now retain main's
+enqueue admission guard before reading the task; run-owned recovery retains its
+saved-evidence path. Tests cover queued, cancelled and successful task replay
+under a closed parent, and direct reads still preserve terminal evidence. Astra
+recommended this stricter reuse of the existing guard rather than a new API or
+status-specific exception.
+
+Full runner qualification exposed a separate test fixture leak: the Started
+acknowledgement-loss test used an indefinitely sleeping asset, and its fake did
+not implement the requested second-ack barrier. It could finish with a worker
+still producing logs into the shared result buffer. The fixture now implements
+that barrier, uses the existing completing asset, and waits for result delivery
+and assignment cleanup. No production runner behavior or timeout changed.
+The same failing seed now passes all 278 runner tests. The rebased orchestrator
+suite passes 922 checks (916 tests and six doctests); all 46 ADBC unit tests pass.

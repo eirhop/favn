@@ -60,6 +60,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnStoragePostgres.Backend
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Registry.Store
+  alias FavnStoragePostgres.RunnerTasks.Store, as: TaskStore
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.StorageV2.Migrations
 
@@ -1318,7 +1319,76 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
                command.operation_id
              )
 
+    assert {:error, %{details: %{reason: :deployment_inspection_admission_closed}}} =
+             ensure_owned_inspection(context, command.operation_id, 1)
+
+    assert {:ok, %{status: :cancelled}} =
+             OperationRunnerTasks.fetch(context.workspace_context, hd(tasks).task_id)
+
     assert length(Enum.uniq_by(tasks, & &1.task_id)) == 101
+  end
+
+  test "closed deployment rejects completed-task admission replay but retains evidence",
+       context do
+    start_owned_runtime()
+    assert {:ok, _, _} = Manifests.publish(context.platform_context, context.version)
+    command = local_command(context, "local-completed-replay")
+    assert {:ok, :accepted, _} = Store.accept_local_manifest_deployment(command)
+    task = owned_inspection(context, command.operation_id, 1)
+    assert {:ok, assigned} = TaskStore.claim(owned_claim(context))
+    now = DateTime.utc_now()
+
+    assert {:ok, _} =
+             TaskStore.transition(%FavnOrchestrator.Persistence.Commands.TransitionRunnerTask{
+               workspace_context: context.workspace_context,
+               command_id: "completed-replay-start",
+               task_id: task.task_id,
+               runner_instance_id: assigned.assigned_runner_instance_id,
+               runner_session_generation: assigned.assigned_runner_session_generation,
+               assignment_generation: assigned.assignment_generation,
+               transition: :running,
+               issued_at: now,
+               occurred_at: now
+             })
+
+    result = %RelationInspectionResult{
+      asset_ref: task.payload.asset_ref,
+      relation_ref: task.payload.relation,
+      required_runner_release_id: task.required_runner_release_id,
+      row_count: 1,
+      inspected_at: now
+    }
+
+    assert {:ok, encoded} =
+             Favn.Contracts.RunnerTask.PersistenceCodec.encode_result(
+               :relation_inspection,
+               :succeeded,
+               result
+             )
+
+    assert {:ok, _} =
+             TaskStore.complete(%FavnOrchestrator.Persistence.Commands.CompleteRunnerTask{
+               workspace_context: context.workspace_context,
+               command_id: "completed-replay-finish",
+               task_id: task.task_id,
+               runner_instance_id: assigned.assigned_runner_instance_id,
+               runner_session_generation: assigned.assigned_runner_session_generation,
+               assignment_generation: assigned.assignment_generation,
+               result_version: 1,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: encoded,
+               issued_at: now,
+               occurred_at: now
+             })
+
+    assert {:ok, _} = cancel_owned(context, command.operation_id)
+
+    assert {:error, %{details: %{reason: :deployment_inspection_admission_closed}}} =
+             ensure_owned_inspection(context, command.operation_id, 1)
+
+    assert {:ok, %{status: :succeeded, result: ^result}} =
+             OperationRunnerTasks.fetch(context.workspace_context, task.task_id)
   end
 
   test "closed owner fences replayed claim and running transition but permits settlement",
