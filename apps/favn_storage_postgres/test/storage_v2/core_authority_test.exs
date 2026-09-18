@@ -1,3 +1,5 @@
+Code.require_file("../../../../scripts/repair_initial_registration.exs", __DIR__)
+
 defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   use ExUnit.Case, async: false
 
@@ -341,6 +343,27 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
          )}
       end
     end
+  end
+
+  defmodule InvalidInitialMarkerParentStore do
+    @behaviour FavnOrchestrator.Persistence.RunnerTaskStore
+    for {operation, arity} <-
+          FavnOrchestrator.Persistence.RunnerTaskStore.behaviour_info(:callbacks) -- [enqueue: 1] do
+      args = Macro.generate_arguments(arity, __MODULE__)
+      @impl true
+      def unquote(operation)(unquote_splicing(args)),
+        do: apply(FavnStoragePostgres.RunnerTasks.Store, unquote(operation), unquote(args))
+    end
+
+    @impl true
+    def enqueue(%{task_kind: :generation_marker_initialize} = command),
+      do:
+        FavnStoragePostgres.RunnerTasks.Store.enqueue(%{
+          command
+          | operation_id: command.write_operation_id
+        })
+
+    def enqueue(command), do: FavnStoragePostgres.RunnerTasks.Store.enqueue(command)
   end
 
   defmodule InvalidTaskDataStore do
@@ -1773,6 +1796,479 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                "SELECT conname FROM pg_constraint WHERE conname IN ('rebuild_plan_actions_child_operation_fk', 'rebuild_windows_materialization_fk') ORDER BY conname",
                []
              )
+  end
+
+  test "first-write pipeline registers its marker without a rebuild or recovery parent",
+       fixture do
+    initial_registration_pipeline!(fixture, false)
+  end
+
+  test "repair preserves successful writes after the initial marker parent rejection", fixture do
+    initial_registration_pipeline!(fixture, true)
+  end
+
+  test "operation parents remain required and retirement fences completion", fixture do
+    request = %GenerationCapabilitiesRequest{
+      manifest: Version.identity(fixture.version),
+      asset_ref: {MyApp.Asset, :asset}
+    }
+
+    ensure = fn parent, id ->
+      FavnOrchestrator.OperationRunnerTasks.ensure(
+        fixture.workspace_context,
+        fixture.version,
+        request.asset_ref,
+        :generation_capabilities,
+        request,
+        {:parent_guard, id},
+        operation_id: parent
+      )
+    end
+
+    assert {:error, %{kind: :not_found, message: "operation history not found"}} =
+             ensure.("initial-marker:missing-parent", "missing")
+
+    id = "initial-marker:real-rebuild:" <> fixture.workspace_id
+    now = DateTime.utc_now()
+    payload = %{schema_version: 1, operation_id: id, deployment_id: fixture.deployment_id}
+
+    assert {:ok, _} =
+             RebuildStore.begin_plan(%BeginRebuildPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: id,
+               operation_id: id,
+               root_target_id: fixture.target_id,
+               manifest_version_id: fixture.version.manifest_version_id,
+               planning_hash: RebuildPlan.hash(payload),
+               planning_payload: payload,
+               actor_id: fixture.workspace_context.principal_id,
+               reason: "parent guard regression",
+               idempotency_key: id,
+               evaluated_at: now,
+               occurred_at: now
+             })
+
+    assert {:ok, _} = ensure.(id, "retiring")
+    task = claim_initial_registration_task!(fixture, :generation_capabilities)
+    assert :ok = start_runner_task(task)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET retiring=true WHERE workspace_id=$1 AND operation_id=$2",
+      [fixture.workspace_id, id]
+    )
+
+    result = %Favn.Contracts.GenerationCapabilitiesResult{capabilities: %{}}
+
+    assert {:error, %{kind: :expired, message: "operation history is retiring"}} =
+             finish_runner_task(task, outcome: :succeeded, retry_class: :terminal, result: result)
+
+    assert {:error, %{kind: :expired}} = ensure.(id, "new-retiring-task")
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET retiring=false WHERE workspace_id=$1 AND operation_id=$2",
+      [fixture.workspace_id, id]
+    )
+
+    assert :ok =
+             finish_runner_task(task, outcome: :succeeded, retry_class: :terminal, result: result)
+
+    assert {:ok, _} = ensure.(id, "removed-parent")
+    task = claim_initial_registration_task!(fixture, :generation_capabilities)
+    assert :ok = start_runner_task(task)
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.rebuild_operations WHERE workspace_id=$1 AND operation_id=$2",
+      [fixture.workspace_id, id]
+    )
+
+    assert {:error, %{kind: :not_found, message: "operation history not found"}} =
+             finish_runner_task(task, outcome: :succeeded, retry_class: :terminal, result: result)
+  end
+
+  defp initial_registration_pipeline!(fixture, repair?) do
+    runtime =
+      if repair? do
+        {:ok, runtime} =
+          Runtime.start_link(%Runtime{
+            backend: Backend,
+            options: [],
+            stores: %{Backend.stores() | runner_tasks: InvalidInitialMarkerParentStore}
+          })
+
+        Process.unlink(runtime)
+        on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
+        runtime
+      end
+
+    version = recoverable_activation_fixture(fixture).version
+    descriptor = hd(version.manifest.assets).target_descriptor
+
+    compatibility = %DeploymentTargetCompatibility{
+      target_id: descriptor.target_id,
+      desired_descriptor_hash: descriptor.descriptor_hash,
+      expected_binding_version: nil,
+      expected_active_generation_id: nil,
+      active_physical_fingerprint: nil,
+      compatibility_status: :uninitialized,
+      reason_code: "no_active_generation",
+      compatibility_diff: %{"physical_relation" => %{"actual" => nil}}
+    }
+
+    fixture = provision_deploy_fixture(version, [], [compatibility])
+
+    {:ok, persisted_version} =
+      RegistryStore.get_manifest(%FavnOrchestrator.Persistence.Queries.ManifestSelector.ById{
+        manifest_version_id: version.manifest_version_id
+      })
+
+    fixture = %{fixture | version: persisted_version}
+    {command, run} = pipeline_run_command(fixture)
+    {:ok, index} = Favn.Manifest.Index.build_from_version(fixture.version)
+
+    assert {:ok, plan} =
+             FavnOrchestrator.TargetGenerations.pin_plan(
+               fixture.workspace_context,
+               fixture.version,
+               index,
+               run.plan,
+               DateTime.utc_now()
+             )
+
+    run =
+      %{run | plan: plan, plan_hash: RunState.plan_hash(plan)} |> RunState.with_snapshot_hash()
+
+    assert {:ok, _} = RunStore.create_run(%{command | run: run})
+    start_pipeline_runtime!()
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor})
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    monitor = Process.monitor(pid)
+    [_] = await_runner_task_ids!(fixture.workspace_id, run.id, 1)
+    assert {:ok, asset_task} = claim_asset_task(fixture)
+    assert :ok = start_runner_task(asset_task)
+    assert :ok = complete_asset_task(asset_task, asset_task.payload, false)
+
+    inspection_task = claim_initial_registration_task!(fixture, :relation_inspection)
+
+    assert %{rows: [[1]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.materializations WHERE workspace_id=$1 AND run_id=$2",
+               [fixture.workspace_id, run.id]
+             )
+
+    inspection = %RelationInspectionResult{
+      asset_ref: {MyApp.Asset, :asset},
+      required_runner_release_id: fixture.version.runner_releases["default"],
+      relation: %{catalog: nil, schema: "analytics", name: "asset", type: :table},
+      columns: [%{name: "id", data_type: "BIGINT", nullable?: false}],
+      table_metadata: %{},
+      adapter: "Elixir.FavnTestSupport.TargetAdapter",
+      inspected_at: DateTime.utc_now()
+    }
+
+    assert :ok = start_runner_task(inspection_task)
+    await_runner_task_waiter!(inspection_task)
+
+    assert :ok =
+             finish_runner_task(inspection_task,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: inspection
+             )
+
+    capabilities = claim_initial_registration_task!(fixture, :generation_capabilities)
+    assert :ok = start_runner_task(capabilities)
+
+    assert :ok =
+             finish_runner_task(capabilities,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: %Favn.Contracts.GenerationCapabilitiesResult{
+                 capabilities: %{
+                   transactional_ddl: :supported,
+                   physical_inspection: :supported,
+                   marker_reconciliation: :supported
+                 }
+               }
+             )
+
+    repair =
+      if repair? do
+        assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+        assert {:ok, failed} = get_run(fixture, run.id)
+        assert failed.status == :error
+        assert inspect(failed.error) =~ "operation history not found"
+
+        assert %{rows: [[1]]} =
+                 SQL.query!(
+                   Repo,
+                   "SELECT count(*) FROM favn_control.materializations WHERE workspace_id=$1 AND run_id=$2",
+                   [fixture.workspace_id, run.id]
+                 )
+
+        GenServer.stop(runtime)
+        repair_args = [fixture.workspace_context, asset_task.task_id]
+
+        assert {:error, :initial_registration_repair_not_eligible} =
+                 FavnMaintenance.InitialRegistration.repair(
+                   %{fixture.workspace_context | roles: [:customer_reader]},
+                   asset_task.task_id
+                 )
+
+        for {mutation, expected} <- [
+              {"DELETE FROM favn_control.materializations WHERE workspace_id=$1",
+               :missing_evidence},
+              {"UPDATE favn_control.asset_target_bindings SET compatibility_status='operator_decision' WHERE workspace_id=$1",
+               :mismatch},
+              {"UPDATE favn_control.materialization_claims SET effect_state='outcome_unknown' WHERE workspace_id=$1",
+               :unknown_write}
+            ] do
+          assert {:error, :rolled_back_probe} =
+                   Repo.transaction(fn ->
+                     SQL.query!(Repo, mutation, [fixture.workspace_id])
+                     error = apply(FavnMaintenance.InitialRegistration, :repair, repair_args)
+
+                     case expected do
+                       :missing_evidence ->
+                         assert {:error,
+                                 %{details: %{reason_code: "target_recovery_evidence_missing"}}} =
+                                  error
+
+                       :mismatch ->
+                         assert {:error, :initial_registration_evidence_mismatch} = error
+
+                       :unknown_write ->
+                         assert {:error, :target_write_requires_reconciliation} = error
+                     end
+
+                     Repo.rollback(:rolled_back_probe)
+                   end)
+        end
+
+        observer = self()
+
+        Task.async(fn ->
+          result =
+            FavnMaintenance.InitialRegistration.repair(
+              fixture.workspace_context,
+              asset_task.task_id
+            )
+
+          send(observer, {:registration_repair_finished, result})
+          result
+        end)
+      end
+
+    marker_task = claim_initial_registration_task!(fixture, :generation_marker_initialize)
+    request = marker_task.payload
+    assert marker_task.operation_id == nil
+    assert marker_task.write_operation_id == request.initialization_operation_id
+    assert String.starts_with?(marker_task.write_operation_id, "initial-marker:")
+    assert :ok = start_runner_task(marker_task)
+
+    marker = %Favn.Contracts.GenerationMarker{
+      target_id: request.target_id,
+      active_relation: request.active_relation,
+      active_generation_id: request.target_generation_id,
+      activation_operation_id: request.initialization_operation_id,
+      activation_token: request.initialization_token,
+      activated_at: DateTime.utc_now()
+    }
+
+    result = %Favn.Contracts.GenerationMarkerInitializationResult{
+      required_runner_release_id: request.required_runner_release_id,
+      target_id: request.target_id,
+      target_generation_id: request.target_generation_id,
+      initialization_token: request.initialization_token,
+      outcome: :succeeded,
+      observed_marker: marker,
+      physical_fingerprint: request.expected_physical_fingerprint,
+      completed_at: DateTime.utc_now()
+    }
+
+    assert :ok =
+             finish_runner_task(marker_task,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: result
+             )
+
+    if repair?,
+      do: assert(:ok == Task.await(repair, 5_000)),
+      else: assert_receive({:DOWN, ^monitor, :process, ^pid, :normal}, 5_000)
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == if(repair?, do: :error, else: :ok)
+
+    if repair?,
+      do:
+        assert(
+          :ok ==
+            FavnMaintenance.InitialRegistration.repair(
+              fixture.workspace_context,
+              asset_task.task_id
+            )
+        )
+
+    assert {:ok, binding} =
+             TargetGenerationStore.get_binding(%GetTargetBinding{
+               workspace_context: fixture.workspace_context,
+               target_id: fixture.target_id
+             })
+
+    assert binding.active_generation_id == request.target_generation_id
+
+    assert %{rows: [["active"]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status FROM favn_control.asset_target_generations WHERE workspace_id=$1 AND target_generation_id::text=$2",
+               [fixture.workspace_id, request.target_generation_id]
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.rebuild_operations WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.target_recovery_operations WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             )
+
+    assert %{rows: [[0]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.target_operation_locks WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             )
+
+    {:ok, index} = Favn.Manifest.Index.build_from_version(fixture.version)
+
+    entry =
+      Map.merge(asset_task.orchestration_context, %{
+        asset_ref: asset_task.payload.asset_ref,
+        version: fixture.version,
+        manifest_index: index
+      })
+
+    assert :ok = FavnOrchestrator.InitialTargetGenerationReconciler.reconcile(entry)
+
+    assert %{rows: [[4]]} =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runner_tasks WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             )
+
+    if repair? do
+      now = DateTime.utc_now()
+      operation = "recovery-parent:" <> fixture.workspace_id
+
+      assert {:ok, _} =
+               TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
+                 workspace_context: fixture.workspace_context,
+                 command_id: operation,
+                 operation_id: operation,
+                 target_id: fixture.target_id,
+                 recovery_kind: :reconcile_initial_generation,
+                 desired_manifest_id: version.manifest_version_id,
+                 source_manifest_id: version.manifest_version_id,
+                 target_generation_id: request.target_generation_id,
+                 materialization_id:
+                   FavnOrchestrator.MaterializationClaims.materialization_id(
+                     entry.materialization_claim
+                   ),
+                 actor_id: fixture.workspace_context.principal_id,
+                 reason: "recovery parent guard",
+                 idempotency_key: operation,
+                 expected_binding_version: binding.version,
+                 evaluated_at: now,
+                 occurred_at: now
+               })
+
+      assert {:ok, _} =
+               FavnOrchestrator.OperationRunnerTasks.ensure(
+                 fixture.workspace_context,
+                 version,
+                 entry.asset_ref,
+                 :generation_capabilities,
+                 %GenerationCapabilitiesRequest{
+                   manifest: Version.identity(version),
+                   asset_ref: entry.asset_ref
+                 },
+                 {:recovery_parent, operation},
+                 operation_id: operation
+               )
+
+      task = claim_initial_registration_task!(fixture, :generation_capabilities)
+      assert task.operation_id == operation
+      assert :ok = start_runner_task(task)
+
+      assert :ok =
+               finish_runner_task(task,
+                 outcome: :succeeded,
+                 retry_class: :terminal,
+                 result: %Favn.Contracts.GenerationCapabilitiesResult{capabilities: %{}}
+               )
+    end
+  end
+
+  defp claim_initial_registration_task!(fixture, kind, remaining \\ 200)
+
+  defp claim_initial_registration_task!(fixture, kind, 0) do
+    %{rows: rows} =
+      SQL.query!(
+        Repo,
+        "SELECT status,snapshot->'error' FROM favn_control.runs WHERE workspace_id=$1",
+        [fixture.workspace_id]
+      )
+
+    reply =
+      receive do
+        {:registration_repair_finished, result} -> result
+      after
+        0 -> :pending
+      end
+
+    flunk(
+      "initial registration task was not claimable: #{kind}: #{inspect(rows)}, repair: #{inspect(reply)}"
+    )
+  end
+
+  defp claim_initial_registration_task!(fixture, kind, remaining) do
+    now = DateTime.utc_now()
+
+    case RunnerTaskStore.claim(%ClaimRunnerTask{
+           platform_context: fixture.platform_context,
+           command_id: "registration:#{kind}:#{System.unique_integer([:positive, :monotonic])}",
+           runner_instance_id: "registration:#{fixture.workspace_id}",
+           runner_session_generation: 1,
+           runner_pool: "default",
+           required_runner_release_id: fixture.version.runner_releases["default"],
+           supported_task_kinds: [kind],
+           capabilities: [Atom.to_string(kind)],
+           lease_duration_ms: 30_000,
+           issued_at: now,
+           occurred_at: now
+         }) do
+      {:ok, nil} ->
+        Process.sleep(10)
+        claim_initial_registration_task!(fixture, kind, remaining - 1)
+
+      {:ok, task} ->
+        task
+
+      {:error, reason} ->
+        flunk("initial registration claim failed: #{inspect(reason)}")
+    end
   end
 
   test "cancellation retains unfinished initial verification after losing the waiter", fixture do

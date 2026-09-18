@@ -5,6 +5,10 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   Domain owners persist their continuation before calling `ensure/7`. The
   runner task is then an idempotent execution record, not a replacement for the
   owning inspection, generation, or rebuild state machine.
+
+  The optional `:operation_id` references a retained rebuild or target-recovery
+  parent. It is distinct from a mutation's `write_operation_id`, derived from the
+  payload; normal initial marker registration has no such parent.
   """
 
   alias Favn.Contracts.RunnerTask
