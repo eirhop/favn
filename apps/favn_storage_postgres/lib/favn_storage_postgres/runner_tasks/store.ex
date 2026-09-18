@@ -21,6 +21,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.CanonicalJSON
   alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.ErrorMapper
+  alias FavnStoragePostgres.Registry.DeploymentOwnership
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
   alias FavnStoragePostgres.RunnerTasks.WriteOwnership
@@ -61,6 +62,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :task_kind,
     :run_id,
     :operation_id,
+    :deployment_operation_id,
     :asset_step_id,
     :runner_pool,
     :required_runner_release_id,
@@ -111,6 +113,14 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     idempotent_transact(command, "enqueue", fn ->
       validate_enqueue!(command)
 
+      DeploymentOwnership.admit!(
+        DeploymentOwnership.lock!(
+          command.workspace_context.workspace_id,
+          command.deployment_operation_id
+        ),
+        command.occurred_at
+      )
+
       if command.operation_id,
         do:
           FavnStoragePostgres.Maintenance.OperationRetention.guard!(
@@ -136,6 +146,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         task_kind: Atom.to_string(command.task_kind),
         run_id: command.run_id,
         operation_id: command.operation_id,
+        deployment_operation_id: command.deployment_operation_id,
         asset_step_id: command.asset_step_id,
         runner_pool: command.runner_pool,
         required_runner_release_id: command.required_runner_release_id,
@@ -271,6 +282,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     idempotent_transact(command, "transition", fn ->
       task = fenced_task!(command)
       validate_transition!(command)
+
+      if command.transition in [:preparing, :running],
+        do: admit_deployment_task!(task, command.occurred_at)
+
       {status, expires_at} = transition_values!(task, command)
 
       if command.transition == :running do
@@ -622,6 +637,22 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             Repo.rollback(error)
         end
 
+      command =
+        if command.disposition == :requeue and
+             not deployment_task_live?(task, command.occurred_at) do
+          %{
+            command
+            | disposition: :unknown,
+              reason:
+                RunnerError.new(
+                  outcome: :unknown,
+                  type: "deployment_inspection_execution_unconfirmed"
+                )
+          }
+        else
+          command
+        end
+
       cancelled? = CancellationOwnership.cancelled?(task.workspace_id, task.run_id)
 
       command =
@@ -719,6 +750,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       lock_cancellation_owner!(command)
       WriteOwnership.lock_task_target!(command.workspace_context.workspace_id, command.task_id)
       task = lock_task!(command.workspace_context.workspace_id, command.task_id)
+      admit_deployment_task!(task, command.occurred_at)
       WriteOwnership.prepare_retry!(task)
 
       unless task.status == "failed" and task.retry_class == "safe_to_retry" and
@@ -880,10 +912,39 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
               asc: task.workspace_id,
               asc: task.task_id
             ],
-            limit: ^command.limit,
-            lock: "FOR UPDATE SKIP LOCKED"
+            limit: ^(command.limit * 2)
           )
         )
+
+      tasks =
+        Enum.reduce_while(tasks, [], fn candidate, selected ->
+          if length(selected) >= command.limit do
+            {:halt, selected}
+          else
+            locked =
+              case DeploymentOwnership.try_lock(
+                     candidate.workspace_id,
+                     candidate.deployment_operation_id
+                   ) do
+                :busy ->
+                  []
+
+                {:ok, _owner} ->
+                  Repo.all(
+                    from(t in RunnerTask,
+                      where:
+                        t.workspace_id == ^candidate.workspace_id and
+                          t.task_id == ^candidate.task_id and
+                          t.status in ^@active_statuses and
+                          t.assignment_expires_at <= ^command.occurred_at,
+                      lock: "FOR UPDATE SKIP LOCKED"
+                    )
+                  )
+              end
+
+            {:cont, selected ++ locked}
+          end
+        end)
 
       expires_at = DateTime.add(command.occurred_at, command.lease_duration_ms, :millisecond)
 
@@ -1320,17 +1381,24 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp active_runner_task(command) do
-    Repo.one(
+    query =
       from(task in RunnerTask,
         where:
           task.assigned_runner_instance_id == ^command.runner_instance_id and
             task.assigned_runner_session_generation == ^command.runner_session_generation and
             task.status in ^@active_statuses,
         order_by: [asc: task.workspace_id, asc: task.task_id],
-        limit: 1,
-        lock: "FOR UPDATE"
+        limit: 1
       )
-    )
+
+    case Repo.one(query) do
+      nil ->
+        nil
+
+      candidate ->
+        DeploymentOwnership.lock!(candidate.workspace_id, candidate.deployment_operation_id)
+        Repo.one(lock(query, "FOR UPDATE"))
+    end
   end
 
   defp active_runner_matches_claim?(task, command) do
@@ -1345,7 +1413,16 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     Repo.all(
       from(task in RunnerTask,
         where:
-          task.status == "queued" and task.runner_pool == ^command.runner_pool and
+          task.status == "queued" and
+            fragment(
+              "(? IS NULL OR EXISTS (SELECT 1 FROM favn_control.manifest_deployment_operations o WHERE o.workspace_id = ? AND o.operation_id = ? AND o.state IN ('accepted', 'activating') AND o.cancellation_requested_at IS NULL AND (o.source <> 'local' OR o.local_expires_at > ?) AND (o.inspection_deadline_at IS NULL OR o.inspection_deadline_at > ?)))",
+              task.deployment_operation_id,
+              task.workspace_id,
+              task.deployment_operation_id,
+              ^command.occurred_at,
+              ^command.occurred_at
+            ) and
+            task.runner_pool == ^command.runner_pool and
             task.required_runner_release_id == ^command.required_runner_release_id and
             task.task_kind in ^task_kinds and
             (is_nil(task.deadline_at) or task.deadline_at > ^command.occurred_at) and
@@ -1434,6 +1511,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       occurred_at
     )
   end
+
+  defp update_demand_for_status_change!(task, status, _occurred_at)
+       when task.status in @terminal_statuses and status in @terminal_statuses,
+       do: :ok
 
   defp update_demand_for_status_change!(task, status, _occurred_at) do
     Repo.rollback(
@@ -1874,6 +1955,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       task.task_kind == Atom.to_string(command.task_kind) and
       task.run_id == command.run_id and
       task.operation_id == command.operation_id and
+      task.deployment_operation_id == command.deployment_operation_id and
       task.asset_step_id == command.asset_step_id and
       task.runner_pool == command.runner_pool and
       task.required_runner_release_id == command.required_runner_release_id and
@@ -2158,6 +2240,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp idempotent_transact(command, operation, fun) do
     transact(fn ->
+      lock_deployment_command!(command)
       scope_id = command_scope(command)
 
       unless bounded_id(command.command_id) == :ok do
@@ -2275,6 +2358,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp command_hash(command) do
     command
+    |> legacy_enqueue_shape()
     |> Map.put(:occurred_at, nil)
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
@@ -2487,7 +2571,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       persist_runtime_input_error!(task, row, now)
 
     {%{
-       version: 1,
+       version: 2,
        immutable_hash: result_hash(Map.take(task, @immutable_task_result_fields)),
        mutable: Map.take(task, @mutable_task_result_fields),
        outcome_hash: outcome_hash,
@@ -2594,7 +2678,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     snapshot = decode_task_snapshot!(row.snapshot)
     current_row = fetch_task!(row.workspace_id, row.task_id)
     current = to_state(current_row)
-    immutable = Map.take(current, @immutable_task_result_fields)
+
+    fields =
+      if snapshot.version == 1,
+        do: @immutable_task_result_fields -- [:deployment_operation_id],
+        else: @immutable_task_result_fields
+
+    immutable = Map.take(current, fields)
 
     unless result_hash(immutable) == snapshot.immutable_hash do
       Repo.rollback(Error.new(:conflict, "runner task immutable receipt fields changed"))
@@ -2637,13 +2727,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     case PersistenceData.decode(envelope, 262_144, nil, atoms) do
       {:ok,
        %{
-         version: 1,
+         version: snapshot_version,
          immutable_hash: immutable_hash,
          mutable: mutable,
          outcome_hash: outcome_hash,
          runtime_input_error_hash: runtime_input_error_hash
        } = snapshot}
-      when is_binary(immutable_hash) and is_map(mutable) and
+      when snapshot_version in [1, 2] and is_binary(immutable_hash) and is_map(mutable) and
              (is_nil(outcome_hash) or is_binary(outcome_hash)) and
              (is_nil(runtime_input_error_hash) or is_binary(runtime_input_error_hash)) ->
         if Enum.sort(Map.keys(snapshot)) ==
@@ -3012,7 +3102,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         CancellationOwnership.try_lock!(candidate.workspace_id, candidate.run_id)
 
     task =
-      if cancellation_locked? do
+      if cancellation_locked? and deployment_candidate_live?(candidate, command.occurred_at) do
         Repo.one(
           from(t in RunnerTask,
             where:
@@ -3083,20 +3173,25 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     read(fn ->
       row = fetch_task!(task.workspace_id, task.task_id)
 
-      case load_details(task, row) do
-        %{data_state: :unavailable} ->
-          if row.assignment_generation != task.assignment_generation or
-               row.status in ["failed", "cancelled", "unknown", "succeeded"] do
-            {:error,
-             Error.new(:fenced, "runner task claim no longer owns an executable assignment",
-               details: %{reason_code: "runner_task_claim_superseded"}
-             )}
-          else
-            {:error, Error.new(:invalid, "runner task data is unavailable")}
-          end
+      if not deployment_task_live?(row, DateTime.utc_now()) and
+           row.status not in @terminal_statuses do
+        {:error, Error.new(:fenced, "deployment no longer permits assignment execution")}
+      else
+        case load_details(task, row) do
+          %{data_state: :unavailable} ->
+            if row.assignment_generation != task.assignment_generation or
+                 row.status in ["failed", "cancelled", "unknown", "succeeded"] do
+              {:error,
+               Error.new(:fenced, "runner task claim no longer owns an executable assignment",
+                 details: %{reason_code: "runner_task_claim_superseded"}
+               )}
+            else
+              {:error, Error.new(:invalid, "runner task data is unavailable")}
+            end
 
-        result ->
-          result
+          result ->
+            result
+        end
       end
     end)
   end
@@ -3372,5 +3467,192 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       updated_at: demand.updated_at,
       healthy?: demand.healthy
     }
+  end
+
+  @doc false
+  def settle_deployment_in_transaction(workspace, operation, now, cursor) do
+    # Caller holds the operation lock; never acquire a task command receipt here.
+    tasks =
+      Repo.all(
+        from(t in RunnerTask,
+          where:
+            t.workspace_id == ^workspace and t.deployment_operation_id == ^operation and
+              t.status not in ^@terminal_statuses and is_nil(t.cancellation_requested_at),
+          order_by: t.task_id,
+          limit: 100,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    Enum.each(tasks, fn task ->
+      attrs =
+        if task.status == "queued",
+          do: [status: "cancelled", cancellation_requested_at: now, terminal_at: now],
+          else: [status: "cancelling", cancellation_requested_at: now]
+
+      update_task!(
+        task,
+        %{command_id: "deployment-settle:" <> operation, occurred_at: now},
+        attrs
+      )
+    end)
+
+    cancelling_query =
+      from(t in RunnerTask,
+        where:
+          t.workspace_id == ^workspace and t.deployment_operation_id == ^operation and
+            t.status == "cancelling",
+        order_by: t.task_id,
+        limit: 100,
+        select: t.task_id
+      )
+
+    cancelling =
+      Repo.all(
+        if(cursor, do: where(cancelling_query, [t], t.task_id > ^cursor), else: cancelling_query)
+      )
+
+    cancelling = if cancelling == [] and cursor, do: Repo.all(cancelling_query), else: cancelling
+
+    %{
+      task_ids: Enum.uniq(Enum.map(tasks, & &1.task_id) ++ cancelling),
+      cursor: if(length(cancelling) == 100, do: List.last(cancelling))
+    }
+  end
+
+  @doc false
+  def resolve_deployment_inspections_in_transaction(command) do
+    workspace = command.workspace_context.workspace_id
+
+    command.task_assignments
+    |> Enum.sort()
+    |> Enum.each(fn {id, generation} ->
+      task = lock_task!(workspace, id)
+
+      evidence_id =
+        :crypto.hash(
+          :sha256,
+          :erlang.term_to_binary({workspace, id, generation}, [:deterministic])
+        )
+        |> Base.encode16(case: :lower)
+
+      audit_id = "inspection-quiescence:" <> evidence_id
+
+      replay? =
+        task.status == "cancelled" and task.assignment_generation == generation + 1 and
+          Repo.exists?(
+            from(a in FavnStoragePostgres.Schemas.AuthPlatformAuditEntry,
+              where: a.command_id == ^audit_id and a.subject_id == ^id
+            )
+          )
+
+      unless task.task_kind == "relation_inspection" and
+               task.deployment_operation_id == command.operation_id and
+               is_nil(task.run_id) and is_nil(task.operation_id) and
+               (task.assignment_generation == generation or replay?),
+             do: Repo.rollback(Error.new(:conflict, "inspection assignment or owner changed"))
+
+      unless task.status in ["succeeded", "failed", "cancelled"] do
+        update_task!(
+          task,
+          %{command_id: "inspection-quiescence:" <> id, occurred_at: command.occurred_at},
+          status: "cancelled",
+          cancellation_requested_at: command.occurred_at,
+          terminal_at: command.occurred_at,
+          assignment_expires_at: nil,
+          assignment_generation: generation + 1
+        )
+      end
+
+      evidence_id =
+        :crypto.hash(
+          :sha256,
+          :erlang.term_to_binary({workspace, id, generation}, [:deterministic])
+        )
+        |> Base.encode16(case: :lower)
+
+      Repo.insert_all(
+        FavnStoragePostgres.Schemas.AuthPlatformAuditEntry,
+        [
+          %{
+            command_id: "inspection-quiescence:" <> evidence_id,
+            principal_id: command.workspace_context.principal_id,
+            action: "deployment.inspection.quiescence_confirmed",
+            subject_kind: "runner_task",
+            subject_id: id,
+            detail: %{
+              "workspace_id" => workspace,
+              "assignment_generation" => generation,
+              "evidence_reference" => command.evidence_reference,
+              "runner_stopped" => true,
+              "backend_stopped" => true
+            },
+            occurred_at: command.occurred_at,
+            inserted_at: command.occurred_at
+          }
+        ],
+        on_conflict: :nothing
+      )
+    end)
+
+    map_size(command.task_assignments)
+  end
+
+  defp legacy_enqueue_shape(%C.EnqueueRunnerTask{deployment_operation_id: nil} = command),
+    do: Map.delete(command, :deployment_operation_id)
+
+  defp legacy_enqueue_shape(command), do: command
+
+  defp lock_deployment_command!(%C.EnqueueRunnerTask{} = command) do
+    owner =
+      DeploymentOwnership.lock!(
+        command.workspace_context.workspace_id,
+        command.deployment_operation_id
+      )
+
+    DeploymentOwnership.admit!(owner, DateTime.utc_now())
+  end
+
+  defp lock_deployment_command!(%{workspace_context: context, task_id: id} = command) do
+    case Repo.get_by(RunnerTask, workspace_id: context.workspace_id, task_id: id) do
+      nil ->
+        :ok
+
+      task ->
+        owner = DeploymentOwnership.lock!(task.workspace_id, task.deployment_operation_id)
+
+        if match?(%C.RetryRunnerTask{}, command) or
+             (match?(%C.TransitionRunnerTask{}, command) and
+                command.transition in [:preparing, :running]),
+           do: DeploymentOwnership.admit!(owner, DateTime.utc_now())
+    end
+  end
+
+  defp lock_deployment_command!(_command), do: :ok
+
+  defp admit_deployment_task!(task, now),
+    do:
+      DeploymentOwnership.admit!(
+        DeploymentOwnership.lock!(task.workspace_id, task.deployment_operation_id),
+        now
+      )
+
+  defp deployment_candidate_live?(task, now) do
+    case DeploymentOwnership.try_lock(task.workspace_id, task.deployment_operation_id) do
+      :busy -> false
+      {:ok, row} -> DeploymentOwnership.live?(row, now)
+    end
+  end
+
+  defp deployment_task_live?(%{deployment_operation_id: nil}, _now), do: true
+
+  defp deployment_task_live?(task, now) do
+    case Repo.get_by(FavnStoragePostgres.Schemas.ManifestDeploymentOperation,
+           workspace_id: task.workspace_id,
+           operation_id: task.deployment_operation_id
+         ) do
+      nil -> false
+      owner -> DeploymentOwnership.live?(owner, now)
+    end
   end
 end

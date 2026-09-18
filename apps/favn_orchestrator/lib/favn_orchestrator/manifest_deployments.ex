@@ -1,6 +1,6 @@
 defmodule FavnOrchestrator.ManifestDeployments do
   @moduledoc """
-  Durable first-party manifest archive deployment facade.
+  Durable local and first-party archive deployment facade.
 
   HTTP callers receive only deployment-specific authority. This facade creates
   narrowly named internal system contexts for immutable package/manifest writes
@@ -178,12 +178,13 @@ defmodule FavnOrchestrator.ManifestDeployments do
   end
 
   @doc false
-  def claim_next(owner, expires_at) do
+  def claim_next(owner, expires_at, inspection_timeout_ms \\ 300_000) do
     Persistence.stores().registry.claim_manifest_deployment(%ClaimManifestDeployment{
       platform_context:
         SystemContext.platform(:manifest_deployment_claim, roles: [:platform_operator]),
       owner: owner,
       expires_at: expires_at,
+      inspection_timeout_ms: inspection_timeout_ms,
       occurred_at: DateTime.utc_now()
     })
   end
@@ -253,4 +254,159 @@ defmodule FavnOrchestrator.ManifestDeployments do
       occurred_at: DateTime.utc_now()
     })
   end
+
+  @doc "Accepts local deployment intent with a 45-second owner lease; replay requires the same session and manifest."
+  @spec accept_local(
+          FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          String.t(),
+          String.t(),
+          String.t()
+        ) ::
+          {:ok, :accepted | :replay, ManifestDeployment.t()} | {:error, term()}
+  def accept_local(context, operation_id, session_id, manifest_version_id) do
+    now = DateTime.utc_now()
+
+    Persistence.stores().registry.accept_local_manifest_deployment(
+      %FavnOrchestrator.Persistence.Commands.AcceptLocalManifestDeployment{
+        workspace_context: context,
+        operation_id: operation_id,
+        session_id: session_id,
+        manifest_version_id: manifest_version_id,
+        occurred_at: now,
+        expires_at: DateTime.add(now, 45, :second)
+      }
+    )
+  end
+
+  @doc "Renews a still-live local owner; expired ownership cannot be revived."
+  @spec renew_local(FavnOrchestrator.Persistence.WorkspaceContext.t(), String.t(), String.t()) ::
+          :ok | {:error, term()}
+  def renew_local(context, operation_id, session_id) do
+    now = DateTime.utc_now()
+
+    Persistence.stores().registry.renew_local_manifest_deployment(
+      %FavnOrchestrator.Persistence.Commands.RenewLocalManifestDeployment{
+        workspace_context: context,
+        operation_id: operation_id,
+        session_id: session_id,
+        occurred_at: now,
+        expires_at: DateTime.add(now, 45, :second)
+      }
+    )
+  end
+
+  @doc "Requests cancellation without claiming that activation rolled back or execution stopped."
+  @spec cancel(FavnOrchestrator.Persistence.WorkspaceContext.t(), String.t(), atom()) ::
+          {:ok, ManifestDeployment.t() | :cancelled_before_acceptance} | {:error, term()}
+  def cancel(context, operation_id, reason) do
+    Persistence.stores().registry.cancel_manifest_deployment(
+      %FavnOrchestrator.Persistence.Commands.CancelManifestDeployment{
+        workspace_context: context,
+        operation_id: operation_id,
+        reason: reason,
+        occurred_at: DateTime.utc_now()
+      }
+    )
+  end
+
+  @doc "Reads an operation using existing workspace operator authority."
+  @spec get_local(FavnOrchestrator.Persistence.WorkspaceContext.t(), String.t()) ::
+          {:ok, ManifestDeployment.t()} | {:error, term()}
+  def get_local(context, operation_id) do
+    if FavnOrchestrator.Persistence.WorkspaceContext.valid?(context) and
+         :platform_operator in context.roles do
+      with {:ok, deployment_context} <-
+             ManifestDeploymentContext.new(
+               context.principal_id,
+               context.workspace_id,
+               operation_id
+             ),
+           do: get(deployment_context, operation_id)
+    else
+      {:error, :forbidden}
+    end
+  end
+
+  @doc "Returns aggregate inspection counts and at most 100 task identities; cursor is the previous task ID."
+  @spec inspections(FavnOrchestrator.Persistence.WorkspaceContext.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def inspections(context, operation_id, opts \\ []) do
+    Persistence.stores().registry.deployment_inspections(
+      %FavnOrchestrator.Persistence.Queries.DeploymentInspections{
+        workspace_context: context,
+        operation_id: operation_id,
+        after_task_id: Keyword.get(opts, :after_task_id),
+        limit: Keyword.get(opts, :limit, 100)
+      }
+    )
+  end
+
+  @doc false
+  def reconcile do
+    with {:ok, batches} <-
+           Persistence.stores().registry.reconcile_manifest_deployments(
+             %FavnOrchestrator.Persistence.Commands.ReconcileManifestDeployments{
+               platform_context:
+                 SystemContext.platform(:deployment_reconciliation, roles: [:platform_operator]),
+               occurred_at: DateTime.utc_now()
+             }
+           ) do
+      Enum.each(batches, fn batch ->
+        Enum.each(
+          batch.task_ids,
+          &FavnOrchestrator.RunnerTasks.request_cancellation(
+            batch.workspace_id,
+            &1,
+            :deployment_owner_closed,
+            wait_for_ack: false
+          )
+        )
+
+        :telemetry.execute(
+          [:favn, :deployment, :inspection_cleanup],
+          %{task_count: length(batch.task_ids)},
+          Map.take(batch, [:workspace_id, :operation_id, :cleanup_state])
+        )
+      end)
+
+      {:ok, batches}
+    end
+  end
+
+  @doc "Pins binding versions for one attempt; a changed base requires fresh inspections in a new attempt."
+  @spec pin_inspection_base(
+          FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          String.t() | nil,
+          map()
+        ) :: :ok | {:error, term()}
+  def pin_inspection_base(_context, nil, _bindings), do: :ok
+
+  def pin_inspection_base(context, operation_id, bindings) do
+    pins = Map.new(bindings, fn {target, binding} -> {target, binding.version} end)
+    hash = :crypto.hash(:sha256, :erlang.term_to_binary(pins, [:deterministic]))
+
+    Persistence.stores().registry.pin_deployment_inspection_base(
+      %FavnOrchestrator.Persistence.Commands.PinDeploymentInspectionBase{
+        workspace_context: context,
+        operation_id: operation_id,
+        binding_hash: hash
+      }
+    )
+  end
+
+  @doc """
+  Settles at most 100 explicitly verified read-only inspection assignments.
+
+  The operator must stop the exact runner executions and backend queries first,
+  then attest both facts and provide an evidence reference. An operation ID of
+  nil scopes this command to legacy unowned inspections. Assignment generations
+  fence stale attestations; this command does not infer quiescence from expiry.
+  """
+  @spec resolve_inspections(
+          FavnOrchestrator.Persistence.Commands.ResolveDeploymentInspections.t()
+        ) :: {:ok, non_neg_integer()} | {:error, term()}
+  def resolve_inspections(
+        %FavnOrchestrator.Persistence.Commands.ResolveDeploymentInspections{} = command
+      ),
+      do: Persistence.stores().registry.resolve_deployment_inspections(command)
 end

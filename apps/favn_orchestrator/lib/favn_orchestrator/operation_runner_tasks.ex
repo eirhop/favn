@@ -97,6 +97,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
                  payload_hash: payload_hash,
                  orchestration_context: orchestration_context,
                  operation_id: Keyword.get(opts, :operation_id),
+                 deployment_operation_id: Keyword.get(opts, :deployment_operation_id),
                  required_capability: required_capability,
                  deadline_at: deadline_at,
                  issued_at: issued_at,

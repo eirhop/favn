@@ -97,4 +97,29 @@ defmodule FavnOrchestrator.Persistence.RegistryStore do
               :ok | {:error, Error.t()}
   @callback release_manifest_activation_lease(ReleaseManifestActivationLease.t()) ::
               :ok | {:error, Error.t()}
+  @callback accept_local_manifest_deployment(
+              FavnOrchestrator.Persistence.Commands.AcceptLocalManifestDeployment.t()
+            ) ::
+              {:ok, :accepted | :replay, ManifestDeployment.t()} | {:error, Error.t()}
+  @callback renew_local_manifest_deployment(
+              FavnOrchestrator.Persistence.Commands.RenewLocalManifestDeployment.t()
+            ) ::
+              :ok | {:error, Error.t()}
+  @callback cancel_manifest_deployment(
+              FavnOrchestrator.Persistence.Commands.CancelManifestDeployment.t()
+            ) ::
+              {:ok, ManifestDeployment.t() | :cancelled_before_acceptance} | {:error, Error.t()}
+  @callback reconcile_manifest_deployments(
+              FavnOrchestrator.Persistence.Commands.ReconcileManifestDeployments.t()
+            ) ::
+              {:ok, [map()]} | {:error, Error.t()}
+  @callback deployment_inspections(FavnOrchestrator.Persistence.Queries.DeploymentInspections.t()) ::
+              {:ok, map()} | {:error, Error.t()}
+
+  @callback pin_deployment_inspection_base(
+              FavnOrchestrator.Persistence.Commands.PinDeploymentInspectionBase.t()
+            ) :: :ok | {:error, Error.t()}
+  @callback resolve_deployment_inspections(
+              FavnOrchestrator.Persistence.Commands.ResolveDeploymentInspections.t()
+            ) :: {:ok, non_neg_integer()} | {:error, Error.t()}
 end

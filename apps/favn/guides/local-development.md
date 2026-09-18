@@ -152,11 +152,19 @@ it excludes the Mix compilation that runs before reload starts. Timings are
 observations for this invocation, not a fixed performance guarantee.
 
 Only one reload can proceed at a time. If the previous runner is still draining,
-wait until it finishes before reloading again. An interrupted deployment can
-have an unknown outcome: use `mix favn.stop` followed by `mix favn.dev` when the
-command requests it. A caller timeout does not cancel activation; inspect the
-development process before deciding the next action. Reload never retries a
-possibly completed deployment automatically.
+wait until it finishes before reloading again. Startup and reload persist a
+deployment operation before submitting inspections. Status includes its
+`deployment_operation_id`. A reload caller timeout returns `reload_pending`;
+the development process continues observing that same operation.
+
+Stopping development or exhausting startup's deadline closes the operation.
+A lost development process stops renewing its 45-second ownership lease.
+Queued inspections are cancelled; assigned inspections must acknowledge
+cancellation or be reconciled before another local attempt can start.
+A committed activation remains committed even when stop races with its response.
+An unknown execution outcome blocks replacement rather than being retried.
+See the [deployment recovery runbook](../../../docs/production/deployment-inspection-recovery.md)
+for inspection status, legacy backlog and verified cleanup.
 
 Reload also retains existing asset freshness. A runner release, manifest, asset
 implementation, metadata, or dependency declaration change does not by itself

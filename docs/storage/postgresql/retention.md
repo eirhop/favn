@@ -104,6 +104,7 @@ Eligibility always includes workspace holds and the relevant replay protections.
 | `log_entries` | logs | Ingestion and publication age, delivery replay horizon, holds and active runs; publication-position floor. |
 | `maintenance_jobs` | maintenance | Completed historical jobs; singleton scheduler and active repair progress stay. |
 | `manifest_activation_leases` | retained | Current coordination, identity, or reusable fencing state; lifecycle commands own settlement. |
+| `local_deployment_cancellations` | retained | Permanent stop-before-acceptance fencing identity; a delayed publisher must never revive it. |
 | `manifest_deployment_operations` | retained | Permanent audit or reconciliation identity. |
 | `manifest_deployment_upload_leases` | retained | Current coordination, identity, or reusable fencing state; lifecycle commands own settlement. |
 | `manifest_execution_packages` | registry | Unreferenced inactive deployment or manifest; reject new references while retiring children. |
@@ -206,3 +207,7 @@ Upgrading from the earlier exclusive history-guard protocol requires a coordinat
 control-plane restart: stop all old control-plane workers and maintenance before
 starting the new version. Mixed lock protocols are unsupported. No schema change
 or database reset is needed.
+
+Deployment-owned runner tasks are excluded from standalone task pruning. Their
+owner relationship and terminal evidence remain available for reconciliation,
+activation replay and exact inspection counts.

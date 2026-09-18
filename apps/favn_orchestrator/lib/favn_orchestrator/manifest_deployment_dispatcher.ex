@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
+  alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.ManifestDeploymentClaimHeartbeat
   alias FavnOrchestrator.ManifestDeployments
@@ -50,6 +51,8 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
         version_size_check:
           Keyword.get(opts, :version_size_check, &ManifestMemory.valid_version_size?/1),
         manifest_slot: Keyword.get(opts, :manifest_slot, Slot),
+        reconciliation: nil,
+        cleanup_diagnostics: %{},
         active: %{}
       }
 
@@ -62,14 +65,40 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
   @impl true
   def handle_info(:poll, state) do
+    state =
+      if state.reconciliation do
+        state
+      else
+        task =
+          Task.Supervisor.async_nolink(
+            FavnOrchestrator.ManifestDeploymentTaskSupervisor,
+            &ManifestDeployments.reconcile/0
+          )
+
+        %{state | reconciliation: task.ref}
+      end
+
     state = fill_capacity(state)
     Process.send_after(self(), :poll, @poll_ms)
     {:noreply, state}
   end
 
+  def handle_info({reference, result}, %{reconciliation: reference} = state)
+      when is_reference(reference) do
+    Process.demonitor(reference, [:flush])
+    state = report_cleanup(state, result)
+    {:noreply, %{state | reconciliation: nil}}
+  end
+
+  def handle_info(
+        {:DOWN, reference, :process, _pid, _reason},
+        %{reconciliation: reference} = state
+      ) do
+    {:noreply, %{state | reconciliation: nil}}
+  end
+
   def handle_info({reference, _result}, state) when is_reference(reference) do
     Process.demonitor(reference, [:flush])
-    send(self(), :poll)
     {:noreply, %{state | active: Map.delete(state.active, reference)}}
   end
 
@@ -85,17 +114,55 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
           failure_class: exit_class(reason)
         )
 
-        send(self(), :poll)
         {:noreply, %{state | active: active}}
     end
   end
+
+  defp report_cleanup(state, {:ok, batches}) do
+    now = System.monotonic_time(:second)
+
+    previous =
+      Map.get(state, :cleanup_diagnostics, %{})
+      |> Map.reject(fn {_key, {_phase, at}} -> now - at > 120 end)
+
+    diagnostics =
+      Enum.reduce(batches, previous, fn batch, seen ->
+        key = {batch.workspace_id, batch.operation_id}
+        phase = batch.cleanup_state
+        metadata = Map.take(batch, [:workspace_id, :operation_id, :counts]) |> Map.to_list()
+
+        case Map.get(seen, key) do
+          {^phase, at} when now - at < 60 ->
+            seen
+
+          {^phase, _at} when phase in ["settling", "unknown"] ->
+            Logger.warning("deployment inspection cleanup remains #{phase}", metadata)
+            Map.put(seen, key, {phase, now})
+
+          _ ->
+            Logger.info("deployment inspection cleanup #{phase}", metadata)
+            Map.put(seen, key, {phase, now})
+        end
+      end)
+
+    # Diagnostics must not retain an unbounded workspace history.
+    diagnostics =
+      diagnostics
+      |> Enum.sort_by(fn {_key, {_phase, at}} -> at end, :desc)
+      |> Enum.take(1000)
+      |> Map.new()
+
+    Map.put(state, :cleanup_diagnostics, diagnostics)
+  end
+
+  defp report_cleanup(state, _error), do: state
 
   defp fill_capacity(state) when map_size(state.active) >= state.concurrency, do: state
 
   defp fill_capacity(state) do
     expires_at = DateTime.add(DateTime.utc_now(), @claim_seconds, :second)
 
-    case ManifestDeployments.claim_next(state.owner, expires_at) do
+    case ManifestDeployments.claim_next(state.owner, expires_at, state.inspection_timeout_ms) do
       {:ok, nil} ->
         state
 
@@ -128,6 +195,11 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
   end
 
   defp run_claimed(operation, state) do
+    # Native source development has no finite container limit. Keep the same
+    # bounded worker and exclusive slot, without archive container admission.
+    state =
+      if operation.source == "local", do: %{state | capacity_check: fn -> :ok end}, else: state
+
     case ManifestMemory.with_phase(
            :activation,
            fn -> run_claimed_with_phase(operation, state) end,
@@ -249,21 +321,28 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
          {:ok, idempotency} <- operation_idempotency(operation) do
       inspection_deadline_at = inspection_deadline_at(operation, inspection_timeout_ms)
 
-      Manifests.deploy_prepared(
-        platform,
-        workspace,
-        version,
-        ManifestDeployments.fixed_selection(),
-        deployment_id: operation.operation_id,
-        activation_operation_id: operation.operation_id,
-        activation_inspection_timeout_ms: inspection_timeout_ms,
-        activation_inspection_deadline_at: inspection_deadline_at,
-        activation_progress: fn completed, total ->
-          ManifestDeployments.update_progress(operation, owner, completed, total)
-        end,
-        execution_pool_policy: %{approve_manifest_defaults: true},
-        idempotency: idempotency
-      )
+      Lifecycle.with_deployment_admission(operation.workspace_id, operation.operation_id, fn ->
+        Manifests.deploy_prepared(
+          platform,
+          workspace,
+          version,
+          ManifestDeployments.fixed_selection(),
+          deployment_id: operation.operation_id,
+          activation_operation_id: operation.operation_id,
+          deployment_claim: %{
+            operation_id: operation.operation_id,
+            owner: owner,
+            fence: operation.claim_fence
+          },
+          activation_inspection_timeout_ms: inspection_timeout_ms,
+          activation_inspection_deadline_at: inspection_deadline_at,
+          activation_progress: fn completed, total ->
+            ManifestDeployments.update_progress(operation, owner, completed, total)
+          end,
+          execution_pool_policy: %{approve_manifest_defaults: true},
+          idempotency: idempotency
+        )
+      end)
     end
   end
 
@@ -276,6 +355,12 @@ defmodule FavnOrchestrator.ManifestDeploymentDispatcher do
 
   @doc false
   @spec inspection_deadline_at(Deployment.t(), pos_integer()) :: DateTime.t()
+  def inspection_deadline_at(
+        %Deployment{inspection_deadline_at: %DateTime{} = deadline},
+        _timeout_ms
+      ),
+      do: deadline
+
   def inspection_deadline_at(%Deployment{activating_at: %DateTime{} = activating_at}, timeout_ms)
       when is_integer(timeout_ms) and timeout_ms > 0,
       do: DateTime.add(activating_at, timeout_ms, :millisecond)

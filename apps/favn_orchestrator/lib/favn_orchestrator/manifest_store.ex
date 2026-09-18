@@ -274,6 +274,7 @@ defmodule FavnOrchestrator.ManifestStore do
       :target_compatibilities,
       :activation_diagnostics,
       :activation_lease,
+      :deployment_claim,
       :expected_active_deployment_id,
       :prepared_version,
       :idempotency,
@@ -301,6 +302,7 @@ defmodule FavnOrchestrator.ManifestStore do
         target_compatibilities: Keyword.get(opts, :target_compatibilities, []),
         activation_diagnostics: Keyword.get(opts, :activation_diagnostics),
         activation_lease: Keyword.get(opts, :activation_lease),
+        deployment_claim: Keyword.get(opts, :deployment_claim),
         expected_active_deployment_id:
           Keyword.get(opts, :expected_active_deployment_id, :unchecked),
         idempotency: Keyword.get(opts, :idempotency),

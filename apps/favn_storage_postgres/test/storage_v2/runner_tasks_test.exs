@@ -4172,6 +4172,263 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              )
   end
 
+  test "pre-ownership task snapshots and enqueue hashes still replay", fixture do
+    alias Favn.Contracts.RunnerTask.PersistenceData
+    command = enqueue_command(fixture, "legacy-owned-shape")
+    assert {:ok, task} = Store.enqueue(command)
+
+    %{rows: [[binary]]} =
+      SQL.query!(
+        Repo,
+        "SELECT snapshot FROM favn_control.runner_task_command_tasks WHERE workspace_id=$1 AND command_id=$2",
+        [fixture.workspace_id, command.command_id]
+      )
+
+    atoms =
+      Map.keys(Map.from_struct(task)) ++
+        [
+          :version,
+          :immutable_hash,
+          :mutable,
+          :outcome_hash,
+          :runtime_input_error_hash,
+          :queued,
+          :read_only
+        ]
+
+    assert {:ok, snapshot} = PersistenceData.decode(Jason.decode!(binary), 262_144, nil, atoms)
+
+    legacy_fields =
+      ~w(workspace_id task_id domain_identity manifest_version_id manifest_content_hash orchestration_context_hash write_claim_key write_claim_fence write_target_id write_operation_id write_lock_fence task_kind run_id operation_id asset_step_id runner_pool required_runner_release_id required_capability enqueued_at deadline_at payload_version payload_hash inserted_at)a
+
+    hash =
+      :crypto.hash(
+        :sha256,
+        :erlang.term_to_binary(Map.take(task, legacy_fields), [:deterministic])
+      )
+
+    assert {:ok, envelope} =
+             PersistenceData.encode(%{snapshot | version: 1, immutable_hash: hash}, 262_144)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runner_task_command_tasks SET snapshot=$3 WHERE workspace_id=$1 AND command_id=$2",
+      [fixture.workspace_id, command.command_id, Jason.encode!(envelope)]
+    )
+
+    assert {:ok, ^task} = Store.enqueue(command)
+  end
+
+  test "deployment cancellation serializes before concurrent inspection enqueue", fixture do
+    {command, owner_context, operation_id} = deployment_task_fixture(fixture)
+    parent = self()
+
+    cancelling =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          assert {:ok, _} = cancel_deployment(owner_context, operation_id)
+          send(parent, {:cancel_locked, self(), backend_pid()})
+          receive do: (:commit -> :ok)
+        end)
+      end)
+
+    assert_receive {:cancel_locked, locked, winner_backend}, 2_000
+
+    enqueue =
+      Task.async(fn ->
+        Repo.checkout(fn ->
+          send(parent, {:enqueue_started, backend_pid()})
+          Store.enqueue(command)
+        end)
+      end)
+
+    assert_receive {:enqueue_started, contender_backend}
+    await_database_block(contender_backend, winner_backend)
+    send(locked, :commit)
+    assert {:ok, :ok} = Task.await(cancelling)
+
+    assert {:error, %{details: %{reason: :deployment_inspection_admission_closed}}} =
+             Task.await(enqueue)
+
+    assert {:error, %{kind: :not_found}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: command.task_id
+             })
+  end
+
+  test "concurrent cancellation sees an inspection committed before it", fixture do
+    {command, owner_context, operation_id} = deployment_task_fixture(fixture)
+    parent = self()
+
+    enqueue =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          assert {:ok, _task} = Store.enqueue(command)
+          send(parent, {:enqueue_locked, self(), backend_pid()})
+          receive do: (:commit -> :ok)
+        end)
+      end)
+
+    assert_receive {:enqueue_locked, locked, winner_backend}, 2_000
+
+    cancellation =
+      Task.async(fn ->
+        Repo.checkout(fn ->
+          send(parent, {:cancel_started, backend_pid()})
+          cancel_deployment(owner_context, operation_id)
+        end)
+      end)
+
+    assert_receive {:cancel_started, contender_backend}
+    await_database_block(contender_backend, winner_backend)
+    send(locked, :commit)
+    assert {:ok, :ok} = Task.await(enqueue)
+    assert {:ok, %{state: :cancelling}} = Task.await(cancellation)
+
+    assert {:ok, _} =
+             RegistryStore.reconcile_manifest_deployments(%C.ReconcileManifestDeployments{
+               platform_context:
+                 FavnOrchestrator.Persistence.SystemContext.platform(:test,
+                   roles: [:platform_operator]
+                 ),
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, %{status: :cancelled}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: command.task_id
+             })
+
+    assert {:ok, nil} = Store.claim(claim_command(fixture, "closed-owner", "runner"))
+  end
+
+  for first <- [:cancel, :activate] do
+    test "deployment #{first} transaction wins against its concurrent opposite", fixture do
+      {inspection, context, operation_id} = deployment_task_fixture(fixture)
+
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.manifest_deployment_operations
+        SET state='activating', claim_owner='race', claim_fence=1,
+            claim_expires_at=clock_timestamp()+interval '45 seconds', expected_runtime_revision=(SELECT revision FROM favn_control.workspace_runtime_state WHERE workspace_id=$1)
+        WHERE workspace_id=$1 AND operation_id=$2
+        """,
+        [fixture.workspace_id, operation_id]
+      )
+
+      deployment = %C.DeployManifest{
+        platform_context: fixture.platform_context,
+        workspace_context: context,
+        deployment_id: operation_id,
+        manifest_version_id: inspection.manifest_version_id,
+        targets: [],
+        configuration: %{"resources" => %{}},
+        occurred_at: DateTime.utc_now(),
+        deployment_claim: %{operation_id: operation_id, owner: "race", fence: 1}
+      }
+
+      activate = fn -> RegistryStore.deploy_manifest(deployment) end
+      cancel = fn -> cancel_deployment(context, operation_id) end
+
+      {first_fun, second_fun} =
+        if unquote(first) == :cancel, do: {cancel, activate}, else: {activate, cancel}
+
+      parent = self()
+
+      winner =
+        Task.async(fn ->
+          Repo.transaction(fn ->
+            assert {:ok, result} = first_fun.()
+            send(parent, {:winner_locked, self(), backend_pid()})
+            receive do: (:commit -> result)
+          end)
+        end)
+
+      assert_receive {:winner_locked, pid, winner_backend}, 2_000
+
+      loser =
+        Task.async(fn ->
+          Repo.checkout(fn ->
+            send(parent, {:contender_started, backend_pid()})
+            second_fun.()
+          end)
+        end)
+
+      assert_receive {:contender_started, contender_backend}
+      await_database_block(contender_backend, winner_backend)
+      send(pid, :commit)
+      assert {:ok, result} = Task.await(winner)
+
+      if unquote(first) == :cancel do
+        assert result.state == :cancelling
+        assert {:error, %{details: %{reason: :deployment_activation_fenced}}} = Task.await(loser)
+      else
+        assert {:ok, preserved} = Task.await(loser)
+        assert preserved.activation_receipt["deployment_id"] == result.deployment_id
+        assert preserved.activation_receipt["runtime_revision"] == result.revision
+      end
+    end
+  end
+
+  defp backend_pid do
+    %{rows: [[pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()", [])
+    pid
+  end
+
+  defp await_database_block(contender, winner, remaining \\ 200)
+
+  defp await_database_block(_contender, _winner, 0),
+    do: flunk("contender never waited on the winning transaction")
+
+  defp await_database_block(contender, winner, remaining) do
+    refute contender == winner
+
+    %{rows: [[blocked]]} =
+      SQL.query!(Repo, "SELECT $1 = ANY(pg_blocking_pids($2))", [winner, contender])
+
+    unless blocked do
+      Process.sleep(10)
+      await_database_block(contender, winner, remaining - 1)
+    end
+  end
+
+  defp deployment_task_fixture(fixture) do
+    command = enqueue_command(fixture, "owned-concurrency")
+    operation_id = "local-" <> random_id()
+
+    owner_context =
+      FavnOrchestrator.Persistence.SystemContext.workspace(fixture.workspace_id, :test,
+        roles: [:platform_operator]
+      )
+
+    now = DateTime.utc_now()
+
+    assert {:ok, :accepted, _} =
+             RegistryStore.accept_local_manifest_deployment(%C.AcceptLocalManifestDeployment{
+               workspace_context: owner_context,
+               operation_id: operation_id,
+               session_id: operation_id,
+               manifest_version_id: command.manifest_version_id,
+               occurred_at: now,
+               expires_at: DateTime.add(now, 45, :second)
+             })
+
+    on_exit(fn -> cancel_deployment(owner_context, operation_id) end)
+    {%{command | deployment_operation_id: operation_id}, owner_context, operation_id}
+  end
+
+  defp cancel_deployment(context, id) do
+    RegistryStore.cancel_manifest_deployment(%C.CancelManifestDeployment{
+      workspace_context: context,
+      operation_id: id,
+      reason: :local_stop,
+      occurred_at: DateTime.utc_now()
+    })
+  end
+
   defp enqueue_command(fixture, suffix, opts \\ []) do
     task_kind = Keyword.get(opts, :task_kind, :relation_inspection)
     payload = Keyword.get(opts, :payload, inspection_payload())

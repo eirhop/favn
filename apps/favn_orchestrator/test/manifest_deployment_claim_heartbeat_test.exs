@@ -1,7 +1,66 @@
 defmodule FavnOrchestrator.ManifestDeploymentClaimHeartbeatTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias FavnOrchestrator.ManifestDeploymentClaimHeartbeat
+
+  test "cleanup diagnostics log transitions and coalesce repeated stuck warnings" do
+    previous_level = Logger.level()
+    Logger.configure(level: :info)
+    on_exit(fn -> Logger.configure(level: previous_level) end)
+    ref = make_ref()
+
+    batch = %{
+      workspace_id: "workspace",
+      operation_id: "operation",
+      cleanup_state: "unknown",
+      counts: %{"unknown" => 1},
+      task_ids: []
+    }
+
+    state = %{reconciliation: ref, cleanup_diagnostics: %{}}
+
+    first =
+      ExUnit.CaptureLog.capture_log([level: :info], fn ->
+        assert {:noreply, _} =
+                 FavnOrchestrator.ManifestDeploymentDispatcher.handle_info(
+                   {ref, {:ok, [batch]}},
+                   state
+                 )
+      end)
+
+    assert first =~ "deployment inspection cleanup unknown"
+    now = System.monotonic_time(:second)
+    repeat = %{state | cleanup_diagnostics: %{{"workspace", "operation"} => {"unknown", now}}}
+
+    assert ExUnit.CaptureLog.capture_log([level: :info], fn ->
+             FavnOrchestrator.ManifestDeploymentDispatcher.handle_info(
+               {ref, {:ok, [batch]}},
+               repeat
+             )
+           end) == ""
+
+    overdue = %{
+      state
+      | cleanup_diagnostics: %{{"workspace", "operation"} => {"unknown", now - 61}}
+    }
+
+    assert ExUnit.CaptureLog.capture_log([level: :info], fn ->
+             FavnOrchestrator.ManifestDeploymentDispatcher.handle_info(
+               {ref, {:ok, [batch]}},
+               overdue
+             )
+           end) =~ "deployment inspection cleanup remains unknown"
+  end
+
+  test "worker completion does not start another periodic polling chain" do
+    ref = make_ref()
+    state = %{active: %{ref => :operation}}
+
+    assert {:noreply, %{active: %{}}} =
+             FavnOrchestrator.ManifestDeploymentDispatcher.handle_info({ref, :ok}, state)
+
+    refute_receive :poll, 0
+  end
 
   test "stops with its deployment worker" do
     test_pid = self()

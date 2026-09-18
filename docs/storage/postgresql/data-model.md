@@ -828,7 +828,7 @@ tagged password credential or Entra link all exist.
 
 | Domain | Tables | Authority |
 | --- | --- | --- |
-| Workspace and registry | `workspaces`, `manifest_versions`, `execution_packages`, `manifest_execution_packages`, `manifest_deployment_operations`, `manifest_deployment_upload_leases`, `manifest_activation_leases`, `workspace_deployments`, `workspace_deployment_targets`, `workspace_runtime_state` | Authoritative state and coordination |
+| Workspace and registry | `workspaces`, `manifest_versions`, `execution_packages`, `manifest_execution_packages`, `manifest_deployment_operations`, `local_deployment_cancellations`, `manifest_deployment_upload_leases`, `manifest_activation_leases`, `workspace_deployments`, `workspace_deployment_targets`, `workspace_runtime_state` | Authoritative state and coordination |
 | Runs and execution | `run_submissions`, `run_submission_commands`, `runs`, `run_events`, `run_plans`, `run_targets`, `run_ownerships`, `runner_tasks`, `runner_task_commands`, `runner_task_log_batches`, `runner_capacity_demands`, `runtime_input_pins`, `runtime_input_key_versions` | Authoritative |
 | Publication | `outbox_events`, `outbox_publication_state` | Authoritative delivery ledger |
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
@@ -874,3 +874,24 @@ their lack of an FK is not permission to perform unscoped reads.
 
 See the [canonical retention inventory](retention.md) for table ownership, replay
 floors, retirement markers, reference guards and intentionally retained state.
+
+## Deployment inspection ownership
+
+Local and archive operations share `manifest_deployment_operations`. Local
+operations carry a renewable session lease; archive operations survive client
+disconnect. The first claim pins the inspection deadline and expected workspace
+runtime revision. The planner pins the inspected binding-version hash.
+Activation writes its exact deployment ID and runtime revision receipt in the
+same transaction as the runtime change.
+
+`runner_tasks.deployment_operation_id` is a workspace-scoped foreign key.
+Owned task admission locks the operation before the task, sharing the lock with
+cancellation and activation. Closing admission does not erase unfinished work:
+bounded cleanup records queued cancellation and requests assigned cancellation.
+Unknown execution remains explicit.
+
+`local_deployment_cancellations` records a stop even before publication accepts
+the operation. It prevents a delayed publisher from reviving a stopped session.
+These identities and owned task evidence are retained; see
+[retention](retention.md) and the
+[recovery runbook](../../production/deployment-inspection-recovery.md).

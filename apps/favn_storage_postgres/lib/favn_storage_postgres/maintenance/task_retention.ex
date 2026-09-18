@@ -4,7 +4,7 @@ defmodule FavnStoragePostgres.Maintenance.TaskRetention do
   alias FavnStoragePostgres.Repo
 
   @eligible """
-  item.run_id IS NULL AND item.operation_id IS NULL
+  item.run_id IS NULL AND item.operation_id IS NULL AND item.deployment_operation_id IS NULL
   AND item.status IN ('succeeded','failed','cancelled') AND (item.retiring OR item.terminal_at<$1)
   AND NOT (item.workspace_id=ANY($2::text[]))
   AND NOT EXISTS (SELECT 1 FROM favn_control.runner_task_command_tasks c WHERE c.workspace_id=item.workspace_id AND c.task_id=item.task_id)
@@ -22,7 +22,7 @@ defmodule FavnStoragePostgres.Maintenance.TaskRetention do
         """
         WITH candidate AS MATERIALIZED (
           SELECT item.* FROM favn_control.runner_tasks item
-          WHERE item.run_id IS NULL AND item.operation_id IS NULL AND item.status IN ('succeeded','failed','cancelled')
+          WHERE item.run_id IS NULL AND item.operation_id IS NULL AND item.deployment_operation_id IS NULL AND item.status IN ('succeeded','failed','cancelled')
             AND (item.retiring OR item.terminal_at<$1) AND NOT (item.workspace_id=ANY($2::text[]))
             AND ($3::text IS NULL OR (item.workspace_id=$3 AND item.task_id=$4))
             AND (item.workspace_id,item.task_id)>($5,$6)
@@ -107,7 +107,7 @@ defmodule FavnStoragePostgres.Maintenance.TaskRetention do
         """
         WITH candidates AS MATERIALIZED (
           SELECT item.* FROM favn_control.runner_tasks item
-          WHERE item.run_id IS NULL AND item.operation_id IS NULL AND item.status IN ('succeeded','failed','cancelled')
+          WHERE item.run_id IS NULL AND item.operation_id IS NULL AND item.deployment_operation_id IS NULL AND item.status IN ('succeeded','failed','cancelled')
             AND (item.retiring OR item.terminal_at<$1) AND NOT (item.workspace_id=ANY($2::text[]))
           ORDER BY item.workspace_id,item.task_id LIMIT $3
         )

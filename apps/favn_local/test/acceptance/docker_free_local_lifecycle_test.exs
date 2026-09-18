@@ -317,7 +317,9 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert_receive {:delayed_task, delayed_task}, 5_000
     stopping = Task.async(fn -> FavnLocal.stop(root_dir: root_dir, stop_timeout_ms: 60_000) end)
 
-    assert_receive {^original_reply, {:error, {:reload_outcome_unknown, :reload_interrupted}}},
+    assert_receive {^original_reply,
+                    {:error,
+                     {:reload_interrupted, %{activation: :not_requested, operation_id: nil}}}},
                    5_000
 
     send(delayed_task, :complete)
@@ -372,7 +374,14 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     assert {:ok, publication} = LocalPublication.build(started.runner_release_id)
     File.write!(fixture_file, "external deployment")
     assert {:ok, external_publication} = LocalPublication.build(started.runner_release_id)
-    assert {:ok, external} = LocalPublication.deploy(external_publication, workspace_id)
+    owner = %{operation_id: "external-" <> workspace_id, session_id: "external-session"}
+    token = String.duplicate("m", 43)
+    assert {:ok, ^token} = FavnOrchestrator.Lifecycle.begin_maintenance(:deployment_test, token)
+
+    assert {:ok, external} =
+             LocalPublication.deploy(external_publication, workspace_id, token, owner)
+
+    assert :ok = FavnOrchestrator.Lifecycle.end_maintenance(token)
     File.write!(fixture_file, "changed documentation")
     assert reload_command(root_dir) =~ "Favn manifest reloaded"
     {:ok, restored} = Manifests.active_runtime(context)
