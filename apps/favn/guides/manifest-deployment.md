@@ -131,7 +131,11 @@ budget is 15 minutes. These are Favn protocol details, not uploader settings.
 In Linux containers, the Orchestrator reads finite cgroup memory automatically.
 Operators do not repeat the container RAM size in Favn. Larger containers are
 used automatically, while fixed archive, batch, and worker bounds do not grow.
-Missing, unlimited, or unreadable cgroup data fails closed for manifest import.
+The tightest finite headroom across visible v1/v2 memory hierarchies and their
+ancestors controls admission. A v2 membership entry without a visible cgroup2
+mount does not prevent use of a valid v1 memory controller. Unreadable or malformed
+applicable memory data, or no trustworthy finite limit, fails closed for manifest
+import.
 
 The older `mix favn.publish` and `mix favn.activate` commands remain available
 for interactive and local workflows. Production automation should prefer the

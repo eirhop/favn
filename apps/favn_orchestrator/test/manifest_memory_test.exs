@@ -4,6 +4,25 @@ defmodule FavnOrchestrator.ManifestMemoryTest do
   alias Favn.Manifest.Version
   alias FavnOrchestrator.ManifestMemory
   alias FavnOrchestrator.ManifestMemory.Slot
+  alias FavnTestSupport.CgroupFiles
+
+  test "admits the mounted v1 controller with unmounted v2 only with sufficient headroom" do
+    files = CgroupFiles.v1_with_unmounted_v2()
+    assert :ok = ManifestMemory.ensure_headroom(CgroupFiles.options(files))
+
+    for {usage, expected} <- [
+          {"536870912", :ok},
+          {"536870913", {:error, :manifest_capacity_unavailable}},
+          {"1073741825", {:error, :manifest_capacity_unavailable}}
+        ] do
+      options =
+        files
+        |> Map.put("/sys/fs/cgroup/memory/memory.usage_in_bytes", usage)
+        |> CgroupFiles.options()
+
+      assert ManifestMemory.ensure_headroom(options) == expected
+    end
+  end
 
   test "adapts admission to current finite-cgroup headroom" do
     mib = 1024 * 1024
