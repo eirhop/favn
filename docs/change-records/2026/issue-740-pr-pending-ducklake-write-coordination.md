@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented — final review pending |
+| Status | Implemented — independently approved |
 | Type | Bug fix |
 | Primary issue | [#740](https://github.com/eirhop/favn/issues/740) |
 | Pull request | Pending |
@@ -563,7 +563,7 @@ reconciliation contracts. No new production state or protocol was added for it.
 | Focused DuckLake conflict case | Passed after review fixes | One same-table commit conflict, the winning window remains committed, only the losing window is repaired in one transaction, the captured backend error passes through runner evidence attachment unchanged, no framework exception, and unrelated-table success |
 | Restored orchestration regressions | 3 passed across the final focused runs | Different targets retain concurrent capacity and out-of-order retry behavior while same-target work remains serialized |
 | Umbrella fast suite | Attempted after the review fixes; affected runner tests passed, while unrelated 100 ms timing tests failed before the long storage run was stopped | Not used as evidence for this change; focused owning-layer checks are authoritative |
-| Independent final review | Pending | Must compare implementation with `20dac7f3` |
+| Independent final review | Approved on `9bca1951` | Astra xhigh compared implementation with `20dac7f3`; final capacity regression passed independently |
 
 ### Not verified
 
@@ -577,9 +577,18 @@ reconciliation contracts. No new production state or protocol was added for it.
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Astra xhigh implementation reviewer; recheck pending |
+| Reviewer | Astra xhigh implementation reviewer |
 | Compared | Approved plan `20dac7f3`, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending reviewer confirmation |
+| Deviations complete | Confirmed; complexity totals reconcile to Git |
 | Findings | Initial review found no safety defect, but requested stronger qualification: use a real unrelated writer, prove the exact final FIFO predicate, exercise the parameterized target-index query, avoid masking the DuckLake winner with a full-table repair, and preserve the intent of older orchestration regressions. Its first recheck also found that the over-50 proof did not establish queue order, the backend error did not pass through runner evidence attachment, loser repair used two autocommits, the index included terminal history, and the older concurrent regressions still used one target. |
 | Findings addressed and rechecked | The over-50 test proves every blocked item precedes the unrelated task; the captured DuckLake error passes through the production runner attachment helper unchanged; loser repair is one transaction; the index covers only active states; and orchestration regressions use independently pinned materialized targets. After the first recheck, the private target was confined to the new fixture, post-step supervision was added, A/C tie order was made explicit, and unresolved effect states were made literal with generic-plan index coverage. Recheck pending. |
-| Verdict | Pending |
+| Verdict | Approved for clean commit `9bca1951` against baseline `20dac7f3`, with no remaining findings. The final independent rerun passed the terminal-refill capacity regression. Both retry variants passed in the preceding review. |
+
+Final correction: post-step supervision is scoped to the terminal-refill test,
+and the private target is activated through persisted claim/finish/reconcile
+contracts. The final reviewer confirmed all previous findings resolved.
+
+The broad local suite did not complete green: two 100 ms timing assertions
+passed when rerun, while the untouched runner-session state-filter test still
+failed on rerun. This is recorded as an unresolved broad-suite result rather
+than attributed to a pre-existing cause. Pinned-build CI remains required.
