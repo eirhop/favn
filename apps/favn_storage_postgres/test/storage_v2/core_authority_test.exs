@@ -725,6 +725,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     {run_command, run} = create_run_command(fixture)
+
     assert {:ok, _created} = RunStore.create_run(run_command)
 
     claim = %ClaimMaterialization{
@@ -9368,7 +9369,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
          fixture do
       {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
       start_pipeline_runtime!()
-      start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor})
       assert {:ok, first} = RunServer.start_link(%{run_state: run, version: fixture.version})
       assert [task_id | _] = await_runner_task_ids!(fixture.workspace_id, run.id, 3)
       assert {:ok, task} = RunnerTasks.fetch(fixture.workspace_id, task_id)
@@ -9512,6 +9512,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         )
 
       start_pipeline_runtime!()
+      start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor})
+      start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
       assert {:ok, first} = RunServer.start_link(%{run_state: run, version: fixture.version})
       assert 2 == length(await_runner_task_ids!(fixture.workspace_id, run.id, 2))
 
@@ -16223,7 +16225,82 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                occurred_at: DateTime.utc_now()
              })
 
-    Map.put(fixture, :private_generation, writable.generation)
+    {run_command, run} = create_run_command(fixture)
+
+    private_run_target = %RunTarget{
+      target_kind: :asset,
+      target_id: private_asset.target_descriptor.target_id,
+      target_module: "MyApp.PrivateAsset",
+      target_name: "private",
+      is_primary: false
+    }
+
+    assert {:ok, _created} =
+             RunStore.create_run(%{
+               run_command
+               | targets: run_command.targets ++ [private_run_target]
+             })
+
+    occurred_at = DateTime.utc_now()
+    claim_key = "generation:claim:distinct:#{unique}"
+
+    claim = %ClaimMaterialization{
+      workspace_context: fixture.workspace_context,
+      command_id: claim_key,
+      claim_key: claim_key,
+      deployment_id: fixture.deployment_id,
+      target_kind: :asset,
+      target_id: private_asset.target_descriptor.target_id,
+      target_generation_id: writable.generation.target_generation_id,
+      evidence_generation_id: writable.generation.target_generation_id,
+      partition_key: Favn.Freshness.Key.latest(),
+      run_id: run.id,
+      owner_id: "generation-worker-distinct-#{unique}",
+      lease_duration_ms: 30_000,
+      occurred_at: occurred_at
+    }
+
+    assert {:ok, %{status: :claimed, claim: claimed}} = MaterializationStore.claim(claim)
+
+    materialization_id = "generation:materialization:distinct:#{unique}"
+
+    assert {:ok, %{status: :materialized}} =
+             MaterializationStore.finish(%FinishMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "generation:finish:distinct:#{unique}",
+               claim_key: claim.claim_key,
+               owner_id: claim.owner_id,
+               fencing_token: claimed.fencing_token,
+               expected_version: claimed.version,
+               status: :succeeded,
+               materialization_id: materialization_id,
+               payload: %{"row_count" => 1},
+               occurred_at: DateTime.add(occurred_at, 1, :second)
+             })
+
+    active_relation = writable.generation.physical_relation
+
+    assert {:ok, reconciled} =
+             TargetGenerationStore.reconcile_initial(%ReconcileInitialTargetGeneration{
+               workspace_context: fixture.workspace_context,
+               command_id: "generation:reconcile:distinct:#{unique}",
+               target_id: private_asset.target_descriptor.target_id,
+               manifest_version_id: version.manifest_version_id,
+               target_generation_id: writable.generation.target_generation_id,
+               materialization_id: materialization_id,
+               physical_schema_fingerprint: String.duplicate("a", 64),
+               data_plane_marker: %{
+                 "target_id" => private_asset.target_descriptor.target_id,
+                 "active_relation" => active_relation,
+                 "active_generation_id" => writable.generation.target_generation_id,
+                 "activation_operation_id" => "initial-distinct-#{unique}",
+                 "activation_token" => "initial-distinct-token-#{unique}",
+                 "activated_at" => DateTime.to_iso8601(DateTime.add(occurred_at, 2, :second))
+               },
+               occurred_at: DateTime.add(occurred_at, 2, :second)
+             })
+
+    Map.put(fixture, :private_generation, reconciled.generation)
   end
 
   defp target_descriptor(fixture, manifest_schema_version \\ nil, materialization \\ :table) do

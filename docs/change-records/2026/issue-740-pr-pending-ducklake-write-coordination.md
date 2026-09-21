@@ -493,18 +493,22 @@ message, phase, outcomes, and retry classification unchanged.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Notes |
 | --- | ---: | ---: | ---: | ---: | --- |
-| 1 | 238 | 4 | 314 | Includes the 35-line migration, owner-valid stale-fence recovery predicate, and generic-plan index proof |
-| 2 | 17 | 8 | 58 | 4 | Trusted evidence only and unchanged-error regressions |
-| 3 | 0 | 0 | 210 | 1 | Real independent ADBC sessions, PostgreSQL DuckLake metadata, and distinct-target orchestration fixtures |
+| 1 | 236 | 4 | 627 | 91 | Claim coordination, migration, storage and orchestration regressions, fixtures, and generic-plan proof |
+| 2 | 24 | 10 | 58 | 4 | Trusted evidence only and unchanged-error regressions |
+| 3 | 0 | 0 | 239 | 1 | Real independent ADBC sessions and PostgreSQL DuckLake metadata |
 | 4 | 0 | 0 | 23 | 6 | Canonical and public concurrency guidance |
 
-Slice 1 exceeds the planned production upper bound by 70 lines. The additional
+Slice 1 exceeds the planned production upper bound by 66 lines. The additional
 lines are explicit SQL for matching active task rows to their still-current
 materialization or target-operation fences in both the bounded candidate query
 and the advisory-locked recheck. That owner check was required by the existing
 fenced-takeover regression; counting every active row would strand authorized
-replacement work. The implementation still stays within the approved state and
-protocol design.
+replacement work. Its supporting scope exceeds the planned upper bound by 197
+lines because the existing orchestration regressions needed isolated, pinned
+and already-active materialized targets to retain their original concurrent
+capacity and out-of-order retry proof without violating the new same-target
+rule. The activation fixture uses the normal persisted claim, finish, and
+reconciliation contracts. No new production state or protocol was added for it.
 
 ## Deviations from the approved plan
 
