@@ -512,6 +512,10 @@ reconciliation contracts. No new production state or protocol was added for it.
 
 ## Deviations from the approved plan
 
+- The user explicitly approved a minimal Mint security update after PR CI
+  flagged Mint 1.10.0 for CVE-2026-82672. Only the Mint lock entry changes to
+  1.10.1; both dependency audits then pass. This adds one supporting line
+  and removes one lockfile line outside the four implementation slices above.
 - Cross-layer qualification is split at the real ownership boundaries instead
   of adding a production hook and a second full local runner harness. Storage
   tests use independent claimers and real PostgreSQL to prove assignment,
