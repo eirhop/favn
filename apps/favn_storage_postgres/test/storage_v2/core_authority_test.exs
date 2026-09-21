@@ -8574,6 +8574,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     delay_runner_task_inserts!()
     start_pipeline_runtime!()
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor})
 
     assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
     assert [_task_id] = await_runner_task_ids!(fixture.workspace_id, run.id, 1)
