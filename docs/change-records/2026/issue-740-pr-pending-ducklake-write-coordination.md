@@ -493,7 +493,7 @@ message, phase, outcomes, and retry classification unchanged.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Notes |
 | --- | ---: | ---: | ---: | ---: | --- |
-| 1 | 236 | 4 | 628 | 91 | Claim coordination, migration, storage and orchestration regressions, fixtures, and generic-plan proof |
+| 1 | 236 | 4 | 673 | 91 | Claim coordination, migration, storage and orchestration regressions, fixtures, and generic-plan proof |
 | 2 | 24 | 10 | 58 | 4 | Trusted evidence only and unchanged-error regressions |
 | 3 | 0 | 0 | 239 | 1 | Real independent ADBC sessions and PostgreSQL DuckLake metadata |
 | 4 | 0 | 0 | 23 | 6 | Canonical and public concurrency guidance |
@@ -503,7 +503,7 @@ lines are explicit SQL for matching active task rows to their still-current
 materialization or target-operation fences in both the bounded candidate query
 and the advisory-locked recheck. That owner check was required by the existing
 fenced-takeover regression; counting every active row would strand authorized
-replacement work. Its supporting scope exceeds the planned upper bound by 198
+replacement work. Its supporting scope exceeds the planned upper bound by 243
 lines because the existing orchestration regressions needed isolated, pinned
 and already-active materialized targets to retain their original concurrent
 capacity and out-of-order retry proof without violating the new same-target
@@ -512,6 +512,11 @@ reconciliation contracts. No new production state or protocol was added for it.
 
 ## Deviations from the approved plan
 
+- CI exposed an unstable index-name assertion on a tiny table. The final
+  query-plan fixture copies the actual migration-created indexes onto a temporary
+  10,000-task queue and analyzes its statistics before asserting target-index use.
+  This adds representative query-plan evidence independent of accumulated
+  test database statistics.
 - The user explicitly approved a minimal Mint security update after PR CI
   flagged Mint 1.10.0 for CVE-2026-82672. Only the Mint lock entry changes to
   1.10.1; both dependency audits then pass. This adds one supporting line

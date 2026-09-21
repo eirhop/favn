@@ -4178,6 +4178,52 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     target_plan =
       Repo.transaction(fn ->
+        SQL.query!(
+          Repo,
+          "CREATE TEMP TABLE runner_tasks_plan AS SELECT * FROM favn_control.runner_tasks WITH NO DATA",
+          []
+        )
+
+        SQL.query!(
+          Repo,
+          """
+          INSERT INTO runner_tasks_plan
+            (workspace_id, task_id, write_target_id, status, runner_pool,
+             required_runner_release_id, task_kind, required_capability, deadline_at, enqueued_at)
+          SELECT task.workspace_id, 'plan-' || n,
+                 CASE WHEN n = 1 THEN task.write_target_id ELSE 'other-' || n END,
+                 'queued', task.runner_pool, task.required_runner_release_id,
+                 task.task_kind, task.required_capability, task.deadline_at, task.enqueued_at
+          FROM favn_control.runner_tasks task CROSS JOIN generate_series(1, 10000) n
+          WHERE task.workspace_id = $1 AND task.task_id = $2
+          """,
+          [fixture.workspace_id, active_writer.task_id]
+        )
+
+        %{rows: index_definitions} =
+          SQL.query!(
+            Repo,
+            """
+            SELECT indexdef FROM pg_indexes
+            WHERE schemaname = 'favn_control'
+              AND indexname IN ('runner_tasks_claim_idx', 'runner_tasks_target_reservation_idx')
+            """,
+            []
+          )
+
+        for [definition] <- index_definitions do
+          SQL.query!(
+            Repo,
+            String.replace(
+              definition,
+              "ON favn_control.runner_tasks",
+              "ON pg_temp.runner_tasks_plan"
+            ),
+            []
+          )
+        end
+
+        SQL.query!(Repo, "ANALYZE runner_tasks_plan", [])
         SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
         SQL.query!(Repo, "SET LOCAL plan_cache_mode = force_generic_plan", [])
 
@@ -4186,7 +4232,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
           """
           EXPLAIN (FORMAT TEXT)
           SELECT 1
-          FROM favn_control.runner_tasks older
+          FROM pg_temp.runner_tasks_plan older
           WHERE older.workspace_id = $1
             AND older.write_target_id = $2
             AND older.status = 'queued'
@@ -4213,8 +4259,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       end)
       |> then(fn {:ok, %{rows: rows}} -> rows |> List.flatten() |> Enum.join("\n") end)
 
-    assert target_plan =~ "runner_tasks_target_reservation_idx" or
-             target_plan =~ "runner_tasks_claim_idx"
+    assert target_plan =~ "runner_tasks_target_reservation_idx", target_plan
   end
 
   test "unresolved target claims retain their partial index under a generic plan", fixture do
