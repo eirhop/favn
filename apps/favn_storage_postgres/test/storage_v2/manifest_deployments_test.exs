@@ -1028,6 +1028,9 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
                occurred_at: now
              })
 
+    assert :ok = await_manifest_dispatcher_idle()
+    assert :ok = stop_supervised(ManifestDeploymentDispatcher)
+
     terminal = await_deployment(context, operation_id)
     assert terminal.status == 200
 
@@ -2007,6 +2010,21 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     else
       Process.sleep(10)
       await_deployment(context, operation_id, remaining - 1)
+    end
+  end
+
+  defp await_manifest_dispatcher_idle(remaining \\ 300)
+
+  defp await_manifest_dispatcher_idle(0), do: flunk("manifest deployment dispatcher stayed busy")
+
+  defp await_manifest_dispatcher_idle(remaining) do
+    case :sys.get_state(ManifestDeploymentDispatcher) do
+      %{active: active, reconciliation: nil} when map_size(active) == 0 ->
+        :ok
+
+      _state ->
+        Process.sleep(10)
+        await_manifest_dispatcher_idle(remaining - 1)
     end
   end
 
