@@ -63,9 +63,9 @@ defmodule FavnStoragePostgres.TestSupport.TaskManifest do
     version
   end
 
-  def sql_work(fixture) do
-    ref = {__MODULE__.SQL, :write_test}
-    relation = Favn.RelationRef.new!(connection: :default, name: "write_test")
+  def sql_work(fixture, name \\ :write_test) do
+    ref = {__MODULE__.SQL, name}
+    relation = Favn.RelationRef.new!(connection: :default, name: Atom.to_string(name))
     sql = "SELECT 1 AS value"
 
     {:ok, package} =
@@ -106,7 +106,7 @@ defmodule FavnStoragePostgres.TestSupport.TaskManifest do
       FavnStoragePostgres.TargetGenerations.Store.ensure_writable(
         %C.EnsureWritableTargetGeneration{
           workspace_context: fixture.workspace_context,
-          command_id: "generation:" <> fixture.workspace_id,
+          command_id: "generation:#{fixture.workspace_id}:#{name}",
           target_id: asset.target_descriptor.target_id,
           manifest_version_id: version.manifest_version_id,
           descriptor: asset.target_descriptor,
@@ -114,8 +114,10 @@ defmodule FavnStoragePostgres.TestSupport.TaskManifest do
         }
       )
 
+    run_suffix = if name == :write_test, do: "", else: "-#{name}"
+
     work = %Favn.Contracts.RunnerWork{
-      run_id: "run-" <> fixture.workspace_id,
+      run_id: "run-" <> fixture.workspace_id <> run_suffix,
       asset_ref: ref,
       asset_step_id: "step",
       runner_pool: asset.runner_pool,

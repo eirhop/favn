@@ -257,6 +257,12 @@ resumes; it does not retry A. Execution pools, pipeline `max_concurrency`, SQL
 `write_concurrency`, and materialization claims are admission controls. They do
 not make separate runs share attempts or pins.
 
+Tasks from separate runs that write the same logical target are serialized. A
+later task remains queued rather than reserving another runner, while unrelated
+targets may run in parallel. This is waiting, not a retry, and does not increment
+the asset attempt. A write whose outcome is unknown continues to block that
+target until supported operator reconciliation proves the disposition.
+
 ## Cancellation And Restart
 
 Cancellation during backoff wins: the timer is cancelled and no next attempt

@@ -97,19 +97,44 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     assert {:error, %FavnOrchestrator.Persistence.Error{kind: :invalid}} = Store.enqueue(command)
   end
 
-  test "pre-admitted writers wait for the exact healthy owner without consuming an attempt", f do
+  test "target-blocked writers stay queued while unrelated work remains claimable", f do
     second_work = %{f.work | run_id: f.work.run_id <> "-second"}
     second_claim = TaskManifest.ownership_claim(f, f.version, second_work)
     second = %{f | work: second_work, claim: second_claim}
     assert {:ok, _} = Store.enqueue(enqueue(f))
     assert {:ok, first_task} = Store.claim(claim_task(f))
     assert {:ok, _} = Store.enqueue(enqueue(second))
-    assert {:ok, second_task} = Store.claim(claim_task(second))
-    assert {:ok, _} = Store.transition(transition(f, first_task))
-    waiting = transition(second, second_task)
+    assert {:ok, nil} = Store.claim(claim_task(second, "blocked"))
 
-    assert {:error, %{retryable?: true, details: %{reason_code: "target_write_in_progress"}}} =
-             Store.transition(waiting)
+    {unrelated_version, unrelated_work} = TaskManifest.sql_work(f, :unrelated_write_test)
+    unrelated_claim = TaskManifest.ownership_claim(f, unrelated_version, unrelated_work)
+
+    unrelated = %{
+      f
+      | version: unrelated_version,
+        work: unrelated_work,
+        claim: unrelated_claim
+    }
+
+    assert unrelated.work.logical_target_id != f.work.logical_target_id
+    assert {:ok, unrelated_task} = Store.enqueue(enqueue(unrelated))
+
+    assert {:ok, claimed_unrelated} =
+             Store.claim(claim_task(unrelated, "unrelated"))
+
+    assert claimed_unrelated.task_id == unrelated_task.task_id
+    assert claimed_unrelated.task_kind == :asset_attempt
+    assert claimed_unrelated.write_target_id == unrelated.work.logical_target_id
+
+    assert {:ok, second_queued} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: f.workspace_context,
+               task_id: "rt_" <> second.work.run_id
+             })
+
+    assert second_queued.status == :queued
+    assert second_queued.assigned_runner_instance_id == nil
+    assert {:ok, _} = Store.transition(transition(f, first_task))
 
     assert {:error, %{details: %{reason_code: "target_write_in_progress"}}} =
              Materialization.claim(claim_command(f, command_id: "third", claim_key: "third"))
@@ -128,10 +153,10 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
                }
              )
 
-    assert {:ok, %{status: :assigned, payload: %{attempt: 1}}} =
+    assert {:ok, %{status: :queued, payload: %{attempt: 1}}} =
              Store.get(%Q.GetRunnerTask{
                workspace_context: f.workspace_context,
-               task_id: second_task.task_id
+               task_id: second_queued.task_id
              })
 
     assert {:ok, _} =
@@ -151,8 +176,73 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
                occurred_at: f.now
              })
 
+    assert {:ok, second_task} = Store.claim(claim_task(second, "ready"))
+    waiting = transition(second, second_task)
     assert {:ok, %{status: :running, assignment_generation: 1}} = Store.transition(waiting)
     assert {:ok, %{status: :running, assignment_generation: 1}} = Store.transition(waiting)
+  end
+
+  test "blocked targets are filtered before the bounded claim candidate limit", f do
+    assert {:ok, _} = Store.enqueue(enqueue(f))
+    assert {:ok, first_task} = Store.claim(claim_task(f))
+
+    blocked =
+      for index <- 1..55 do
+        work = %{f.work | run_id: "#{f.work.run_id}-blocked-#{index}"}
+        claim = TaskManifest.ownership_claim(f, f.version, work)
+        blocked_fixture = %{f | work: work, claim: claim}
+        assert {:ok, task} = Store.enqueue(enqueue(blocked_fixture))
+        task
+      end
+
+    {unrelated_version, unrelated_work} = TaskManifest.sql_work(f, :batch_unrelated_write_test)
+    unrelated_claim = TaskManifest.ownership_claim(f, unrelated_version, unrelated_work)
+
+    unrelated = %{
+      f
+      | version: unrelated_version,
+        work: unrelated_work,
+        claim: unrelated_claim,
+        now: DateTime.add(f.now, 1, :second)
+    }
+
+    assert unrelated.work.logical_target_id != f.work.logical_target_id
+    assert {:ok, unrelated_task} = Store.enqueue(enqueue(unrelated))
+
+    assert Enum.all?(blocked, fn task ->
+             DateTime.before?(task.enqueued_at, unrelated_task.enqueued_at)
+           end)
+
+    assert {:ok, claimed} = Store.claim(claim_task(unrelated, "after-blocked-batch"))
+    assert claimed.task_id == unrelated_task.task_id
+    assert claimed.task_kind == :asset_attempt
+
+    assert Enum.all?(blocked, fn task ->
+             {:ok, queued} =
+               Store.get(%Q.GetRunnerTask{
+                 workspace_context: f.workspace_context,
+                 task_id: task.task_id
+               })
+
+             queued.status == :queued and is_nil(queued.assigned_runner_instance_id)
+           end)
+
+    assert {:ok, _} =
+             Store.complete(%C.CompleteRunnerTask{
+               workspace_context: f.workspace_context,
+               command_id: "release-blocked-batch",
+               task_id: first_task.task_id,
+               runner_instance_id: first_task.assigned_runner_instance_id,
+               runner_session_generation: 1,
+               assignment_generation: 1,
+               result_version: 1,
+               outcome: :failed,
+               result: nil,
+               retry_class: :terminal,
+               error: Favn.Contracts.RunnerError.new(outcome: :safe_failure),
+               issued_at: f.now,
+               occurred_at: f.now
+             })
   end
 
   test "sequential admission restores its original deadline and times out before dispatch", f do
@@ -991,11 +1081,11 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     }
   end
 
-  defp claim_task(f),
+  defp claim_task(f, suffix \\ nil),
     do: %C.ClaimRunnerTask{
       platform_context: f.platform_context,
-      command_id: "claim-task-" <> f.work.run_id,
-      runner_instance_id: "runner-" <> f.work.run_id,
+      command_id: "claim-task-" <> f.work.run_id <> to_string(suffix),
+      runner_instance_id: "runner-" <> f.work.run_id <> to_string(suffix),
       runner_session_generation: 1,
       runner_pool: f.runner_pool,
       required_runner_release_id: f.work.required_runner_release_id,

@@ -37,6 +37,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     previous_begin_failure = Application.get_env(:favn_runner, :checked_begin_failure)
     previous_checked_columns = Application.get_env(:favn_runner, :checked_columns)
 
+    previous_commit_contract_validation =
+      Application.get_env(:favn_runner, :checked_commit_contract_validation)
+
     previous_contract_outcomes =
       Application.get_env(:favn_runner, :checked_contract_outcomes)
 
@@ -63,6 +66,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
       restore_env(:checked_rollback_failure, previous_rollback_failure)
       restore_env(:checked_begin_failure, previous_begin_failure)
       restore_env(:checked_columns, previous_checked_columns)
+      restore_env(:checked_commit_contract_validation, previous_commit_contract_validation)
       restore_env(:checked_contract_outcomes, previous_contract_outcomes)
       restore_env(:runtime_inputs_resolved, previous_runtime_inputs_resolved)
       Registry.reload(%{}, registry_name: FavnRunner.ConnectionRegistry)
@@ -1601,6 +1605,45 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     refute surfaced =~ "transaction_body_result"
   end
 
+  test "untrusted contract validation metadata cannot replace a commit error" do
+    reload_fake_connection(:runner_sql_runtime, __MODULE__.FakeCheckedCommitErrorAdapter)
+
+    checks = [
+      checked_check(
+        :candidate_valid,
+        :before_materialize,
+        :fail,
+        "select true as passed from query() /* check:pass */"
+      )
+    ]
+
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedCommitFailureSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, checks)
+
+    for {suffix, validation} <- [
+          {:atom_map, %{status: :failed}},
+          {:string_map, %{"status" => "failed"}},
+          {:malformed, "not-validation-evidence"}
+        ] do
+      Application.put_env(:favn_runner, :checked_commit_contract_validation, validation)
+
+      assert {:ok, result} =
+               FavnRunner.TestExecution.run(
+                 work_for(version, ref, "run_checked_commit_#{suffix}")
+               )
+
+      assert result.status == :error
+      assert [%{error: error, evidence: meta}] = result.asset_results
+      assert meta.contract_validation == nil
+      assert error.message == "commit failed"
+      assert error.details.cause.message == "commit failed"
+      assert error.details.details.classification == :unknown_commit_state
+      assert error.outcome == :unknown
+      refute error.retryable?
+      refute inspect(error) =~ "FunctionClauseError"
+    end
+  end
+
   test "inspection normalizes malformed include values at the runner boundary" do
     ref = {FavnRunner.ExecutionSQLAssetTest.SQLAsset, :asset}
     version = register_sql_manifest!(ref)
@@ -2734,19 +2777,30 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedCommitErrorAdapter do
 
         secret_value = %{value | write_plan: secret_plan}
 
+        details =
+          %{
+            classification: :unknown_commit_state,
+            transaction_body_result: secret_value
+          }
+          |> maybe_put_contract_validation()
+
         {:error,
          %Error{
            type: :execution_error,
            message: "commit failed",
            operation: :transaction,
-           details: %{
-             classification: :unknown_commit_state,
-             transaction_body_result: secret_value
-           }
+           details: details
          }}
 
       {:error, %Error{} = error} ->
         {:error, error}
+    end
+  end
+
+  defp maybe_put_contract_validation(details) do
+    case Application.get_env(:favn_runner, :checked_commit_contract_validation) do
+      nil -> details
+      validation -> Map.put(details, :contract_validation, validation)
     end
   end
 end

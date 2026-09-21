@@ -49,6 +49,13 @@ concurrency. The SQL client enforces checkout ownership, so copied session struc
 cannot be operated on or disconnected by non-owner processes. Raw
 execute/materialize/transaction paths discard pooled sessions after mutation
 unless explicitly proven pool-safe internally.
+The PostgreSQL runner-task queue supplies the distributed target boundary. While
+one task is assigned or an earlier effect is in flight or unresolved, later work
+for that workspace/logical target remains queued and does not occupy another
+runner. Unrelated logical targets remain claimable. `Started` then rechecks the
+durable materialization claim or target-operation lock immediately before the
+external effect; queue filtering is a capacity rule, not a replacement for that
+final safety fence.
 When concurrent work misses the same pool key, Favn may create multiple fresh
 sessions in parallel up to the selected finite admission/catalog limit. This keeps
 fresh connection-per-write paths efficient without making arbitrary raw SQL

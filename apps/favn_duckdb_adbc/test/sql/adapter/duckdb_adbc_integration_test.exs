@@ -110,7 +110,9 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
                  fn tx ->
                    ADBC.materialize_in_transaction(
                      tx,
-                     group_replacement_plan("invalid_candidate"), params: [])
+                     group_replacement_plan("invalid_candidate"),
+                     params: []
+                   )
                  end,
                  []
                )
@@ -606,6 +608,182 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
     end
   end
 
+  test "PostgreSQL-backed DuckLake exposes real same-table conflicts and permits unrelated writes" do
+    database_url = System.fetch_env!("FAVN_DATABASE_URL")
+    unique = System.unique_integer([:positive])
+    metadata_schema = "ducklake_740_#{unique}"
+    root = Path.join(System.tmp_dir!(), metadata_schema)
+    data_path = Path.join(root, "data")
+    File.mkdir_p!(data_path)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    resolved = %Resolved{
+      name: :warehouse,
+      adapter: ADBC,
+      module: __MODULE__,
+      config: %{open: [database: ":memory:"]}
+    }
+
+    assert {:ok, first} = ADBC.connect(resolved, connect_opts())
+    assert {:ok, second} = ADBC.connect(resolved, connect_opts())
+
+    try do
+      attach_postgres_ducklake(first, database_url, metadata_schema, data_path)
+      attach_postgres_ducklake(second, database_url, metadata_schema)
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 first,
+                 "CREATE TABLE lake.main.monthly_rows(period VARCHAR, value VARCHAR)",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 first,
+                 "INSERT INTO lake.main.monthly_rows VALUES ('2026-01', 'old'), ('2026-02', 'old')",
+                 []
+               )
+
+      assert {:ok, _} = ADBC.execute(first, "BEGIN TRANSACTION", [])
+      assert {:ok, _} = ADBC.execute(second, "BEGIN TRANSACTION", [])
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 first,
+                 "DELETE FROM lake.main.monthly_rows WHERE period = '2026-01'; INSERT INTO lake.main.monthly_rows VALUES ('2026-01', 'new')",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 second,
+                 "DELETE FROM lake.main.monthly_rows WHERE period = '2026-02'; INSERT INTO lake.main.monthly_rows VALUES ('2026-02', 'new')",
+                 []
+               )
+
+      commits =
+        [{"2026-01", first}, {"2026-02", second}]
+        |> Task.async_stream(
+          fn {period, conn} ->
+            {period, conn, ADBC.execute(conn, "COMMIT", [])}
+          end,
+          max_concurrency: 2,
+          ordered: false,
+          timeout: 30_000
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert [{successful_period, successful_conn, {:ok, _}}] =
+               Enum.filter(commits, &match?({_period, _conn, {:ok, _}}, &1))
+
+      assert [{failed_period, _failed_conn, {:error, %Error{} = conflict}}] =
+               Enum.filter(commits, &match?({_period, _conn, {:error, %Error{}}}, &1))
+
+      refute inspect(commits) =~ "FunctionClauseError"
+      assert is_binary(conflict.message) and byte_size(conflict.message) > 0
+
+      assert %{backend_error: ^conflict} =
+               Favn.SQLAsset.Runtime.attach_contract_validation_evidence(
+                 %{backend_error: conflict},
+                 conflict
+               )
+
+      assert {:ok, visible_after_conflict} =
+               ADBC.query(
+                 successful_conn,
+                 "SELECT period, value FROM lake.main.monthly_rows ORDER BY period",
+                 []
+               )
+
+      assert Enum.find(visible_after_conflict.rows, &(&1["period"] == successful_period)) ==
+               %{"period" => successful_period, "value" => "new"}
+
+      assert Enum.find(visible_after_conflict.rows, &(&1["period"] == failed_period)) ==
+               %{"period" => failed_period, "value" => "old"}
+
+      assert {:ok, _} = ADBC.execute(successful_conn, "BEGIN TRANSACTION", [])
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 successful_conn,
+                 "DELETE FROM lake.main.monthly_rows WHERE period = ?",
+                 params: [failed_period]
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 successful_conn,
+                 "INSERT INTO lake.main.monthly_rows VALUES (?, 'new')",
+                 params: [failed_period]
+               )
+
+      assert {:ok, _} = ADBC.execute(successful_conn, "COMMIT", [])
+
+      assert {:ok, rows} =
+               ADBC.query(
+                 successful_conn,
+                 "SELECT period, value FROM lake.main.monthly_rows ORDER BY period",
+                 []
+               )
+
+      assert rows.rows == [
+               %{"period" => "2026-01", "value" => "new"},
+               %{"period" => "2026-02", "value" => "new"}
+             ]
+
+      assert {:ok, _} = ADBC.execute(first, "CREATE TABLE lake.main.first_target(id BIGINT)", [])
+      assert {:ok, _} = ADBC.execute(first, "CREATE TABLE lake.main.second_target(id BIGINT)", [])
+
+      unrelated =
+        [{first, "first_target"}, {second, "second_target"}]
+        |> Task.async_stream(
+          fn {conn, table} ->
+            ADBC.execute(conn, "INSERT INTO lake.main.#{table} VALUES (1)", [])
+          end,
+          max_concurrency: 2,
+          ordered: false,
+          timeout: 30_000
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert Enum.all?(unrelated, &match?({:ok, _}, &1)), inspect(unrelated)
+
+      assert {:ok, versions} =
+               ADBC.query(
+                 first,
+                 """
+                 SELECT
+                   version() AS duckdb_version,
+                   extension_version,
+                   current_setting('ducklake_max_retry_count') AS max_retry_count,
+                   current_setting('ducklake_retry_wait_ms') AS retry_wait_ms,
+                   current_setting('ducklake_retry_backoff') AS retry_backoff
+                 FROM duckdb_extensions()
+                 WHERE extension_name = 'ducklake' AND loaded
+                 """,
+                 []
+               )
+
+      assert [
+               %{
+                 "duckdb_version" => duckdb,
+                 "extension_version" => ducklake,
+                 "max_retry_count" => max_retry_count,
+                 "retry_wait_ms" => retry_wait_ms,
+                 "retry_backoff" => retry_backoff
+               }
+             ] = versions.rows
+
+      assert is_binary(duckdb) and is_binary(ducklake),
+             "DuckDB=#{duckdb} DuckLake=#{ducklake} retries=#{inspect({max_retry_count, retry_wait_ms, retry_backoff})}"
+    after
+      ADBC.disconnect(second, [])
+      cleanup_postgres_ducklake(first, database_url, metadata_schema)
+      ADBC.disconnect(first, [])
+    end
+  end
+
   defp connect_opts do
     case System.get_env("DUCKDB_ADBC_DRIVER") do
       nil -> []
@@ -676,6 +854,66 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
         else: attach
 
     assert {:ok, _result} = ADBC.execute(conn, attach, [])
+  end
+
+  defp attach_postgres_ducklake(conn, database_url, metadata_schema, data_path \\ nil) do
+    assert {:ok, _} = ADBC.execute(conn, "INSTALL postgres; LOAD postgres", [])
+    assert {:ok, _} = ADBC.execute(conn, "INSTALL ducklake; LOAD ducklake", [])
+
+    attach = [
+      "ATTACH ",
+      quote_literal("ducklake:postgres:" <> postgres_connection_string(database_url)),
+      " AS lake (METADATA_SCHEMA ",
+      quote_literal(metadata_schema)
+    ]
+
+    attach =
+      if is_binary(data_path),
+        do: [attach, ", DATA_PATH ", quote_literal(data_path), ")"],
+        else: [attach, ")"]
+
+    assert {:ok, _} = ADBC.execute(conn, attach, [])
+  end
+
+  defp postgres_connection_string(database_url) do
+    uri = URI.parse(database_url)
+    [username, password] = String.split(uri.userinfo, ":", parts: 2)
+
+    [
+      "host=",
+      uri.host,
+      " port=",
+      Integer.to_string(uri.port || 5432),
+      " dbname=",
+      String.trim_leading(uri.path, "/"),
+      " user=",
+      URI.decode(username),
+      " password=",
+      URI.decode(password)
+    ]
+    |> IO.iodata_to_binary()
+  end
+
+  defp cleanup_postgres_ducklake(conn, database_url, metadata_schema) do
+    _ = ADBC.execute(conn, "DETACH lake", [])
+
+    assert {:ok, _} =
+             ADBC.execute(
+               conn,
+               [
+                 "ATTACH ",
+                 quote_literal("postgres:" <> postgres_connection_string(database_url)),
+                 " AS metadata_cleanup"
+               ],
+               []
+             )
+
+    assert {:ok, _} =
+             ADBC.execute(
+               conn,
+               ["DROP SCHEMA metadata_cleanup.", quote_ident(metadata_schema), " CASCADE"],
+               []
+             )
   end
 
   defp qualified(%RelationRef{catalog: nil} = ref),

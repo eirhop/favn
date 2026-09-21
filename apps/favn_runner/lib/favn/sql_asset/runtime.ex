@@ -2047,7 +2047,7 @@ defmodule Favn.SQLAsset.Runtime do
     meta =
       rendered
       |> failed_check_metadata(check_results, transaction_outcome, write_outcome)
-      |> maybe_put_contract_validation(find_contract_validation(error))
+      |> attach_contract_validation_evidence(error)
 
     {:error, sql_asset_error, meta}
   end
@@ -2063,7 +2063,7 @@ defmodule Favn.SQLAsset.Runtime do
     meta =
       rendered
       |> failed_check_metadata(results, :unknown, :unknown)
-      |> maybe_put_contract_validation(find_contract_validation(error))
+      |> attach_contract_validation_evidence(error)
 
     {:error, error, meta}
   end
@@ -2123,18 +2123,25 @@ defmodule Favn.SQLAsset.Runtime do
        }),
        do: validation
 
+  defp find_contract_validation({_rendered, %CheckedMaterialization{} = materialization}),
+    do: find_contract_validation(materialization)
+
   defp find_contract_validation(%_{}), do: nil
 
-  defp find_contract_validation(value) when is_map(value) do
-    Map.get(value, :contract_validation) || Map.get(value, "contract_validation") ||
-      Enum.find_value(value, fn {_key, child} -> find_contract_validation(child) end)
+  defp find_contract_validation(details) when is_map(details) do
+    validation =
+      Map.get(details, :contract_validation) || Map.get(details, "contract_validation")
+
+    case validation do
+      %ContractValidation{} = trusted ->
+        trusted
+
+      _untrusted ->
+        details
+        |> Map.get(:transaction_body_result, Map.get(details, "transaction_body_result"))
+        |> find_contract_validation()
+    end
   end
-
-  defp find_contract_validation(value) when is_list(value),
-    do: Enum.find_value(value, &find_contract_validation/1)
-
-  defp find_contract_validation(value) when is_tuple(value),
-    do: value |> Tuple.to_list() |> Enum.find_value(&find_contract_validation/1)
 
   defp find_contract_validation(_value), do: nil
 
@@ -2705,6 +2712,13 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp maybe_put_contract_validation(output, %ContractValidation{} = validation),
     do: Map.put(output, :contract_validation, validation)
+
+  defp maybe_put_contract_validation(output, _untrusted), do: output
+
+  @doc false
+  def attach_contract_validation_evidence(output, error) when is_map(output) do
+    maybe_put_contract_validation(output, find_contract_validation(error))
+  end
 
   defp maybe_put_runtime_inputs(output, nil), do: output
 

@@ -56,6 +56,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
   alias FavnStoragePostgres.Migrations.RebindBackfillWindowRunReferenceV2
   alias FavnStoragePostgres.Migrations.RebindScheduleOccurrenceRunReferenceV2
   alias FavnStoragePostgres.Migrations.ReferenceRunnerTaskPackagesV2
+  alias FavnStoragePostgres.Migrations.QualifyRunnerTargetClaimsV2
   alias FavnStoragePostgres.RuntimePrivileges
 
   @prefix "favn_control"
@@ -109,7 +110,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_904_020_000, AddCrashSafeRunnerTasksV2},
     {20_260_915_000_000, ReferenceRunnerTaskPackagesV2},
     {20_260_915_010_000, AddRetentionV2},
-    {20_260_918_000_000, FavnStoragePostgres.Migrations.OwnDeploymentInspectionsV2}
+    {20_260_918_000_000, FavnStoragePostgres.Migrations.OwnDeploymentInspectionsV2},
+    {20_260_921_000_000, QualifyRunnerTargetClaimsV2}
   ]
   @required_tables ~w(
     retention_floors
@@ -238,6 +240,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_ownerships_recovery_idx
     runner_tasks_domain_identity_uidx
     runner_tasks_claim_idx
+    runner_tasks_target_reservation_idx
     runner_tasks_run_idx
     runner_tasks_workspace_recent_idx
     runner_tasks_workspace_status_recent_idx
@@ -626,7 +629,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "8bbc0ea2086cb54384655a3ad3dac5adac8242a93f12a1404aef722e73beec23"
+  @expected_definition_fingerprint "7fa0d28caae6dbf2905134c3e49dc784a46ff123ebe824d8a8df6d13fa56763d"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok
