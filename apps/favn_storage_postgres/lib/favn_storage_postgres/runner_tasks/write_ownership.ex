@@ -63,7 +63,7 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
           WHERE active.workspace_id = $1
             AND active.write_target_id = $2
             AND active.task_id <> $3
-            AND active.status = ANY($4::text[])
+            AND active.status IN ('assigned', 'preparing', 'running', 'cancelling')
             AND (
               EXISTS (
                 SELECT 1
@@ -90,12 +90,45 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
         [
           task.workspace_id,
           task.write_target_id,
-          task.task_id,
-          ["assigned", "preparing", "running", "cancelling"]
+          task.task_id
         ]
       )
 
     active? or target_unresolved?(task.workspace_id, task.write_target_id, task.task_id)
+  end
+
+  def earliest_eligible_target_task?(task, command) do
+    task_kinds = Enum.map(command.supported_task_kinds, &Atom.to_string/1)
+
+    not Repo.exists?(
+      from(older in RunnerTask,
+        where:
+          older.workspace_id == ^task.workspace_id and
+            older.write_target_id == ^task.write_target_id and
+            older.status == "queued" and
+            older.runner_pool == ^command.runner_pool and
+            older.required_runner_release_id == ^command.required_runner_release_id and
+            older.task_kind in ^task_kinds and
+            (is_nil(older.deadline_at) or older.deadline_at > ^command.occurred_at) and
+            (is_nil(older.required_capability) or
+               older.required_capability in ^command.capabilities) and
+            fragment(
+              "(? IS NULL OR EXISTS (SELECT 1 FROM favn_control.manifest_deployment_operations deployment WHERE deployment.workspace_id = ? AND deployment.operation_id = ? AND deployment.state IN ('accepted', 'activating') AND deployment.cancellation_requested_at IS NULL AND (deployment.source <> 'local' OR deployment.local_expires_at > ?) AND (deployment.inspection_deadline_at IS NULL OR deployment.inspection_deadline_at > ?)))",
+              older.deployment_operation_id,
+              older.workspace_id,
+              older.deployment_operation_id,
+              ^command.occurred_at,
+              ^command.occurred_at
+            ) and
+            fragment(
+              "(?, ?) < (?, ?)",
+              older.enqueued_at,
+              older.task_id,
+              ^task.enqueued_at,
+              ^task.task_id
+            )
+      )
+    )
   end
 
   defp target_effect?(workspace, target, except_task, states) do

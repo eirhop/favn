@@ -10,15 +10,14 @@ defmodule FavnStoragePostgres.Migrations.QualifyRunnerTargetClaimsV2 do
         [
           :workspace_id,
           :write_target_id,
+          :status,
           :runner_pool,
           :required_runner_release_id,
-          :status,
           :enqueued_at,
           :task_id
         ],
         name: :runner_tasks_target_reservation_idx,
-        where:
-          "write_target_id IS NOT NULL AND status IN ('queued','assigned','preparing','running','cancelling')",
+        where: "write_target_id IS NOT NULL",
         prefix: @prefix
       )
     )

@@ -28,7 +28,9 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
   alias FavnStoragePostgres.RunnerTasks.Store
+  alias FavnStoragePostgres.RunnerTasks.WriteOwnership
   alias FavnStoragePostgres.Schemas.RunnerCapacityDemand, as: Demand
+  alias FavnStoragePostgres.Schemas.RunnerTask
   alias FavnStoragePostgres.Schemas.RunnerTaskCommand
   alias FavnStoragePostgres.Schemas.RunnerTaskLogBatch
   alias FavnStoragePostgres.StorageV2.Migrations
@@ -140,7 +142,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     refute runtime_active_deployment(fixture) == deployment.deployment_id
   end
 
-  test "a locked older target task cannot be overtaken by a concurrent claimer", fixture do
+  test "the final target recheck rejects a stale newer candidate while the older row is locked",
+       fixture do
     alias FavnStoragePostgres.TestSupport.TaskManifest
 
     {version, first_work} = TaskManifest.sql_work(fixture)
@@ -186,8 +189,29 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       capabilities: ["asset_execution"]
     ]
 
-    assert {:ok, nil} =
-             Store.claim(claim_command(fixture, "locked-first", "second-claimer", claim_opts))
+    command = claim_command(fixture, "locked-first", "second-claimer", claim_opts)
+
+    assert {:ok, false} =
+             Repo.transaction(fn ->
+               SQL.query!(
+                 Repo,
+                 "SELECT 1 FROM favn_control.runner_tasks WHERE workspace_id=$1 AND task_id=$2 FOR UPDATE SKIP LOCKED",
+                 [fixture.workspace_id, second.task_id]
+               )
+
+               candidate =
+                 Repo.get_by!(RunnerTask,
+                   workspace_id: fixture.workspace_id,
+                   task_id: second.task_id
+                 )
+
+               assert WriteOwnership.try_lock_target!(
+                        candidate.workspace_id,
+                        candidate.write_target_id
+                      )
+
+               WriteOwnership.earliest_eligible_target_task?(candidate, command)
+             end)
 
     assert {:ok, queued_second} =
              Store.get(%Q.GetRunnerTask{
@@ -2085,7 +2109,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   test "runner-task schema diagnostics stay exact" do
     assert {:ok, diagnostics} = Migrations.diagnostics(Repo)
-    assert diagnostics.definition_fingerprint_matches?
+    assert diagnostics.definition_fingerprint_matches?, inspect(diagnostics)
     refute "runner_tasks_workspace_recent_idx" in diagnostics.missing_critical_indexes
     refute "runner_tasks_workspace_status_recent_idx" in diagnostics.missing_critical_indexes
     refute "runner_tasks_session_attribution_idx" in diagnostics.missing_critical_indexes
@@ -4100,6 +4124,26 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   test "claim query uses the pool release FIFO index", fixture do
     assert {:ok, _task} = Store.enqueue(enqueue_command(fixture, "explain"))
 
+    {version, work} =
+      FavnStoragePostgres.TestSupport.TaskManifest.sql_work(fixture, :explain_write)
+
+    ownership =
+      FavnStoragePostgres.TestSupport.TaskManifest.ownership_claim(fixture, version, work)
+
+    assert {:ok, _writer} =
+             Store.enqueue(
+               write_enqueue_command(fixture, version, work, ownership, "explain-write")
+             )
+
+    assert {:ok, active_writer} =
+             Store.claim(
+               claim_command(fixture, "explain-write", "explain-writer",
+                 required_runner_release_id: work.required_runner_release_id,
+                 supported_task_kinds: [:asset_attempt],
+                 capabilities: ["asset_execution"]
+               )
+             )
+
     plan =
       Repo.transaction(fn ->
         SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
@@ -4135,20 +4179,36 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     target_plan =
       Repo.transaction(fn ->
         SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+        SQL.query!(Repo, "SET LOCAL plan_cache_mode = force_generic_plan", [])
 
         SQL.query!(
           Repo,
           """
           EXPLAIN (FORMAT TEXT)
           SELECT 1
-          FROM favn_control.runner_tasks
-          WHERE write_target_id IS NOT NULL
-            AND status IN ('queued','assigned','preparing','running','cancelling')
-          ORDER BY workspace_id, write_target_id, runner_pool,
-                   required_runner_release_id, status, enqueued_at, task_id
+          FROM favn_control.runner_tasks older
+          WHERE older.workspace_id = $1
+            AND older.write_target_id = $2
+            AND older.status = 'queued'
+            AND older.runner_pool = $3
+            AND older.required_runner_release_id = $4
+            AND older.task_kind = ANY($5::text[])
+            AND (older.deadline_at IS NULL OR older.deadline_at > $6)
+            AND (older.required_capability IS NULL OR older.required_capability = ANY($7::text[]))
+            AND (older.enqueued_at, older.task_id) < ($8, $9)
           LIMIT 1
           """,
-          []
+          [
+            fixture.workspace_id,
+            active_writer.write_target_id,
+            fixture.runner_pool,
+            active_writer.required_runner_release_id,
+            ["asset_attempt"],
+            fixture.now,
+            ["asset_execution"],
+            DateTime.add(fixture.now, 1, :second),
+            "later-task"
+          ]
         )
       end)
       |> then(fn {:ok, %{rows: rows}} -> rows |> List.flatten() |> Enum.join("\n") end)

@@ -663,28 +663,56 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
                )
 
       commits =
-        [first, second]
-        |> Task.async_stream(&ADBC.execute(&1, "COMMIT", []),
+        [{"2026-01", first}, {"2026-02", second}]
+        |> Task.async_stream(
+          fn {period, conn} ->
+            {period, conn, ADBC.execute(conn, "COMMIT", [])}
+          end,
           max_concurrency: 2,
           ordered: false,
           timeout: 30_000
         )
         |> Enum.map(fn {:ok, result} -> result end)
 
-      assert Enum.count(commits, &match?({:ok, _}, &1)) == 1, inspect(commits)
-      assert Enum.count(commits, &match?({:error, %Error{}}, &1)) == 1, inspect(commits)
+      assert [{successful_period, successful_conn, {:ok, _}}] =
+               Enum.filter(commits, &match?({_period, _conn, {:ok, _}}, &1))
+
+      assert [{failed_period, _failed_conn, {:error, %Error{} = conflict}}] =
+               Enum.filter(commits, &match?({_period, _conn, {:error, %Error{}}}, &1))
+
       refute inspect(commits) =~ "FunctionClauseError"
+      assert is_binary(conflict.message) and byte_size(conflict.message) > 0
+
+      assert {:ok, visible_after_conflict} =
+               ADBC.query(
+                 successful_conn,
+                 "SELECT period, value FROM lake.main.monthly_rows ORDER BY period",
+                 []
+               )
+
+      assert Enum.find(visible_after_conflict.rows, &(&1["period"] == successful_period)) ==
+               %{"period" => successful_period, "value" => "new"}
+
+      assert Enum.find(visible_after_conflict.rows, &(&1["period"] == failed_period)) ==
+               %{"period" => failed_period, "value" => "old"}
 
       assert {:ok, _} =
                ADBC.execute(
-                 first,
-                 "DELETE FROM lake.main.monthly_rows; INSERT INTO lake.main.monthly_rows VALUES ('2026-01', 'new'), ('2026-02', 'new')",
-                 []
+                 successful_conn,
+                 "DELETE FROM lake.main.monthly_rows WHERE period = ?",
+                 params: [failed_period]
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 successful_conn,
+                 "INSERT INTO lake.main.monthly_rows VALUES (?, 'new')",
+                 params: [failed_period]
                )
 
       assert {:ok, rows} =
                ADBC.query(
-                 first,
+                 successful_conn,
                  "SELECT period, value FROM lake.main.monthly_rows ORDER BY period",
                  []
                )

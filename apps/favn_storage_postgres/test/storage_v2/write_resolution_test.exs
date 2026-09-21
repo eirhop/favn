@@ -3,7 +3,6 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
   alias Favn.Contracts.RunnerTask.PersistenceCodec, as: Codec
-  alias Favn.Contracts.RelationInspectionRequest
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.Queries, as: Q
   alias FavnOrchestrator.Persistence.{PlatformContext, WorkspaceContext}
@@ -107,16 +106,25 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
     assert {:ok, _} = Store.enqueue(enqueue(second))
     assert {:ok, nil} = Store.claim(claim_task(second, "blocked"))
 
-    assert {:ok, unrelated_task} = Store.enqueue(enqueue_inspection(f, "unrelated"))
+    {unrelated_version, unrelated_work} = TaskManifest.sql_work(f, :unrelated_write_test)
+    unrelated_claim = TaskManifest.ownership_claim(f, unrelated_version, unrelated_work)
+
+    unrelated = %{
+      f
+      | version: unrelated_version,
+        work: unrelated_work,
+        claim: unrelated_claim
+    }
+
+    assert unrelated.work.logical_target_id != f.work.logical_target_id
+    assert {:ok, unrelated_task} = Store.enqueue(enqueue(unrelated))
 
     assert {:ok, claimed_unrelated} =
-             Store.claim(
-               claim_task(second, "unrelated")
-               |> Map.put(:supported_task_kinds, [:asset_attempt, :relation_inspection])
-               |> Map.put(:capabilities, ["relation_inspection"])
-             )
+             Store.claim(claim_task(unrelated, "unrelated"))
 
     assert claimed_unrelated.task_id == unrelated_task.task_id
+    assert claimed_unrelated.task_kind == :asset_attempt
+    assert claimed_unrelated.write_target_id == unrelated.work.logical_target_id
 
     assert {:ok, second_queued} =
              Store.get(%Q.GetRunnerTask{
@@ -187,15 +195,22 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
         task
       end
 
-    assert {:ok, unrelated_task} = Store.enqueue(enqueue_inspection(f, "after-blocked-batch"))
+    {unrelated_version, unrelated_work} = TaskManifest.sql_work(f, :batch_unrelated_write_test)
+    unrelated_claim = TaskManifest.ownership_claim(f, unrelated_version, unrelated_work)
 
-    claim =
-      claim_task(f, "after-blocked-batch")
-      |> Map.put(:supported_task_kinds, [:asset_attempt, :relation_inspection])
-      |> Map.put(:capabilities, ["relation_inspection"])
+    unrelated = %{
+      f
+      | version: unrelated_version,
+        work: unrelated_work,
+        claim: unrelated_claim
+    }
 
-    assert {:ok, claimed} = Store.claim(claim)
+    assert unrelated.work.logical_target_id != f.work.logical_target_id
+    assert {:ok, unrelated_task} = Store.enqueue(enqueue(unrelated))
+
+    assert {:ok, claimed} = Store.claim(claim_task(unrelated, "after-blocked-batch"))
     assert claimed.task_id == unrelated_task.task_id
+    assert claimed.task_kind == :asset_attempt
 
     assert Enum.all?(blocked, fn task ->
              {:ok, queued} =
@@ -1058,39 +1073,6 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
       retry_class: :unknown_do_not_retry,
       issued_at: f.now,
       occurred_at: f.now
-    }
-  end
-
-  defp enqueue_inspection(f, suffix) do
-    request = %RelationInspectionRequest{
-      manifest_version_id: f.version.manifest_version_id,
-      manifest_content_hash: f.version.content_hash,
-      required_runner_release_id: f.work.required_runner_release_id,
-      asset_ref: f.work.asset_ref,
-      include: [:columns],
-      sample_limit: 0
-    }
-
-    {:ok, payload, hash} = Codec.encode_payload(:relation_inspection, request)
-    {:ok, context} = RunnerTaskContext.encode(%{})
-
-    %C.EnqueueRunnerTask{
-      workspace_context: f.workspace_context,
-      command_id: "enqueue-inspection-" <> suffix <> f.workspace_id,
-      task_id: "rt_inspection_" <> suffix <> f.workspace_id,
-      domain_identity: "inspection-" <> suffix <> f.workspace_id,
-      task_kind: :relation_inspection,
-      manifest_version_id: f.version.manifest_version_id,
-      manifest_content_hash: f.version.content_hash,
-      runner_pool: f.runner_pool,
-      required_runner_release_id: f.work.required_runner_release_id,
-      required_capability: "relation_inspection",
-      payload: payload,
-      payload_hash: hash,
-      orchestration_context: context,
-      retry_class: :safe_to_retry,
-      issued_at: DateTime.add(f.now, 2, :microsecond),
-      occurred_at: DateTime.add(f.now, 2, :microsecond)
     }
   end
 

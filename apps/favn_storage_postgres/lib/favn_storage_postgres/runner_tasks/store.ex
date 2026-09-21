@@ -1471,7 +1471,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                    WHERE active.workspace_id = ?
                      AND active.write_target_id = ?
                      AND active.task_id <> ?
-                     AND active.status = ANY(?::text[])
+                     AND active.status IN ('assigned', 'preparing', 'running', 'cancelling')
                      AND (
                        EXISTS (
                          SELECT 1
@@ -1514,7 +1514,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                  task.workspace_id,
                  task.write_target_id,
                  task.task_id,
-                 ^@active_statuses,
                  task.workspace_id,
                  task.write_target_id,
                  ^~w(in_flight outcome_unknown),
@@ -3315,41 +3314,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp claim_target_ready?(task, command) do
     WriteOwnership.try_lock_target!(task.workspace_id, task.write_target_id) and
       not WriteOwnership.target_reserved?(task) and
-      earliest_eligible_target_task?(task, command)
-  end
-
-  defp earliest_eligible_target_task?(task, command) do
-    task_kinds = Enum.map(command.supported_task_kinds, &Atom.to_string/1)
-
-    not Repo.exists?(
-      from(older in RunnerTask,
-        where:
-          older.workspace_id == ^task.workspace_id and
-            older.write_target_id == ^task.write_target_id and
-            older.status == "queued" and
-            older.runner_pool == ^command.runner_pool and
-            older.required_runner_release_id == ^command.required_runner_release_id and
-            older.task_kind in ^task_kinds and
-            (is_nil(older.deadline_at) or older.deadline_at > ^command.occurred_at) and
-            (is_nil(older.required_capability) or
-               older.required_capability in ^command.capabilities) and
-            fragment(
-              "(? IS NULL OR EXISTS (SELECT 1 FROM favn_control.manifest_deployment_operations deployment WHERE deployment.workspace_id = ? AND deployment.operation_id = ? AND deployment.state IN ('accepted', 'activating') AND deployment.cancellation_requested_at IS NULL AND (deployment.source <> 'local' OR deployment.local_expires_at > ?) AND (deployment.inspection_deadline_at IS NULL OR deployment.inspection_deadline_at > ?)))",
-              older.deployment_operation_id,
-              older.workspace_id,
-              older.deployment_operation_id,
-              ^command.occurred_at,
-              ^command.occurred_at
-            ) and
-            fragment(
-              "(?, ?) < (?, ?)",
-              older.enqueued_at,
-              older.task_id,
-              ^task.enqueued_at,
-              ^task.task_id
-            )
-      )
-    )
+      WriteOwnership.earliest_eligible_target_task?(task, command)
   end
 
   defp inspect_claim_candidate(task, rest, command) do
