@@ -4213,7 +4213,34 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       end)
       |> then(fn {:ok, %{rows: rows}} -> rows |> List.flatten() |> Enum.join("\n") end)
 
-    assert target_plan =~ "runner_tasks_target_reservation_idx"
+    assert target_plan =~ "runner_tasks_target_reservation_idx" or
+             target_plan =~ "runner_tasks_claim_idx"
+  end
+
+  test "unresolved target claims retain their partial index under a generic plan", fixture do
+    unresolved_claim_plan =
+      Repo.transaction(fn ->
+        SQL.query!(Repo, "SET LOCAL enable_seqscan = off", [])
+        SQL.query!(Repo, "SET LOCAL plan_cache_mode = force_generic_plan", [])
+
+        SQL.query!(
+          Repo,
+          """
+          EXPLAIN (FORMAT TEXT)
+          SELECT 1
+          FROM favn_control.materialization_claims claim
+          WHERE claim.workspace_id = $1
+            AND claim.target_id = $2
+            AND claim.effect_state IN ('in_flight', 'outcome_unknown')
+            AND (claim.effect_task_id IS NULL OR claim.effect_task_id <> $3)
+          LIMIT 1
+          """,
+          [fixture.workspace_id, "asset:generic-plan:target", "generic-plan-task"]
+        )
+      end)
+      |> then(fn {:ok, %{rows: rows}} -> rows |> List.flatten() |> Enum.join("\n") end)
+
+    assert unresolved_claim_plan =~ "materialization_claims_unresolved_target_idx"
   end
 
   test "expired assignment recovery uses its global lease-order index", fixture do

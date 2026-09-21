@@ -1499,7 +1499,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                    FROM favn_control.materialization_claims claim
                    WHERE claim.workspace_id = ?
                      AND claim.target_id = ?
-                     AND claim.effect_state = ANY(?::text[])
+                    AND claim.effect_state IN ('in_flight', 'outcome_unknown')
                      AND (claim.effect_task_id IS NULL OR claim.effect_task_id <> ?)
                  )
                  AND NOT EXISTS (
@@ -1507,7 +1507,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                    FROM favn_control.target_operation_locks operation
                    WHERE operation.workspace_id = ?
                      AND operation.target_id = ?
-                     AND operation.effect_state = ANY(?::text[])
+                    AND operation.effect_state IN ('in_flight', 'outcome_unknown')
                      AND (operation.effect_task_id IS NULL OR operation.effect_task_id <> ?)
                  )
                  """,
@@ -1516,11 +1516,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                  task.task_id,
                  task.workspace_id,
                  task.write_target_id,
-                 ^~w(in_flight outcome_unknown),
                  task.task_id,
                  task.workspace_id,
                  task.write_target_id,
-                 ^~w(in_flight outcome_unknown),
                  task.task_id
                )) and
             (is_nil(task.write_target_id) or

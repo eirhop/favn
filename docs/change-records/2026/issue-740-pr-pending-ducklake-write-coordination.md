@@ -493,9 +493,9 @@ message, phase, outcomes, and retry classification unchanged.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted | Notes |
 | --- | ---: | ---: | ---: | ---: | --- |
-| 1 | 240 | 4 | 287 | 82 | Includes the 35-line migration and owner-valid stale-fence recovery predicate |
+| 1 | 238 | 4 | 314 | Includes the 35-line migration, owner-valid stale-fence recovery predicate, and generic-plan index proof |
 | 2 | 17 | 8 | 58 | 4 | Trusted evidence only and unchanged-error regressions |
-| 3 | 0 | 0 | 201 | 1 | Real independent ADBC sessions and PostgreSQL DuckLake metadata |
+| 3 | 0 | 0 | 210 | 1 | Real independent ADBC sessions, PostgreSQL DuckLake metadata, and distinct-target orchestration fixtures |
 | 4 | 0 | 0 | 23 | 6 | Canonical and public concurrency guidance |
 
 Slice 1 exceeds the planned production upper bound by 70 lines. The additional
@@ -524,6 +524,9 @@ protocol design.
   indexing all historical target-linked tasks. This is narrower than the
   planning shorthand "nonterminal" and matches the production reservation
   query without growing with terminal history.
+- Fixed unresolved effect states are SQL literals in the reservation query.
+  PostgreSQL can therefore use the existing unresolved-target partial index
+  even when the statement receives a generic plan.
 - Local DuckLake verification used the installed DuckDB 1.5.2 driver and reports
   that version/settings from the backend. Repository CI remains pinned to 1.5.5
   and is the required proof for that supported build.
@@ -550,12 +553,12 @@ protocol design.
 | Formatting, diff hygiene, and tag-tier guard | Passed | Repository source and test routing |
 | `mix compile --warnings-as-errors` | Passed | Current local Elixir/OTP toolchain |
 | Runner SQL regressions | 53 passed in the final focused rerun; 69 passed in the implementation pass | Trusted and untrusted validation evidence plus neighboring group behavior |
-| Review-fix PostgreSQL surface | 91 of 92 passed together, then the stale compiled fingerprint check passed alone; 2 excluded by tier | Real unrelated writers, >50 blocked tasks, exact final FIFO recheck, parameterized query plan, write resolution, and neighboring runner-task behavior |
+| Review-fix PostgreSQL surface | 93 passed, 2 excluded by tier | Real unrelated writers, >50 blocked tasks, final FIFO recheck, generic-plan partial-index proof, write resolution, and neighboring runner-task behavior |
 | Affected PostgreSQL storage surface | 294 passed in the implementation pass | Claims, >50 blocked tasks, row-lock race, query plan, write resolution, fenced takeover, orchestration recovery, sessions, and 333-runner scale case |
 | DuckDB ADBC integration file | 9 passed | Independent sessions against local DuckDB 1.5.2 and PostgreSQL-backed DuckLake metadata |
 | Focused DuckLake conflict case | Passed after review fixes | One same-table commit conflict, the winning window remains committed, only the losing window is repaired in one transaction, the captured backend error passes through runner evidence attachment unchanged, no framework exception, and unrelated-table success |
 | Restored orchestration regressions | 3 passed across the final focused runs | Different targets retain concurrent capacity and out-of-order retry behavior while same-target work remains serialized |
-| Umbrella fast suite | Pending final rerun | Earlier run exposed and led to the stale-fence fix and same-target fixture corrections |
+| Umbrella fast suite | Attempted after the review fixes; affected runner tests passed, while unrelated 100 ms timing tests failed before the long storage run was stopped | Not used as evidence for this change; focused owning-layer checks are authoritative |
 | Independent final review | Pending | Must compare implementation with `20dac7f3` |
 
 ### Not verified
@@ -574,5 +577,5 @@ protocol design.
 | Compared | Approved plan `20dac7f3`, implementation, tests, diagnostics, and docs |
 | Deviations complete | Pending reviewer confirmation |
 | Findings | Initial review found no safety defect, but requested stronger qualification: use a real unrelated writer, prove the exact final FIFO predicate, exercise the parameterized target-index query, avoid masking the DuckLake winner with a full-table repair, and preserve the intent of older orchestration regressions. Its first recheck also found that the over-50 proof did not establish queue order, the backend error did not pass through runner evidence attachment, loser repair used two autocommits, the index included terminal history, and the older concurrent regressions still used one target. |
-| Findings addressed and rechecked | The over-50 test now proves every blocked item precedes the unrelated task; the captured DuckLake error passes through the production runner attachment helper unchanged; loser repair is one transaction; the index covers only active states; and the orchestration regressions use two independently pinned materialized targets. Recheck pending. |
+| Findings addressed and rechecked | The over-50 test proves every blocked item precedes the unrelated task; the captured DuckLake error passes through the production runner attachment helper unchanged; loser repair is one transaction; the index covers only active states; and orchestration regressions use independently pinned materialized targets. After the first recheck, the private target was confined to the new fixture, post-step supervision was added, A/C tie order was made explicit, and unresolved effect states were made literal with generic-plan index coverage. Recheck pending. |
 | Verdict | Pending |
