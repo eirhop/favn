@@ -3,7 +3,9 @@ defmodule FavnOrchestrator.ManifestMemory.Cgroup do
   Reads effective memory headroom from finite Linux cgroup v2 or v1 hierarchies.
 
   Every visible ancestor is checked because a parent may impose the controlling
-  limit. Missing, unlimited, unreadable, or malformed hierarchies fail closed.
+  limit. Unmounted v2 membership is ignored; it does not identify an applicable
+  memory controller. Visible hierarchies with unreadable or malformed memory data
+  fail closed, as does the absence of any trustworthy finite limit.
   """
 
   @v1_unlimited_threshold 0x7FFF_FFFF_FFFF_0000
@@ -119,14 +121,17 @@ defmodule FavnOrchestrator.ManifestMemory.Cgroup do
   end
 
   defp v2_snapshot(cgroups, mounts, read) do
-    case Enum.find(cgroups, &(&1.hierarchy == 0 and &1.controllers == [])) do
-      %{path: path} ->
-        case matching_mount(mounts, path, &(&1.filesystem == "cgroup2")) do
+    membership = Enum.find(cgroups, &(&1.hierarchy == 0 and &1.controllers == []))
+    v2_mounts = Enum.filter(mounts, &(&1.filesystem == "cgroup2"))
+
+    case {membership, v2_mounts} do
+      {%{path: path}, [_mount | _rest]} ->
+        case matching_mount(v2_mounts, path, fn _mount -> true end) do
           nil -> {:error, :cgroup_v2_mount_unavailable}
           mount -> read_hierarchy(:cgroup_v2, mount, path, "memory.max", "memory.current", read)
         end
 
-      nil ->
+      _absent ->
         :absent
     end
   end

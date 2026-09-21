@@ -26,6 +26,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.Lifecycle
   alias FavnOrchestrator.ManifestDeploymentContext
   alias FavnOrchestrator.ManifestDeploymentDispatcher
+  alias FavnOrchestrator.ManifestMemory
   alias FavnOrchestrator.ManifestMemory.Slot, as: ManifestMemorySlot
   alias FavnOrchestrator.ManifestActivationDiagnostics
   alias FavnOrchestrator.Manifests
@@ -47,8 +48,10 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnOrchestrator.Persistence.Commands.UpdateManifestDeploymentProgress
   alias FavnOrchestrator.Persistence.CommandIdempotency
   alias FavnOrchestrator.Persistence.DeploymentPlanner
+  alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.PlatformContext
   alias FavnOrchestrator.Persistence.Queries.GetManifestDeployment
+  alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.RunnerDemandLimiter
@@ -63,6 +66,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   alias FavnStoragePostgres.RunnerTasks.Store, as: TaskStore
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.StorageV2.Migrations
+  alias FavnTestSupport.CgroupFiles
 
   @capacity_token "7b0a9d3f8e2c4615a794b6d1038fce254ec1b73a860d924f11c7e5a098bd6230"
 
@@ -572,12 +576,55 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     end
   end
 
-  test "first-party archive deployment activates and replays after inspection", context do
+  test "HTTP upload rejects insufficient or unknown mounted v1 memory with unmounted v2",
+       context do
+    for {value, index} <-
+          Enum.with_index(["536870913", {:error, :enoent}, {:error, :eacces}, "invalid"]) do
+      options =
+        CgroupFiles.v1_with_unmounted_v2()
+        |> Map.put("/sys/fs/cgroup/memory/memory.usage_in_bytes", value)
+        |> CgroupFiles.options()
+
+      operation_id = "v1-capacity-#{index}"
+
+      response =
+        context
+        |> upload_request(operation_id, "not a gzip archive")
+        |> ManifestDeployment.call(
+          capacity_check: fn -> ManifestMemory.ensure_headroom(options) end
+        )
+
+      assert response.status == 503
+      assert get_resp_header(response, "retry-after") == ["5"]
+
+      assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) ==
+               "manifest_capacity_unavailable"
+
+      assert {:error, %Error{kind: :not_found}} =
+               Store.get_manifest_deployment(%GetManifestDeployment{
+                 context: context.deployment_context,
+                 operation_id: operation_id
+               })
+    end
+  end
+
+  test "first archive activates and replays with mounted v1 memory and unmounted v2", context do
     operation_id = "archive-activation-#{System.unique_integer([:positive])}"
     {archive_path, archive_sha256} = build_archive(context)
     archive_body = File.read!(archive_path)
+    options = CgroupFiles.options(CgroupFiles.v1_with_unmounted_v2())
+    capacity_check = fn -> ManifestMemory.ensure_headroom(options) end
 
-    accepted = upload_archive(context, operation_id, archive_sha256, archive_body)
+    assert {:error, %Error{kind: :not_found}} =
+             Store.get_runtime_state(%GetRuntimeState{
+               workspace_context: context.workspace_context
+             })
+
+    accepted =
+      context
+      |> upload_request(operation_id, archive_body, archive_sha256)
+      |> ManifestDeployment.call(capacity_check: capacity_check)
+
     assert accepted.status == 202
     assert get_in(Jason.decode!(accepted.resp_body), ["data", "operation", "state"]) == "accepted"
 
@@ -594,7 +641,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     start_supervised!(
       {ManifestDeploymentDispatcher,
        concurrency: 1,
-       capacity_check: fn -> :ok end,
+       capacity_check: capacity_check,
        version_size_check: fn _version -> :atomics.get(version_gate, 1) == 1 end}
     )
 

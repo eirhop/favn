@@ -2,6 +2,57 @@ defmodule FavnOrchestrator.ManifestMemory.CgroupTest do
   use ExUnit.Case, async: true
 
   alias FavnOrchestrator.ManifestMemory.Cgroup
+  alias FavnTestSupport.CgroupFiles
+
+  test "uses mounted v1 memory when v2 membership has no visible mount" do
+    assert {:ok,
+            %{
+              source: :cgroup_v1,
+              limit_bytes: 1_073_741_824,
+              usage_bytes: 314_572_800,
+              headroom_bytes: 759_169_024
+            }} = Cgroup.snapshot(CgroupFiles.options(CgroupFiles.v1_with_unmounted_v2()))
+  end
+
+  test "unmounted v2 does not bypass missing, unreadable, or malformed v1 memory" do
+    for file <- ["memory.limit_in_bytes", "memory.usage_in_bytes"],
+        value <- [{:error, :enoent}, {:error, :eacces}, "invalid", "-1"] do
+      files =
+        Map.put(CgroupFiles.v1_with_unmounted_v2(), "/sys/fs/cgroup/memory/" <> file, value)
+
+      assert {:error, :memory_capacity_unknown} = Cgroup.snapshot(CgroupFiles.options(files))
+    end
+  end
+
+  test "unmounted v2 requires a trustworthy finite v1 limit" do
+    files = CgroupFiles.v1_with_unmounted_v2()
+
+    for files <- [
+          Map.put(files, "/proc/self/cgroup", "0::/default/example-container\n"),
+          Map.put(files, "/sys/fs/cgroup/memory/memory.limit_in_bytes", "9223372036854771712"),
+          Map.put(
+            files,
+            "/proc/self/mountinfo",
+            "938 937 0:108 / /sys/fs/cgroup rw - tmpfs tmpfs rw"
+          )
+        ] do
+      assert {:error, :memory_capacity_unknown} = Cgroup.snapshot(CgroupFiles.options(files))
+    end
+  end
+
+  test "visible v2 errors are not masked by a healthy v1 controller" do
+    files = CgroupFiles.v1_with_unmounted_v2()
+
+    for mount <- [v2_mount(), "36 25 0:32 /other /sys/fs/cgroup rw - cgroup2 cgroup rw"],
+        limit <- [{:error, :enoent}, {:error, :eacces}, "invalid", "1073741824"] do
+      files =
+        files
+        |> Map.update!("/proc/self/mountinfo", &(&1 <> mount <> "\n"))
+        |> Map.put("/sys/fs/cgroup/default/example-container/memory.max", limit)
+
+      assert {:error, :memory_capacity_unknown} = Cgroup.snapshot(CgroupFiles.options(files))
+    end
+  end
 
   test "uses the smallest finite headroom across cgroup v2 ancestors" do
     files =
@@ -37,6 +88,17 @@ defmodule FavnOrchestrator.ManifestMemory.CgroupTest do
       })
 
     assert {:ok, %{source: :cgroup_v1, headroom_bytes: 300}} = snapshot(files)
+
+    files =
+      Map.merge(files, %{
+        "/sys/fs/cgroup/v2/memory.max" => "1000\n",
+        "/sys/fs/cgroup/v2/memory.current" => "800\n"
+      })
+
+    assert {:ok, %{source: :cgroup_v2, headroom_bytes: 200}} = snapshot(files)
+
+    assert {:error, :memory_capacity_unknown} =
+             snapshot(Map.delete(files, "/sys/fs/cgroup/memory/app/memory.usage_in_bytes"))
   end
 
   test "uses the smallest finite headroom across cgroup v1 ancestors" do
