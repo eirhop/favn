@@ -5,7 +5,7 @@
 | Status | Implemented — independently approved |
 | Type | Bug fix |
 | Primary issue | [#740](https://github.com/eirhop/favn/issues/740) |
-| Pull request | Pending |
+| Pull request | [#742](https://github.com/eirhop/favn/pull/742) |
 | Related work | RC14 target write ownership from issue #700 and PR #703 |
 | Affected areas | Runner SQL error evidence, DuckDB ADBC integration, PostgreSQL-backed runner coordination, SQL runtime documentation |
 | Approved plan commit | `20dac7f3` |
