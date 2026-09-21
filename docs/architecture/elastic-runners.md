@@ -92,12 +92,16 @@ Cancellation cannot prove a backend writer stopped. Exact durable success or
 proven no-effect resolves ownership; see the
 [operator procedure](../production/elastic_runners.md#resolve-a-held-write).
 
-A healthy writer on the same logical target causes admission to wait while leases
-renew. Sequential waiting retains one absolute deadline across restart and does
-not consume an execution attempt; unknown writes remain blocked for explicit
-recovery. Pre-activation compatibility inspection requires platform deployment
-authority and workspace administration, is read-only, and carries the same exact
-retained manifest and release pin as other tasks.
+A healthy writer on the same logical target keeps later tasks queued and
+unassigned while leases renew. Claim selection skips that target before its
+bounded candidate limit, so unrelated eligible work can use available runners.
+Only the earliest eligible queued task for one target, pool, and release may be
+assigned; the target advisory lock and a final eligibility check prevent
+concurrent claimers from overtaking it. This wait does not consume an execution
+attempt. Unknown writes remain blocked for explicit recovery. Pre-activation
+compatibility inspection requires platform deployment authority and workspace
+administration, is read-only, and carries the same exact retained manifest and
+release pin as other tasks.
 
 ### Resuming an interrupted run
 

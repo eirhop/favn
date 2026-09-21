@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implemented — final review pending |
 | Type | Bug fix |
 | Primary issue | [#740](https://github.com/eirhop/favn/issues/740) |
 | Pull request | Pending |
 | Related work | RC14 target write ownership from issue #700 and PR #703 |
 | Affected areas | Runner SQL error evidence, DuckDB ADBC integration, PostgreSQL-backed runner coordination, SQL runtime documentation |
-| Approved plan commit | Pending — assigned after this reviewed plan is committed |
+| Approved plan commit | `20dac7f3` |
 | Last updated | 2026-09-21 |
 
 ## One-minute summary
@@ -18,10 +18,10 @@ to reach DuckLake concurrently. The backend result was then hidden by a second
 runner exception while optional contract-validation evidence was being attached.
 RC14 added a PostgreSQL-backed start barrier that prevents overlapping external
 writes to one logical target, but a pre-admitted waiter can occupy another runner
-and delay unrelated work. This change will make target readiness part of durable
-claim selection while retaining `Started` as the final effect fence, preserve the
-original SQL error, qualify the complete path against a real PostgreSQL-backed
-DuckLake catalog, and document the supported concurrency boundary. Concurrency,
+and delay unrelated work. This change makes target readiness part of durable
+claim selection while retaining `Started` as the final effect fence, preserves the
+original SQL error, qualifies the backend path against a real PostgreSQL-backed
+DuckLake catalog, and documents the supported concurrency boundary. Concurrency,
 durable write outcomes, persistence queries, and deployment compatibility make
 the work substantial enough to require an independent plan.
 
@@ -458,45 +458,114 @@ the immediate PR-number update; the record cannot name its own commit beforehand
 
 ## Implementation outcome
 
-Pending implementation.
+Implemented target-aware runner-task claims, trusted-only validation evidence,
+real PostgreSQL-backed DuckLake concurrency coverage, and the canonical runtime
+documentation. Same-target work now remains queued until the current durable
+owner settles. Claim selection still scans past that work so unrelated targets
+can use other runners. The `Started` transition remains the final effect fence.
+
+The claim recheck recognizes only an active task whose materialization claim or
+target-operation fence still matches. This preserves authorized recovery: an old
+assigned row that has been fenced by a target takeover cannot deadlock the
+replacement task. The additive migration creates the planned nonunique partial
+index and changes no stored task or wire format.
+
+Runner error decoration now accepts a contract-validation struct only through
+the checked-materialization and known transaction-result shapes. Map-shaped or
+malformed optional evidence is omitted, leaving the original SQL error, backend
+message, phase, outcomes, and retry classification unchanged.
 
 ### Actual scope and complexity
 
-- Files and ownership areas changed: Pending.
-- Ownership boundaries affected: Pending.
-- Implementation complexity: Pending.
-- Operational complexity: Pending.
-- Canonical documentation updated: Pending.
-- Actual additions, deletions, and supporting lines per approved slice: Pending.
+- Files and ownership areas changed: runner SQL error mapping; PostgreSQL runner
+  claim selection and write ownership; one storage migration; runner, storage,
+  orchestration-regression, and DuckDB ADBC tests; three canonical guides.
+- Ownership boundaries affected: none. PostgreSQL remains the distributed
+  authority, the runner still owns only execution, and DuckLake remains the data
+  backend rather than the Favn coordination mechanism.
+- Implementation complexity: one pre-limit eligibility predicate, one
+  advisory-locked final recheck, and one owner-valid reservation lookup. No new
+  process, table, state, protocol, or dependency was introduced.
+- Operational complexity: one additive partial index. Existing RC14 drain,
+  migration, matched-build, and rollback procedures remain unchanged.
+- Canonical documentation updated: SQL runtime, elastic runners, and public
+  retry/replay guidance.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted | Notes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 240 | 4 | 287 | 82 | Includes the 35-line migration and owner-valid stale-fence recovery predicate |
+| 2 | 17 | 8 | 58 | 4 | Trusted evidence only and unchanged-error regressions |
+| 3 | 0 | 0 | 201 | 1 | Real independent ADBC sessions and PostgreSQL DuckLake metadata |
+| 4 | 0 | 0 | 23 | 6 | Canonical and public concurrency guidance |
+
+Slice 1 exceeds the planned production upper bound by 70 lines. The additional
+lines are explicit SQL for matching active task rows to their still-current
+materialization or target-operation fences in both the bounded candidate query
+and the advisory-locked recheck. That owner check was required by the existing
+fenced-takeover regression; counting every active row would strand authorized
+replacement work. The implementation still stays within the approved state and
+protocol design.
 
 ## Deviations from the approved plan
 
-Pending implementation.
+- Cross-layer qualification is split at the real ownership boundaries instead
+  of adding a production hook and a second full local runner harness. Storage
+  tests use independent claimers and real PostgreSQL to prove assignment,
+  ordering, queue depth, unrelated progress, recovery, and outcome behavior.
+  The DuckDB ADBC integration test uses independent sessions and a real
+  PostgreSQL-backed DuckLake catalog to prove the backend conflict, preserved
+  error shape, final rows after serialized repair, and unrelated-table progress.
+- Existing orchestration regressions that intentionally claimed several windows
+  of one asset simultaneously now claim those tasks serially. Their admission,
+  recovery, retry, capacity, and lost-reply assertions remain; unrelated-target
+  parallelism is covered directly by the new storage and DuckLake tests.
+- Local DuckLake verification used the installed DuckDB 1.5.2 driver and reports
+  that version/settings from the backend. Repository CI remains pinned to 1.5.5
+  and is the required proof for that supported build.
+- No live Test-environment run was performed. Deployment qualification remains
+  an operational gate after merge.
 
 ## Decision log
 
-Pending implementation.
+- Keep claim filtering and the `Started` fence: filtering preserves runner
+  capacity; the fence remains the final safety authority.
+- Match active task reservations to their current owner fence so authorized
+  recovery can replace stale assigned rows without weakening unknown-outcome
+  protection.
+- Keep the index nonunique so an upgraded RC14 database can drain existing
+  duplicate active rows safely.
+- Omit untrusted validation maps instead of inventing a decoder at the runner
+  boundary.
+- Keep DuckLake retry settings and all dependency pins unchanged.
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Focused and broader verification | Pending implementation | No implementation claim yet |
+| Formatting, diff hygiene, and tag-tier guard | Passed | Repository source and test routing |
+| `mix compile --warnings-as-errors` | Passed | Current local Elixir/OTP toolchain |
+| Runner SQL regressions | 69 passed | Trusted and untrusted validation evidence plus neighboring group behavior |
+| Affected PostgreSQL storage surface | 294 passed | Claims, >50 blocked tasks, row-lock race, query plan, write resolution, fenced takeover, orchestration recovery, sessions, and 333-runner scale case |
+| DuckDB ADBC integration file | 9 passed | Independent sessions against local DuckDB 1.5.2 and PostgreSQL-backed DuckLake metadata |
+| Focused DuckLake conflict case | Passed repeatedly | One same-table commit conflict, no framework exception, serialized final rows, and unrelated-table success |
+| Umbrella fast suite | Pending final rerun | Earlier run exposed and led to the stale-fence fix and same-target fixture corrections |
+| Independent final review | Pending | Must compare implementation with `20dac7f3` |
 
 ### Not verified
 
-- Implementation behavior and tests.
 - Live Test-environment rollout.
-- Multi-host runner behavior outside the planned isolated-process acceptance test.
+- DuckDB/DuckLake 1.5.5 locally; repository CI supplies this pinned-build check.
+- Multi-host behavior outside the PostgreSQL independent-claimer and isolated
+  independent-session tests.
 - Production-scale DuckLake throughput or retry tuning.
 
 ## Final review
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending implementation reviewer |
-| Compared | Approved plan, implementation, tests, diagnostics, and docs |
-| Deviations complete | Pending |
+| Reviewer | Pending Astra xhigh implementation reviewer |
+| Compared | Approved plan `20dac7f3`, implementation, tests, diagnostics, and docs |
+| Deviations complete | Pending reviewer confirmation |
 | Findings | Pending |
 | Findings addressed and rechecked | Pending |
 | Verdict | Pending |

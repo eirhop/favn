@@ -2123,18 +2123,25 @@ defmodule Favn.SQLAsset.Runtime do
        }),
        do: validation
 
+  defp find_contract_validation({_rendered, %CheckedMaterialization{} = materialization}),
+    do: find_contract_validation(materialization)
+
   defp find_contract_validation(%_{}), do: nil
 
-  defp find_contract_validation(value) when is_map(value) do
-    Map.get(value, :contract_validation) || Map.get(value, "contract_validation") ||
-      Enum.find_value(value, fn {_key, child} -> find_contract_validation(child) end)
+  defp find_contract_validation(details) when is_map(details) do
+    validation =
+      Map.get(details, :contract_validation) || Map.get(details, "contract_validation")
+
+    case validation do
+      %ContractValidation{} = trusted ->
+        trusted
+
+      _untrusted ->
+        details
+        |> Map.get(:transaction_body_result, Map.get(details, "transaction_body_result"))
+        |> find_contract_validation()
+    end
   end
-
-  defp find_contract_validation(value) when is_list(value),
-    do: Enum.find_value(value, &find_contract_validation/1)
-
-  defp find_contract_validation(value) when is_tuple(value),
-    do: value |> Tuple.to_list() |> Enum.find_value(&find_contract_validation/1)
 
   defp find_contract_validation(_value), do: nil
 
@@ -2705,6 +2712,8 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp maybe_put_contract_validation(output, %ContractValidation{} = validation),
     do: Map.put(output, :contract_validation, validation)
+
+  defp maybe_put_contract_validation(output, _untrusted), do: output
 
   defp maybe_put_runtime_inputs(output, nil), do: output
 

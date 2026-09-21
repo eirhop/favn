@@ -50,6 +50,54 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
     target_effect?(workspace, target, except_task, @unresolved)
   end
 
+  def target_reserved?(%{write_target_id: nil}), do: false
+
+  def target_reserved?(task) do
+    %{rows: [[active?]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT EXISTS (
+          SELECT 1
+          FROM favn_control.runner_tasks active
+          WHERE active.workspace_id = $1
+            AND active.write_target_id = $2
+            AND active.task_id <> $3
+            AND active.status = ANY($4::text[])
+            AND (
+              EXISTS (
+                SELECT 1
+                FROM favn_control.materialization_claims claim
+                WHERE claim.workspace_id = active.workspace_id
+                  AND claim.claim_key = active.write_claim_key
+                  AND claim.target_id = active.write_target_id
+                  AND claim.fencing_token = active.write_claim_fence
+                  AND claim.effect_task_id = active.task_id
+                  AND claim.status = 'claimed'
+              )
+              OR EXISTS (
+                SELECT 1
+                FROM favn_control.target_operation_locks operation
+                WHERE operation.workspace_id = active.workspace_id
+                  AND operation.target_id = active.write_target_id
+                  AND operation.operation_id = active.write_operation_id
+                  AND operation.fencing_token = active.write_lock_fence
+                  AND operation.effect_task_id = active.task_id
+              )
+            )
+        )
+        """,
+        [
+          task.workspace_id,
+          task.write_target_id,
+          task.task_id,
+          ["assigned", "preparing", "running", "cancelling"]
+        ]
+      )
+
+    active? or target_unresolved?(task.workspace_id, task.write_target_id, task.task_id)
+  end
+
   defp target_effect?(workspace, target, except_task, states) do
     except_task = except_task || ""
 

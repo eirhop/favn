@@ -1461,7 +1461,111 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             task.required_runner_release_id == ^command.required_runner_release_id and
             task.task_kind in ^task_kinds and
             (is_nil(task.deadline_at) or task.deadline_at > ^command.occurred_at) and
-            (is_nil(task.required_capability) or task.required_capability in ^command.capabilities),
+            (is_nil(task.required_capability) or task.required_capability in ^command.capabilities) and
+            (is_nil(task.write_target_id) or
+               fragment(
+                 """
+                 NOT EXISTS (
+                   SELECT 1
+                   FROM favn_control.runner_tasks active
+                   WHERE active.workspace_id = ?
+                     AND active.write_target_id = ?
+                     AND active.task_id <> ?
+                     AND active.status = ANY(?::text[])
+                     AND (
+                       EXISTS (
+                         SELECT 1
+                         FROM favn_control.materialization_claims active_claim
+                         WHERE active_claim.workspace_id = active.workspace_id
+                           AND active_claim.claim_key = active.write_claim_key
+                           AND active_claim.target_id = active.write_target_id
+                           AND active_claim.fencing_token = active.write_claim_fence
+                           AND active_claim.effect_task_id = active.task_id
+                           AND active_claim.status = 'claimed'
+                       )
+                       OR EXISTS (
+                         SELECT 1
+                         FROM favn_control.target_operation_locks active_operation
+                         WHERE active_operation.workspace_id = active.workspace_id
+                           AND active_operation.target_id = active.write_target_id
+                           AND active_operation.operation_id = active.write_operation_id
+                           AND active_operation.fencing_token = active.write_lock_fence
+                           AND active_operation.effect_task_id = active.task_id
+                       )
+                     )
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM favn_control.materialization_claims claim
+                   WHERE claim.workspace_id = ?
+                     AND claim.target_id = ?
+                     AND claim.effect_state = ANY(?::text[])
+                     AND (claim.effect_task_id IS NULL OR claim.effect_task_id <> ?)
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM favn_control.target_operation_locks operation
+                   WHERE operation.workspace_id = ?
+                     AND operation.target_id = ?
+                     AND operation.effect_state = ANY(?::text[])
+                     AND (operation.effect_task_id IS NULL OR operation.effect_task_id <> ?)
+                 )
+                 """,
+                 task.workspace_id,
+                 task.write_target_id,
+                 task.task_id,
+                 ^@active_statuses,
+                 task.workspace_id,
+                 task.write_target_id,
+                 ^~w(in_flight outcome_unknown),
+                 task.task_id,
+                 task.workspace_id,
+                 task.write_target_id,
+                 ^~w(in_flight outcome_unknown),
+                 task.task_id
+               )) and
+            (is_nil(task.write_target_id) or
+               fragment(
+                 """
+                 NOT EXISTS (
+                   SELECT 1
+                   FROM favn_control.runner_tasks older
+                   WHERE older.workspace_id = ?
+                     AND older.write_target_id = ?
+                     AND older.status = 'queued'
+                     AND older.runner_pool = ?
+                     AND older.required_runner_release_id = ?
+                     AND older.task_kind = ANY(?::text[])
+                     AND (older.deadline_at IS NULL OR older.deadline_at > ?)
+                     AND (older.required_capability IS NULL OR older.required_capability = ANY(?::text[]))
+                     AND (
+                       older.deployment_operation_id IS NULL
+                       OR EXISTS (
+                         SELECT 1
+                         FROM favn_control.manifest_deployment_operations deployment
+                         WHERE deployment.workspace_id = older.workspace_id
+                           AND deployment.operation_id = older.deployment_operation_id
+                           AND deployment.state IN ('accepted', 'activating')
+                           AND deployment.cancellation_requested_at IS NULL
+                           AND (deployment.source <> 'local' OR deployment.local_expires_at > ?)
+                           AND (deployment.inspection_deadline_at IS NULL OR deployment.inspection_deadline_at > ?)
+                       )
+                     )
+                     AND (older.enqueued_at, older.task_id) < (?, ?)
+                 )
+                 """,
+                 task.workspace_id,
+                 task.write_target_id,
+                 task.runner_pool,
+                 task.required_runner_release_id,
+                 ^task_kinds,
+                 ^command.occurred_at,
+                 ^command.capabilities,
+                 ^command.occurred_at,
+                 ^command.occurred_at,
+                 task.enqueued_at,
+                 task.task_id
+               )),
         order_by: [asc: task.enqueued_at, asc: task.workspace_id, asc: task.task_id],
         limit: 50
       )
@@ -3198,8 +3302,54 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         choose_claim_candidate(rest, command)
 
       true ->
-        inspect_claim_candidate(task, rest, command)
+        if claim_target_ready?(task, command) do
+          inspect_claim_candidate(task, rest, command)
+        else
+          choose_claim_candidate(rest, command)
+        end
     end
+  end
+
+  defp claim_target_ready?(%RunnerTask{write_target_id: nil}, _command), do: true
+
+  defp claim_target_ready?(task, command) do
+    WriteOwnership.try_lock_target!(task.workspace_id, task.write_target_id) and
+      not WriteOwnership.target_reserved?(task) and
+      earliest_eligible_target_task?(task, command)
+  end
+
+  defp earliest_eligible_target_task?(task, command) do
+    task_kinds = Enum.map(command.supported_task_kinds, &Atom.to_string/1)
+
+    not Repo.exists?(
+      from(older in RunnerTask,
+        where:
+          older.workspace_id == ^task.workspace_id and
+            older.write_target_id == ^task.write_target_id and
+            older.status == "queued" and
+            older.runner_pool == ^command.runner_pool and
+            older.required_runner_release_id == ^command.required_runner_release_id and
+            older.task_kind in ^task_kinds and
+            (is_nil(older.deadline_at) or older.deadline_at > ^command.occurred_at) and
+            (is_nil(older.required_capability) or
+               older.required_capability in ^command.capabilities) and
+            fragment(
+              "(? IS NULL OR EXISTS (SELECT 1 FROM favn_control.manifest_deployment_operations deployment WHERE deployment.workspace_id = ? AND deployment.operation_id = ? AND deployment.state IN ('accepted', 'activating') AND deployment.cancellation_requested_at IS NULL AND (deployment.source <> 'local' OR deployment.local_expires_at > ?) AND (deployment.inspection_deadline_at IS NULL OR deployment.inspection_deadline_at > ?)))",
+              older.deployment_operation_id,
+              older.workspace_id,
+              older.deployment_operation_id,
+              ^command.occurred_at,
+              ^command.occurred_at
+            ) and
+            fragment(
+              "(?, ?) < (?, ?)",
+              older.enqueued_at,
+              older.task_id,
+              ^task.enqueued_at,
+              ^task.task_id
+            )
+      )
+    )
   end
 
   defp inspect_claim_candidate(task, rest, command) do

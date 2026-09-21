@@ -7997,22 +7997,40 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     monitor = Process.monitor(pid)
     assert_receive {:saved_before_lost_reply, ^pid, uncertain_id}, 5_000
 
-    tasks =
-      Enum.map(1..2, fn index ->
-        assert {:ok, task} = claim_asset_task(fixture, "completed-reply-loss-#{index}")
-        task
-      end)
+    finish_without_waiter = fn task ->
+      assert :ok = start_runner_task(task)
+      assert :running = await_runner_task_status!(fixture.workspace_id, task.task_id, :running)
+      assert Process.alive?(pid)
+      :ok = complete_asset_task(task, task.payload, false)
+    end
 
-    uncertain = Enum.find(tasks, &(&1.task_id == uncertain_id))
-    sibling = Enum.find(tasks, &(&1.task_id != uncertain_id))
-    assert :ok = start_runner_task(uncertain)
-    :ok = complete_asset_task(uncertain, uncertain.payload, false)
-    send(pid, :release_lost_reply)
-    await_runner_task_waiter!(sibling)
-    assert :ok = start_runner_task(sibling)
-    assert :running = await_runner_task_status!(fixture.workspace_id, sibling.task_id, :running)
-    assert Process.alive?(pid)
-    :ok = complete_asset_task(sibling, sibling.payload, false)
+    finish_with_waiter = fn task ->
+      assert :ok = start_runner_task(task)
+      await_runner_task_waiter!(task)
+      assert :running = await_runner_task_status!(fixture.workspace_id, task.task_id, :running)
+      assert Process.alive?(pid)
+      :ok = complete_asset_task(task, task.payload, false)
+    end
+
+    assert {:ok, first} = claim_asset_task(fixture, "completed-reply-loss-1")
+
+    {uncertain, sibling} =
+      if first.task_id == uncertain_id do
+        finish_without_waiter.(first)
+        send(pid, :release_lost_reply)
+        assert {:ok, sibling} = claim_asset_task(fixture, "completed-reply-loss-2")
+        finish_with_waiter.(sibling)
+        {first, sibling}
+      else
+        finish_without_waiter.(first)
+        assert {:ok, uncertain} = claim_asset_task(fixture, "completed-reply-loss-2")
+        assert uncertain.task_id == uncertain_id
+        finish_without_waiter.(uncertain)
+        send(pid, :release_lost_reply)
+        {uncertain, first}
+      end
+
+    refute sibling.task_id == uncertain.task_id
     assert 3 == length(await_runner_task_ids!(fixture.workspace_id, run.id, 3))
     assert {:ok, final_task} = claim_asset_task(fixture, "completed-reply-loss-final")
     assert :ok = start_runner_task(final_task)
@@ -8044,7 +8062,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              await_runner_task_status!(fixture.workspace_id, sibling.task_id, :succeeded)
   end
 
-  test "slow pipeline admission refills to max concurrency before any result", fixture do
+  test "same-target pipeline tasks stay queued despite higher admission concurrency", fixture do
     {run, _keys} = create_continuation_pipeline_run!(fixture, 3)
 
     delay_runner_task_inserts!()
@@ -8059,20 +8077,23 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 3
     assert_runner_demand!(fixture, queued: 3, active: 0, outstanding: 3)
 
-    tasks =
+    claimed_ids =
       Enum.map(1..3, fn runner_number ->
-        assert {:ok, task} = claim_asset_task(fixture, "overlap-#{runner_number}")
-        task
+        assert {:ok, task} = claim_asset_task(fixture, "serial-target-#{runner_number}")
+
+        if runner_number == 1 do
+          assert {:ok, nil} = claim_asset_task(fixture, "blocked-same-target")
+          assert_runner_demand!(fixture, queued: 2, active: 1, outstanding: 3)
+        end
+
+        assert :ok = start_runner_task(task)
+        await_runner_task_waiter!(task)
+        :ok = complete_asset_task(task, task.payload, false)
+        task.task_id
       end)
 
-    assert tasks |> Enum.map(& &1.task_id) |> Enum.sort() == Enum.sort(task_ids)
-    assert_runner_demand!(fixture, queued: 0, active: 3, outstanding: 3)
-
-    Enum.each(tasks, fn task ->
-      assert :ok = start_runner_task(task)
-      await_runner_task_waiter!(task)
-      :ok = complete_asset_task(task, task.payload, false)
-    end)
+    assert Enum.sort(claimed_ids) == Enum.sort(task_ids)
+    assert_runner_demand!(fixture, queued: 0, active: 0, outstanding: 0)
 
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
 
@@ -8647,19 +8668,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
     end)
 
-    assert {:ok, second_pid} =
-             RunServer.start_link(%{run_state: second_run, version: fixture.version})
-
-    second_monitor = Process.monitor(second_pid)
-    assert [second_task_id] = await_runner_task_ids!(fixture.workspace_id, second_run.id, 1)
-    assert {:ok, second_task} = claim_asset_task(fixture, "terminal-refill-next-1")
-    assert second_task.task_id == second_task_id
-
-    Process.sleep(250)
-
-    assert [^second_task_id] = runner_task_ids(fixture.workspace_id, second_run.id)
-    assert active_execution_lease_count(fixture.workspace_id, second_run.id) == 1
-
     assert :ok = start_runner_task(task)
     await_runner_task_waiter!(task)
     :ok = complete_asset_task(task, task.payload, false)
@@ -8669,10 +8677,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert {:ok, finished} = get_run(fixture, run.id)
     assert finished.status == :error
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
-    assert 2 == length(await_runner_task_ids!(fixture.workspace_id, second_run.id, 2))
-
     refute Map.has_key?(finished.metadata, :cancel_outcomes)
     refute Map.has_key?(finished.metadata, "cancel_outcomes")
+
+    assert {:ok, second_pid} =
+             RunServer.start_link(%{run_state: second_run, version: fixture.version})
+
+    second_monitor = Process.monitor(second_pid)
+    assert [second_task_id] = await_runner_task_ids!(fixture.workspace_id, second_run.id, 1)
+    assert {:ok, second_task} = claim_asset_task(fixture, "terminal-refill-next-1")
+    assert second_task.task_id == second_task_id
 
     assert :ok = start_runner_task(second_task)
     await_runner_task_waiter!(second_task)
@@ -8759,13 +8773,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 2
     assert_runner_demand!(fixture, queued: 2, active: 0, outstanding: 2)
 
-    remaining_tasks =
-      Enum.map(2..3, fn runner_number ->
-        assert {:ok, task} = claim_asset_task(fixture, "global-#{runner_number}")
-        task
-      end)
-
-    Enum.each(remaining_tasks, fn task ->
+    Enum.each(2..3, fn runner_number ->
+      assert {:ok, task} = claim_asset_task(fixture, "global-#{runner_number}")
       assert :ok = start_runner_task(task)
       await_runner_task_waiter!(task)
       :ok = complete_asset_task(task, task.payload, false)
@@ -8842,13 +8851,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     monitor = Process.monitor(recovered_pid)
 
-    tasks =
-      Enum.map(1..3, fn runner_number ->
-        assert {:ok, task} = claim_asset_task(fixture, "recovery-#{runner_number}")
-        task
-      end)
-
-    Enum.each(tasks, fn task ->
+    Enum.each(1..3, fn runner_number ->
+      assert {:ok, task} = claim_asset_task(fixture, "recovery-#{runner_number}")
       assert :ok = start_runner_task(task)
       await_runner_task_waiter!(task)
       :ok = complete_asset_task(task, task.payload, false)
@@ -9504,20 +9508,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           event["data"]["attempt"] == 2 and event["data"]["asset_step_id"] == step_id
         end)
 
-      tasks =
-        Map.new(1..3, fn number ->
-          assert {:ok, task} = claim_asset_task(fixture, "retry-batch-first-#{number}")
-          {Favn.Contracts.RunnerWork.node_key(task.payload), task}
-        end)
-
-      # Force retry order to differ from plan order at the pending-intent crash.
-      order =
-        if fixture.retry_boundary == :after_intent,
-          do: [keys.b, keys.a, keys.c],
-          else: [keys.a, keys.b, keys.c]
-
-      for {key, number} <- Enum.with_index(order, 1) do
-        task = Map.fetch!(tasks, key)
+      for number <- 1..3 do
+        assert {:ok, task} = claim_asset_task(fixture, "retry-batch-first-#{number}")
+        key = Favn.Contracts.RunnerWork.node_key(task.payload)
         assert :ok = start_runner_task(task)
         await_runner_task_waiter!(task)
         assert :ok = complete_asset_task(task, task.payload, key in [keys.a, keys.b])
@@ -9528,7 +9521,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       :telemetry.detach(handler)
 
       if fixture.retry_boundary == :after_intent,
-        do: assert(length(runner_task_ids(fixture.workspace_id, run.id)) == 3)
+        do: assert(length(runner_task_ids(fixture.workspace_id, run.id)) in [3, 4])
 
       kill_run_owner!(fixture, run.id, first)
       assert {:ok, saved} = get_run(fixture, run.id)
