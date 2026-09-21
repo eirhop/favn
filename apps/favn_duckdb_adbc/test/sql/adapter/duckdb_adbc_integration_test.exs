@@ -683,6 +683,12 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
       refute inspect(commits) =~ "FunctionClauseError"
       assert is_binary(conflict.message) and byte_size(conflict.message) > 0
 
+      assert %{backend_error: ^conflict} =
+               Favn.SQLAsset.Runtime.attach_contract_validation_evidence(
+                 %{backend_error: conflict},
+                 conflict
+               )
+
       assert {:ok, visible_after_conflict} =
                ADBC.query(
                  successful_conn,
@@ -695,6 +701,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
 
       assert Enum.find(visible_after_conflict.rows, &(&1["period"] == failed_period)) ==
                %{"period" => failed_period, "value" => "old"}
+
+      assert {:ok, _} = ADBC.execute(successful_conn, "BEGIN TRANSACTION", [])
 
       assert {:ok, _} =
                ADBC.execute(
@@ -709,6 +717,8 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
                  "INSERT INTO lake.main.monthly_rows VALUES (?, 'new')",
                  params: [failed_period]
                )
+
+      assert {:ok, _} = ADBC.execute(successful_conn, "COMMIT", [])
 
       assert {:ok, rows} =
                ADBC.query(

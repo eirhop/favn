@@ -202,11 +202,16 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
       f
       | version: unrelated_version,
         work: unrelated_work,
-        claim: unrelated_claim
+        claim: unrelated_claim,
+        now: DateTime.add(f.now, 1, :second)
     }
 
     assert unrelated.work.logical_target_id != f.work.logical_target_id
     assert {:ok, unrelated_task} = Store.enqueue(enqueue(unrelated))
+
+    assert Enum.all?(blocked, fn task ->
+             DateTime.before?(task.enqueued_at, unrelated_task.enqueued_at)
+           end)
 
     assert {:ok, claimed} = Store.claim(claim_task(unrelated, "after-blocked-batch"))
     assert claimed.task_id == unrelated_task.task_id

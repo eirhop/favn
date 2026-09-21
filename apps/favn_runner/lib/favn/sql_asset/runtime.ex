@@ -2047,7 +2047,7 @@ defmodule Favn.SQLAsset.Runtime do
     meta =
       rendered
       |> failed_check_metadata(check_results, transaction_outcome, write_outcome)
-      |> maybe_put_contract_validation(find_contract_validation(error))
+      |> attach_contract_validation_evidence(error)
 
     {:error, sql_asset_error, meta}
   end
@@ -2063,7 +2063,7 @@ defmodule Favn.SQLAsset.Runtime do
     meta =
       rendered
       |> failed_check_metadata(results, :unknown, :unknown)
-      |> maybe_put_contract_validation(find_contract_validation(error))
+      |> attach_contract_validation_evidence(error)
 
     {:error, error, meta}
   end
@@ -2714,6 +2714,11 @@ defmodule Favn.SQLAsset.Runtime do
     do: Map.put(output, :contract_validation, validation)
 
   defp maybe_put_contract_validation(output, _untrusted), do: output
+
+  @doc false
+  def attach_contract_validation_evidence(output, error) when is_map(output) do
+    maybe_put_contract_validation(output, find_contract_validation(error))
+  end
 
   defp maybe_put_runtime_inputs(output, nil), do: output
 

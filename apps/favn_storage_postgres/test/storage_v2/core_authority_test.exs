@@ -8067,6 +8067,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     delay_runner_task_inserts!()
     start_pipeline_runtime!()
+    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor})
 
     assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
     monitor = Process.monitor(pid)
@@ -8603,11 +8604,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   end
 
   test "terminal failure during refill preserves a sibling admitted by an earlier batch",
-       fixture do
+       _fixture do
+    fixture = continuation_distinct_target_fixture!()
     policies = %{"global" => %{max_concurrency: 2}}
     install_execution_capacity_scope!(fixture, :global, policies)
     {run, _keys} = create_continuation_pipeline_run!(fixture, 2, policies)
-    {second_run, _keys} = create_continuation_pipeline_run!(fixture, 2, policies)
+
+    {second_run, _keys} =
+      create_continuation_pipeline_run!(fixture, 2, policies,
+        asset_ref: {MyApp.PrivateAsset, :private}
+      )
 
     assert {:ok, global_scope} =
              CapacityConfiguration.execution_scope(fixture.workspace_id, :global, policies)
@@ -8668,6 +8674,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
     end)
 
+    assert {:ok, second_pid} =
+             RunServer.start_link(%{run_state: second_run, version: fixture.version})
+
+    second_monitor = Process.monitor(second_pid)
+    assert [second_task_id] = await_runner_task_ids!(fixture.workspace_id, second_run.id, 1)
+    assert {:ok, second_task} = claim_asset_task(fixture, "terminal-refill-next-1")
+    assert second_task.task_id == second_task_id
+
+    Process.sleep(250)
+
+    assert [^second_task_id] = runner_task_ids(fixture.workspace_id, second_run.id)
+    assert active_execution_lease_count(fixture.workspace_id, second_run.id) == 1
+
     assert :ok = start_runner_task(task)
     await_runner_task_waiter!(task)
     :ok = complete_asset_task(task, task.payload, false)
@@ -8679,14 +8698,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
     refute Map.has_key?(finished.metadata, :cancel_outcomes)
     refute Map.has_key?(finished.metadata, "cancel_outcomes")
-
-    assert {:ok, second_pid} =
-             RunServer.start_link(%{run_state: second_run, version: fixture.version})
-
-    second_monitor = Process.monitor(second_pid)
-    assert [second_task_id] = await_runner_task_ids!(fixture.workspace_id, second_run.id, 1)
-    assert {:ok, second_task} = claim_asset_task(fixture, "terminal-refill-next-1")
-    assert second_task.task_id == second_task_id
 
     assert :ok = start_runner_task(second_task)
     await_runner_task_waiter!(second_task)
@@ -9487,14 +9498,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   for boundary <- [:before_intent, :after_intent] do
     @tag retry_boundary: boundary
     test "pipeline resumes every selected retry at attempt two after #{boundary}", fixture do
+      retry_boundary = fixture.retry_boundary
+
+      fixture =
+        continuation_distinct_target_fixture!()
+        |> Map.put(:retry_boundary, retry_boundary)
+
       {run, keys} =
         create_continuation_pipeline_run!(fixture, 3, %{},
-          retry_policy: Favn.Retry.Policy.new!(max_attempts: 2, backoff: 0)
+          retry_policy: Favn.Retry.Policy.new!(max_attempts: 2, backoff: 0),
+          distinct_targets?: true
         )
 
       start_pipeline_runtime!()
       assert {:ok, first} = RunServer.start_link(%{run_state: run, version: fixture.version})
-      assert 3 == length(await_runner_task_ids!(fixture.workspace_id, run.id, 3))
+      assert 2 == length(await_runner_task_ids!(fixture.workspace_id, run.id, 2))
 
       {kind, key} =
         if fixture.retry_boundary == :before_intent,
@@ -9508,20 +9526,34 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           event["data"]["attempt"] == 2 and event["data"]["asset_step_id"] == step_id
         end)
 
-      for number <- 1..3 do
-        assert {:ok, task} = claim_asset_task(fixture, "retry-batch-first-#{number}")
-        key = Favn.Contracts.RunnerWork.node_key(task.payload)
+      tasks =
+        Map.new(1..2, fn number ->
+          assert {:ok, task} = claim_asset_task(fixture, "retry-batch-first-#{number}")
+          {Favn.Contracts.RunnerWork.node_key(task.payload), task}
+        end)
+
+      assert MapSet.new(Map.keys(tasks)) == MapSet.new([keys.a, keys.b])
+
+      for {key, number} <- Enum.with_index([keys.b, keys.a], 1) do
+        task = Map.fetch!(tasks, key)
         assert :ok = start_runner_task(task)
         await_runner_task_waiter!(task)
         assert :ok = complete_asset_task(task, task.payload, key in [keys.a, keys.b])
         await_run_event!(fixture.workspace_id, run.id, "step_settled", number)
       end
 
+      assert {:ok, third} = claim_asset_task(fixture, "retry-batch-first-3")
+      assert Favn.Contracts.RunnerWork.node_key(third.payload) == keys.c
+      assert :ok = start_runner_task(third)
+      await_runner_task_waiter!(third)
+      assert :ok = complete_asset_task(third, third.payload, false)
+      await_run_event!(fixture.workspace_id, run.id, "step_settled", 3)
+
       assert_receive {:recovery_event_committed, ^first, ^kind}, 5_000
       :telemetry.detach(handler)
 
       if fixture.retry_boundary == :after_intent,
-        do: assert(length(runner_task_ids(fixture.workspace_id, run.id)) in [3, 4])
+        do: assert(length(runner_task_ids(fixture.workspace_id, run.id)) == 3)
 
       kill_run_owner!(fixture, run.id, first)
       assert {:ok, saved} = get_run(fixture, run.id)
@@ -15698,6 +15730,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       WorkspaceContext.new(workspace_id, "consultant", [:workspace_admin])
 
     target_id = TargetStatus.target_id_for_asset({MyApp.Asset, :asset})
+    private_target_id = TargetStatus.target_id_for_asset({MyApp.PrivateAsset, :private})
     pipeline_target_id = TargetStatus.target_id_for_pipeline({MyApp.Pipeline, :daily})
 
     deploy_command = %DeployManifest{
@@ -15726,6 +15759,16 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             descriptor: %{
               "target_id" => pipeline_target_id,
               "label" => pipeline_target_id
+            }
+          },
+          %DeploymentTarget{
+            target_kind: :asset,
+            target_id: private_target_id,
+            selection_source: :dependency,
+            customer_visible: false,
+            descriptor: %{
+              "target_id" => private_target_id,
+              "label" => private_target_id
             }
           }
         ] ++ extra_targets,
@@ -15997,6 +16040,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     private_package = runtime_input_execution_package(private_ref)
     append? = Keyword.get(opts, :append?, false)
     coverage? = Keyword.get(opts, :coverage?, false)
+    private_materialized? = Keyword.get(opts, :private_materialized?, false)
     append_ref = {MyApp.AppendAsset, :asset}
     append_package = if append?, do: runtime_input_execution_package(append_ref)
 
@@ -16064,6 +16108,43 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         []
       end
 
+    private_asset =
+      if private_materialized? do
+        asset = %Favn.Manifest.Asset{
+          ref: private_ref,
+          module: MyApp.PrivateAsset,
+          name: :private,
+          type: :sql,
+          relation:
+            RelationRef.new!(
+              connection: :warehouse,
+              schema: "analytics",
+              name: "private_asset"
+            ),
+          materialization: :table,
+          execution_package_hash: private_package.content_hash
+        }
+
+        descriptor =
+          TargetDescriptor.from_asset(Map.from_struct(asset),
+            connection_definitions: %{
+              warehouse: %{adapter: FavnTestSupport.TargetAdapter, module: nil}
+            },
+            manifest_schema_version: Favn.Manifest.Compatibility.current_schema_version(),
+            runner_contract_version: Favn.Manifest.Compatibility.current_runner_contract_version()
+          )
+
+        %{asset | target_descriptor: descriptor}
+      else
+        %Favn.Manifest.Asset{
+          ref: private_ref,
+          module: MyApp.PrivateAsset,
+          name: :private,
+          type: :sql,
+          execution_package_hash: private_package.content_hash
+        }
+      end
+
     manifest = %Manifest{
       assets:
         [
@@ -16077,13 +16158,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             freshness: Policy.from_value!(max_age: {:days, 1}),
             execution_package_hash: package.content_hash
           },
-          %Favn.Manifest.Asset{
-            ref: private_ref,
-            module: MyApp.PrivateAsset,
-            name: :private,
-            type: :sql,
-            execution_package_hash: private_package.content_hash
-          }
+          private_asset
         ] ++ append_assets,
       pipelines:
         [
@@ -16105,6 +16180,41 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
 
     {version, [package, private_package] ++ List.wrap(append_package)}
+  end
+
+  defp continuation_distinct_target_fixture! do
+    unique = Integer.to_string(System.unique_integer([:positive]))
+
+    {version, packages} =
+      manifest_publication("mv-distinct-#{unique}", private_materialized?: true)
+
+    private_asset =
+      Enum.find(version.manifest.assets, &(&1.ref == {MyApp.PrivateAsset, :private}))
+
+    compatibility = %DeploymentTargetCompatibility{
+      target_id: private_asset.target_descriptor.target_id,
+      desired_descriptor_hash: private_asset.target_descriptor.descriptor_hash,
+      expected_binding_version: nil,
+      expected_active_generation_id: nil,
+      active_physical_fingerprint: nil,
+      compatibility_status: :uninitialized,
+      reason_code: "no_active_generation",
+      compatibility_diff: %{}
+    }
+
+    fixture = provision_deploy_fixture({version, packages}, [], [compatibility])
+
+    assert {:ok, writable} =
+             TargetGenerationStore.ensure_writable(%EnsureWritableTargetGeneration{
+               workspace_context: fixture.workspace_context,
+               command_id: "generation:ensure:distinct:#{unique}",
+               target_id: private_asset.target_descriptor.target_id,
+               manifest_version_id: version.manifest_version_id,
+               descriptor: private_asset.target_descriptor,
+               occurred_at: DateTime.utc_now()
+             })
+
+    Map.put(fixture, :private_generation, writable.generation)
   end
 
   defp target_descriptor(fixture, manifest_schema_version \\ nil, materialization \\ :table) do
@@ -16661,20 +16771,65 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
          execution_pools \\ %{},
          opts \\ []
        ) do
-    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
-    {plan, keys} = continuation_regression_plan(asset.semantic_generation_id)
+    {command, original} = pipeline_run_command(fixture)
+    ref = Keyword.get(opts, :asset_ref, {MyApp.Asset, :asset})
+    asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == ref))
+
+    {plan, keys} = continuation_regression_plan(asset.semantic_generation_id, ref)
+
+    plan =
+      if ref == {MyApp.PrivateAsset, :private} do
+        nodes =
+          Map.new(plan.nodes, fn {node_key, node} ->
+            {node_key,
+             %{
+               node
+               | target_generation_id: fixture.private_generation.target_generation_id,
+                 evidence_generation_id: fixture.private_generation.target_generation_id,
+                 physical_relation: fixture.private_generation.physical_relation
+             }}
+          end)
+
+        %{plan | nodes: nodes}
+      else
+        plan
+      end
+
+    {plan, keys, stage_refs, target_refs} =
+      if Keyword.get(opts, :distinct_targets?, false) do
+        private_ref = {MyApp.PrivateAsset, :private}
+        old_key = keys.b
+        new_key = {private_ref, elem(old_key, 1)}
+
+        private_node = %{
+          Map.fetch!(plan.nodes, old_key)
+          | ref: private_ref,
+            node_key: new_key,
+            target_id: Favn.TargetIdentity.for_asset(private_ref),
+            target_generation_id: fixture.private_generation.target_generation_id,
+            evidence_generation_id: fixture.private_generation.target_generation_id,
+            physical_relation: fixture.private_generation.physical_relation
+        }
+
+        nodes = plan.nodes |> Map.delete(old_key) |> Map.put(new_key, private_node)
+        keys = %{keys | b: new_key}
+        {%{plan | nodes: nodes}, keys, [ref, private_ref, ref], [ref, private_ref]}
+      else
+        {plan, keys, [ref, ref, ref], [ref]}
+      end
+
     stage_node_keys = [keys.a, keys.b, keys.c]
-    ref = {MyApp.Asset, :asset}
 
     plan = %{
       plan
-      | target_node_keys: stage_node_keys,
+      | target_refs: target_refs,
+        target_node_keys: stage_node_keys,
         nodes:
           Map.new(stage_node_keys, fn node_key ->
             {node_key, %{Map.fetch!(plan.nodes, node_key) | downstream: []}}
           end),
-        topo_order: [ref, ref, ref],
-        stages: [[ref, ref, ref]],
+        topo_order: stage_refs,
+        stages: [stage_refs],
         node_stages: [stage_node_keys]
     }
 
@@ -16690,8 +16845,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         },
         else: plan
 
-    {command, original} = pipeline_run_command(fixture)
-
     run =
       RunState.new(
         id: original.id,
@@ -16700,8 +16853,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         manifest_version_id: fixture.version.manifest_version_id,
         manifest_content_hash: fixture.version.content_hash,
         runner_releases: fixture.version.runner_releases,
-        asset_ref: original.asset_ref,
-        target_refs: original.target_refs,
+        asset_ref: ref,
+        target_refs: target_refs,
         submit_kind: if(Keyword.get(opts, :sequential?, false), do: :manual, else: :pipeline),
         plan: plan,
         timeout_ms: Keyword.get(opts, :timeout_ms, original.timeout_ms),
@@ -16712,7 +16865,24 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         root_execution_group_id: Keyword.get(opts, :root_execution_group_id)
       )
 
-    command = %{command | run: run, event: %{command.event | occurred_at: run.inserted_at}}
+    targets =
+      Enum.map(target_refs, fn {module, name} = target_ref ->
+        %RunTarget{
+          target_kind: :asset,
+          target_id: TargetStatus.target_id_for_asset(target_ref),
+          target_module: module |> Module.split() |> Enum.join("."),
+          target_name: Atom.to_string(name),
+          is_primary: target_ref == ref
+        }
+      end)
+
+    command = %{
+      command
+      | run: run,
+        targets: targets,
+        event: %{command.event | occurred_at: run.inserted_at}
+    }
+
     assert {:ok, _created} = RunStore.create_run(command)
 
     {run, keys}
@@ -16964,8 +17134,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
   end
 
-  defp continuation_regression_plan(evidence_generation_id) do
-    ref = {MyApp.Asset, :asset}
+  defp continuation_regression_plan(evidence_generation_id, ref \\ {MyApp.Asset, :asset}) do
     start_at = ~U[2026-07-01 00:00:00Z]
 
     windows =
