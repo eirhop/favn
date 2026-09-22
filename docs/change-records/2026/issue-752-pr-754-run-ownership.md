@@ -5,10 +5,10 @@
 | Status | Plan reviewed |
 | Type | Bug fix and lifecycle redesign |
 | Primary issue | [#752](https://github.com/eirhop/favn/issues/752) |
-| Pull request | Pending |
+| Pull request | [#754](https://github.com/eirhop/favn/pull/754) |
 | Related work | [#692](https://github.com/eirhop/favn/pull/692), [#722](https://github.com/eirhop/favn/pull/722), [#731](https://github.com/eirhop/favn/pull/731), [#748](https://github.com/eirhop/favn/issues/748), [#749](https://github.com/eirhop/favn/pull/749) |
 | Affected areas | Orchestrator run lifecycle, recovery, configuration and operator reads; PostgreSQL ownership, connection budgets and transactions; recovery operator workflow |
-| Approved plan commit | Recorded in the immediate PR-number update after this baseline is committed |
+| Approved plan commit | [8e601372897f5507e2d2262b80bdb9008f5b22f4](https://github.com/eirhop/favn/commit/8e601372897f5507e2d2262b80bdb9008f5b22f4) |
 | Last updated | 2026-09-22 |
 
 ## One-minute summary
@@ -707,7 +707,7 @@ None yet; implementation has not started.
 | --- | --- | --- |
 | RC17 fault/control probes | Two passed: ~3-second lock timeout recovered; ~32-second simulated callback delay exposed expiry and broken handoff | Prior diagnostic evidence; no proof of the proposed implementation |
 | Source/lock-order review | Current paths inspected; proposed paths require implementation tests | Static analysis |
-| Record links, Markdown and Mermaid | Ten local links resolve; whitespace check is clean; both diagrams rendered and visually inspected locally. GitHub rendering will be checked after the baseline is pushed. | Documentation validation only |
+| Record links, Markdown and Mermaid | Ten local links resolve; whitespace check is clean; both diagrams rendered and were visually inspected locally and on GitHub at the approved planning commit. No diagram correction was required. | Documentation validation only |
 | Astra Max plan review | Approved after two rounds of corrections; no remaining findings | Independent design review, not runtime qualification |
 
 ### Not verified
