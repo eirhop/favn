@@ -48,7 +48,7 @@ defmodule Favn.SQL.Retry do
   end
 
   defp do_run(fun, opts, %Policy{} = policy, sleep_fun, random_fun, attempt, delays) do
-    case call(fun) do
+    case call_before_deadline(fun, opts) do
       {:ok, _value} = ok ->
         ok
 
@@ -57,9 +57,15 @@ defmodule Favn.SQL.Retry do
 
         if retry?(classification, attempt, policy) do
           delay = Policy.delay_ms(policy, classification, attempt, random_fun)
-          emit_retry_attempt(classification, attempt, delay)
-          sleep_fun.(delay)
-          do_run(fun, opts, policy, sleep_fun, random_fun, attempt + 1, [delay | delays])
+
+          if time_remaining?(opts, delay) do
+            emit_retry_attempt(classification, attempt, delay)
+            sleep_fun.(delay)
+            do_run(fun, opts, policy, sleep_fun, random_fun, attempt + 1, [delay | delays])
+          else
+            {:error,
+             attach_retry_details(error, classification, attempt, policy, Enum.reverse(delays))}
+          end
         else
           {:error,
            attach_retry_details(error, classification, attempt, policy, Enum.reverse(delays))}
@@ -68,6 +74,26 @@ defmodule Favn.SQL.Retry do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  defp time_remaining?(opts, delay) do
+    case Keyword.get(opts, :deadline) do
+      %Favn.SQL.Deadline{} = deadline -> Favn.SQL.Deadline.remaining_ms(deadline) > delay
+      _ -> true
+    end
+  end
+
+  defp call_before_deadline(fun, opts) do
+    if time_remaining?(opts, 0),
+      do: call(fun),
+      else:
+        {:error,
+         %Error{
+           type: :operation_timeout,
+           operation: :connect,
+           message: "SQL bootstrap deadline expired",
+           retryable?: false
+         }}
   end
 
   defp call(fun) do

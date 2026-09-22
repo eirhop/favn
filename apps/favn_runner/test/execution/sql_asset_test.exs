@@ -628,6 +628,48 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     assert work.trigger.window == requested_window
   end
 
+  test "prepared work keeps its absolute SQL deadline through delayed input preparation" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.CheckedSQLAsset, :asset}
+    version = register_checked_sql_manifest!(ref, [], nil, nil)
+
+    work =
+      version
+      |> work_for(ref, "prepared_deadline")
+      |> Map.put(:deadline_at, DateTime.add(DateTime.utc_now(), 50, :millisecond))
+
+    [asset] = version.manifest.assets
+    context = %Favn.Run.Context{run_id: work.run_id}
+
+    assert {:ok, _definition, _context, opts} =
+             Favn.SQLAsset.Runtime.prepare_manifest_execution(
+               asset,
+               execution_package_for(version),
+               version,
+               work,
+               context
+             )
+
+    deadline = Keyword.fetch!(opts, :deadline)
+    Process.sleep(60)
+    assert Favn.SQL.Deadline.expired?(deadline)
+    parent = self()
+
+    assert {:error, _} =
+             Favn.SQLAsset.MaterializationRetry.run(opts, fn attempt_opts ->
+               assert Keyword.fetch!(attempt_opts, :deadline) == deadline
+
+               Favn.SQL.Client.with_session(
+                 :runner_sql_runtime,
+                 Keyword.put(attempt_opts, :registry_name, FavnRunner.ConnectionRegistry),
+                 fn _ ->
+                   send(parent, :late_managed_write)
+                 end
+               )
+             end)
+
+    refute_receive :late_managed_write
+  end
+
   test "runtime-input resolution honors the remaining work deadline" do
     ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
 

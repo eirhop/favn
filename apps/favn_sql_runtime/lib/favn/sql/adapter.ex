@@ -20,6 +20,12 @@ defmodule Favn.SQL.Adapter do
   normalized errors so shared retry logic uses capacity backoff. Unknown outcome
   or commit-state errors must remain non-retryable.
 
+  An adapter may issue `:transaction_conflict` only with native proof that the
+  entire transaction was rejected and rollback cleanup succeeded or confirmed no
+  active transaction. Preserve the commit stage and native cause, and report
+  `details.transaction_outcome: :rolled_back`. This does not authorize generic
+  callback replay; only a separately qualified managed caller may retry.
+
   An adapter may declare operation atoms in
   `extensions.pool_safe_after_success` for always-controlled operations, or in
   `extensions.pool_safe_when_requested` for operations that are safe only when

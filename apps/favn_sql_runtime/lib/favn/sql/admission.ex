@@ -40,6 +40,8 @@ defmodule Favn.SQL.Admission do
   def acquire_session(policy, opts \\ [])
 
   def acquire_session(%ConcurrencyPolicies{} = policies, opts) when is_list(opts) do
+    policies = bound_policies(policies, opts)
+
     case required_catalogs(opts) do
       [] ->
         acquire_unscoped_session(policies, opts)
@@ -51,7 +53,9 @@ defmodule Favn.SQL.Admission do
     end
   end
 
-  def acquire_session(%ConcurrencyPolicy{scope: scope} = policy, _opts) do
+  def acquire_session(%ConcurrencyPolicy{scope: scope} = policy, opts) do
+    policy = bound_policy(policy, opts)
+
     cond do
       not permit_required?(policy, :connect, nil) ->
         nil
@@ -122,6 +126,30 @@ defmodule Favn.SQL.Admission do
 
   @spec adopt_session(term()) :: {:ok, term()} | {:error, term()}
   def adopt_session(lease), do: transfer_session(lease, self(), :held)
+
+  defp bound_policies(policies, opts),
+    do: %{
+      policies
+      | default: bound_policy(policies.default, opts),
+        catalog:
+          Map.new(policies.catalog, fn {key, policy} -> {key, bound_policy(policy, opts)} end)
+    }
+
+  defp bound_policy(nil, _), do: nil
+
+  defp bound_policy(policy, opts) do
+    case Keyword.get(opts, :deadline) do
+      %Favn.SQL.Deadline{} = deadline ->
+        %{
+          policy
+          | admission_timeout_ms:
+              min(policy.admission_timeout_ms, max(Favn.SQL.Deadline.remaining_ms(deadline), 1))
+        }
+
+      _ ->
+        policy
+    end
+  end
 
   defp required_catalogs(opts) do
     opts
@@ -349,7 +377,11 @@ defmodule Favn.SQL.Admission do
     do: catalogs
 
   defp session_required_catalogs(%Session{required_catalogs: catalogs}, operation, _payload)
-       when operation in [:activate_generation, :discard_generation, :initialize_generation_marker],
+       when operation in [
+              :activate_generation,
+              :discard_generation,
+              :initialize_generation_marker
+            ],
        do: catalogs
 
   defp session_required_catalogs(%Session{required_catalogs: catalogs}, :query, payload) do

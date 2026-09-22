@@ -99,7 +99,7 @@ runner does not load the authoring module to execute checks.
 
 At runtime Favn:
 
-1. opens one adapter transaction and checks whether the owned target exists;
+1. opens an adapter transaction and checks whether the owned target exists;
 2. stages the rendered asset candidate once when a check uses `query()`;
 3. runs all `:before_materialize` checks in their declaration order;
 4. materializes that same staged candidate unless a check requests a no-op;
@@ -384,3 +384,7 @@ case rather than assuming the backend committed or rolled back.
 For the public authoring API, read `Favn.SQLAsset` and
 `Favn.SQLAsset.check/3`. For reusable SQL, read `Favn.SQL`. For the typed runtime
 outcome used in run metadata, read `Favn.SQL.CheckResult`.
+
+For eligible managed DuckLake writes, a proven rejected commit repeats staging
+and checks in a fresh transaction. Only final attempt results are retained. See
+[runtime catalog retry safety](sql-runtime-catalog.md) for eligibility and limits.

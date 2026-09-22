@@ -1364,7 +1364,29 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   end
 
   defp finalize_transaction_failure(%Conn{} = conn, %Error{} = error) do
-    case tx_rollback(conn) do
+    rollback = tx_rollback(conn)
+
+    if Favn.SQL.Adapter.DuckDB.ADBC.Rejection.commit?(error) and
+         Favn.SQL.Adapter.DuckDB.ADBC.Rejection.cleanup?(rollback) do
+      details =
+        error.details
+        |> Map.delete(:transaction_body_result)
+        |> Map.put(:transaction_outcome, :rolled_back)
+
+      details =
+        case rollback do
+          {:error, %{message: message}} -> Map.put(details, :rollback_reason, message)
+          :ok -> details
+        end
+
+      {:error, %{error | type: :transaction_conflict, retryable?: false, details: details}}
+    else
+      finish_rollback(error, rollback)
+    end
+  end
+
+  defp finish_rollback(error, rollback) do
+    case rollback do
       :ok ->
         outcome = if error.details[:transaction_stage] == :body, do: :rolled_back, else: :unknown
         {:error, %{error | details: Map.put(error.details, :transaction_outcome, outcome)}}
