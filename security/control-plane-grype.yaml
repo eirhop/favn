@@ -5,6 +5,16 @@
 # Fixed glibc, Perl, gzip and SQLite findings were removed on 2026-09-14;
 # the runtime snapshot now installs their vendor fixes. See security/README.md.
 ignore:
+  - vulnerability: CVE-2026-82560
+    namespace: debian:distro:debian:13
+    fix-state: not-fixed
+    reason: >-
+      Pod::Text is absent from the qualified images; both image contracts enforce
+      module absence. Custom Perl modules require reassessment. See security/README.md.
+    package:
+      name: perl-base
+      version: 5.40.1-6+deb13u1
+      type: deb
   # Temporary applicability assessment; guard expires on 2026-09-29.
   - vulnerability: CVE-2026-19499
     namespace: debian:distro:debian:13

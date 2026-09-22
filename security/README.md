@@ -6,6 +6,30 @@ findings, and machine-checked review deadline remain enforced. An exception is
 an applicability or residual-risk assessment, not a package patch or a claim
 that privileged/customized deployments are safe.
 
+## Absent POD formatter assessment, 22 September 2026
+
+[CVE-2026-82560](https://security-tracker.debian.org/tracker/CVE-2026-82560)
+affects `Pod::Text` before 6.1.1: formatting a malicious POD document can exhaust
+CPU and memory. Debian currently has no fixed package. Grype 0.116.0, database
+built `2026-09-22T06:30:41Z`, indirectly matches the Perl source package against
+binary package `perl-base 5.40.1-6+deb13u1`.
+
+The affected `Pod/Text.pm` is absent from published control-plane image
+`sha256:c1b0ed4d50aebe3c3c4cce5500012eb1f9d1a5823d0a37ca92eeadb426998301`:
+package ownership, filesystem inspection, and Perl's module search path all
+confirmed absence. Both control-plane and generic runner image contracts now
+reject `Pod/Text.pm` on Perl's search path before the exact images are scanned.
+This is an assessment of absent code, not a patched Perl or a general exemption
+for Perl vulnerabilities. Adding Perl modules, changing the search path, or
+customizing images requires reassessment.
+
+The independently reviewed exception requires this CVE, Debian 13, type `deb`,
+binary package `perl-base`, exact version `5.40.1-6+deb13u1`, and fix state
+`not-fixed`. Other packages and changed versions/fix states do not match. The
+High gate, scanning of unfixed findings, and shared **28 September 2026** review
+deadline remain unchanged. Review evidence is in
+[PR #746](https://github.com/eirhop/favn/pull/746).
+
 ## Temporary monetary-formatting exception, 15 September 2026
 
 [CVE-2026-19499](https://security-tracker.debian.org/tracker/CVE-2026-19499)

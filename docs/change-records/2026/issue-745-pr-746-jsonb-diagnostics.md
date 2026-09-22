@@ -263,3 +263,23 @@ that adding Perl modules or changing the search path invalidates this assessment
 No package, application, lifecycle, or deployment runtime change is proposed.
 Budget: at most 20 policy/contract lines plus 35 documentation lines. Final
 review will assess the exact exception and positive/negative contract probes.
+
+### Amendment outcome
+
+Implemented the approved exception and both image assertions: 14 policy/contract
+lines and 24 canonical documentation lines, within the amendment budget.
+The actual assertions, expanded using each script's heredoc form, passed on the
+published digest and rejected an injected `Pod/Text.pm` on `PERL5LIB` (exit 255)
+for both scripts. Bash syntax, exception-expiry validation, and diff checks pass.
+The full pre-amendment published control-plane contract also passed.
+
+The original application CI attempt hit a shared PostgreSQL sandbox connection
+loss in the existing inspection-timeout test. Independent review found no
+causal evidence against the diagnostic fix. That test passed on a fresh isolated
+database; the unchanged complete application CI rerun passed, including fast,
+slow, acceptance, Dialyzer, and quick checks. No timeout or lifecycle change was
+made. Final-head image qualification and application CI remain delivery gates.
+
+Astra (`gpt-6-astra`, xhigh) approved the implemented amendment with no actionable
+findings after independently rerunning both positive/negative probes. Final image
+CI must still qualify both newly built images.
