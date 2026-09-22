@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implemented |
 | Type | Feature and portability hardening |
 | Primary issue | Intentionally omitted with the repository owner's explicit authorization |
 | Pull request | Pending |
@@ -761,6 +761,66 @@ any further overrun under the same 25-percent/100-line rule.
 | 2026-09-22 | Repair shared supervisor cleanup while preserving Linux parent-death mechanism | Independent review identified discarded cleanup uncertainty and repeated termination |
 | 2026-09-22 | Create PR after implementation review | Explicit owner request; preserve the reviewed planning commit first |
 | 2026-09-22 | Remove repository-owned Python in the same PR | Explicit owner approval; amend and independently review the design before replacing the worker |
+| 2026-09-22 | Compare exact semantic artifact bytes in CI | The artifact has a canonical JSON encoder; independent Linux and macOS jobs can publish the same fixed fixture for a byte-for-byte comparison |
+| 2026-09-22 | Keep macOS qualification separate from the umbrella fast suite | The existing full Mac suite includes Linux production-target tests and database-authentication fixtures outside the native source-development contract; the native lane instead runs the owning lifecycle, semantic and DuckLake suites |
+| 2026-09-22 | Correct the authoring portability test's macOS fixture path | The test wrote a source via the `/var` temporary-directory alias, changed cwd to the `/private/var` physical path, then compiled by the aliased absolute path; compiling the same fixture by cwd-relative path preserves the two-workspace generated-code invariant without changing production DSL normalization; macOS CI now runs it |
+
+## Implementation outcome for final review
+
+The source-development alias now resolves to `127.0.0.1` in the operator,
+generated runner resolver and locator. The separate-node lifecycle acceptance
+test passed on the target Mac using a temporary PostgreSQL 18.6 cluster with a
+restricted runtime role. Existing local processes must be stopped and restarted
+after upgrade to rewrite their generated resolver state.
+
+The Python supervisor and both Python test programs have been removed. An
+`elixir_make`-built C executable supervises one isolated DuckDB child on Linux
+and macOS; the child never opens a customer database. The executable keeps the
+process-lifetime, deadline, signaling and reaping responsibility. Linux uses
+`PR_SET_PDEATHSIG`; Darwin uses a kqueue watcher thread that can kill its own
+child process even during a blocked library initializer. The native child sends
+a bounded provisional AST to Elixir. Elixir enforces the same closed grammar
+before approving binding. The supervisor emits success only after the child is
+reaped, and the Elixir caller accepts it only after a normal supervisor exit.
+The C ABI subset is pinned to DuckDB 1.5.5 with documented provenance; Linux
+continues accepting 1.5.2 and 1.5.5, while Darwin arm64 accepts 1.5.5.
+
+```mermaid
+flowchart LR
+    A[Elixir build caller] -->|bounded request| S[Native supervisor]
+    S -->|fork| W[Isolated DuckDB child]
+    W -->|provisional AST| S -->|AST| A
+    A -->|closed grammar verdict| S -->|approval| W
+    W -->|native type or error| S
+    S -->|waitpid and final receipt| A
+    D[Darwin kqueue watcher] -->|owner exit: self-kill| W
+    L[Linux parent-death signal] -->|owner exit: self-kill| W
+```
+
+The CI change pins the macOS 26 arm64 runner, DuckDB 1.5.5 universal library,
+DuckLake and PostgreSQL-scanner extensions, and starts native PostgreSQL 18.
+It runs native semantic, DuckLake and local lifecycle tests. A separate CI job
+compares canonical semantic artifact bytes generated on Linux and macOS from
+one fixed fixture. The repository guard rejects Python source or active Python
+invocations in Favn-owned paths. Production release identity remains Linux/amd64.
+
+### Baseline comparison and complexity
+
+The Python-free architecture follows the separately approved amendment. There
+is no new public DSL, persistence backend, migration, or production target.
+`git diff --numstat` including new files, excluding this record and generated
+artifacts, reports **1,009 production lines added / 492 deleted** and **1,307
+test, fixture, script, CI and canonical-documentation lines added / 293
+deleted**. All four counts are within the amended ranges. The authoring test
+correction, queued-receipt race fix and focused protocol/fault fixtures arose
+during native Mac review; none changes the public contract. There is no
+unexplained overrun or retained Python implementation.
+
+| Planned | Implemented | Reason and impact | Final reviewer verdict |
+| --- | --- | --- | --- |
+| Packaged native executable in the plugin | `elixir_make` builds the executable under plugin `priv`; source and Makefile appear in the Hex package file listing | `mix hex.build` cannot finish because this private umbrella app already lacks Hex publication metadata and has unpublished internal dependencies; isolated source compilation and CI are the relevant package checks | Astra accepted this documented private-package limitation; hosted CI must build the executable |
+| Native failure and protocol matrix | Blocked constructor/query owner loss, Elixir caller death, setup-arm failure, post-readiness Darwin watcher error, forced KILL after ignored TERM, injected cleanup uncertainty, one TERM and one KILL with no post-reap signal, queued final receipt after port exit, rejected grammar before native binding, missing ABI symbol/version, truncated and over-budget requests, delayed fragmented input/output, duplicate identity/ready/AST, oversized/truncated/trailing output, and path-with-spaces build are executable | The deterministic matrix covers the approved failure classes; it does not claim exhaustive scheduling interleavings or real operating-system `waitpid` error injection | Astra accepted the coverage and uncertainty semantics; a non-blocking fast-exit test race was corrected by passing captured PIDs |
+| Cross-host artifact parity before acceptance | Fixed canonical fixture and byte-compare CI job are implemented; a one-time historical validator probe below establishes the old DuckDB 1.5.5 artifact digest, and Linux/Mac CI comparison awaits the PR run | The owner explicitly requested review before PR creation, so hosted CI cannot provide final evidence before this review | Astra accepted the baseline provenance and CI gate; hosted cross-host parity remains required before merge |
 
 ## Verification evidence
 
@@ -774,21 +834,34 @@ any further overrun under the same 25-percent/100-line rule.
 | Independent mocked supervisor probes | Lost cleanup uncertainty and duplicate termination reproduced | In-memory behavior, not real PID-reuse damage |
 | Original Darwin feasibility experiment | Constructor-entry handshake and native watcher passed; independently rerun by Astra | Proves observation during blocked loading, not the replacement executable |
 | Native dependency compilation | Passed on macOS 26.5.1 with Elixir 1.20.4/OTP 29.1; dependency warnings recorded separately | Not full test/asset/source-lifecycle qualification |
-| Disposable native PostgreSQL 18.6 | Temporary cluster started | No restricted-role or integration qualification yet |
+| Disposable native PostgreSQL 18.6 | Temporary cluster started with restricted runtime role; used by the separate-node lifecycle acceptance | Temporary local test instance, not production deployment |
 | Partial Python lifecycle adaptation | Failed before native PID receipt; stopped when owner rejected Python-based approach | Superseded work, not a passing regression suite |
+| Python-free source guard | Passed on the target Mac; no tracked or untracked Python source or active invocation remained | Static source check, not proof about unrelated third-party dependencies |
+| Native worker build | `mix compile --warnings-as-errors` built C with `-Wall -Wextra -Werror` on macOS 26.5.1 arm64; target Elixir 1.20.4 and OTP 29.1 | Linux build awaits CI |
+| Native semantic, lifecycle and artifact tests | 31 passed together on macOS with pinned DuckDB 1.5.5 after the protocol/fault and malformed-option additions | Native plugin layer; Linux run awaits CI |
+| Separate-node source lifecycle | 1 acceptance test passed against restricted-role PostgreSQL 18.6 on the target Mac; start, reload, replacement, stop and restart observed | Test fixture, not every CLI command in a consumer project |
+| Native DuckLake/PostgreSQL | Temporary-directory installation of checksum-pinned DuckLake and PostgreSQL-scanner extensions; real table creation, insert and read returned `42.50` | Smoke fixture, not every catalog concurrency path |
+| Historical semantic parity | A one-time temporary probe imported the original worker from baseline commit `ff06fd4a` (worker SHA-256 `8d33b6d4a0a327e0b4e57a98e005d8b3b35107322285d77f8760cd892fafd283`) and called its original `native` validator directly on macOS 26.5.1 with DuckDB 1.5.5 from universal ZIP SHA-256 `7b5b8915cc382d0708636fe6385c0cdad5a61c9ff8ba2638b3e2141640783155`; the Python supervisor's Linux-only ownership was not run. Unchanged `FavnAuthoring.Semantic.Builder` and `Favn.Semantic.Artifact` produced `sm_fd4123e936c378c85114d0899074b9e8340c0ae3d8397ea930a1418957ccd7d7`, exact JSON SHA-256 `78100cda23beec7137157e95c6cefe57afd7399e080fb76fdb60badce237caea`. The replacement produced the same digest on the same fixture and now asserts both golden values in CI. No historical Python is retained in the repository. | Linux exact-byte comparison awaits CI; probe validates semantic output, not historical supervisor lifetime |
+| Resolver and locator tests | 8 focused tests passed, including seeding an old `127.0.0.2` resolver and verifying replacement plus idempotence; all 62 `favn_local` fast tests passed before this final extra test | Owning local layer; existing running nodes still require stop/restart |
+| Owning fast suites | `favn_duckdb_adbc`: 46 passed, 93 gated tests excluded; `favn_authoring`: 158 passed | Fast suites do not substitute for the gated native integration suite |
+| Authoring portability fixture | The failing `/var` versus `/private/var` aliased-source fixture was corrected to compile cwd-relative; owning test now passes | Test portability correction only; production DSL normalization unchanged |
+| Formatting, source checks and CI YAML | `mix format`, warning-free compile, Python guard, `git diff --check`, Ruby YAML parse and BSD date check passed before final review edits; rerun at freeze | Static checks only |
+| Full umbrella fast suite on target Mac | Not green: Linux production-target crash fixture, PostgreSQL bootstrap authentication fixtures on a trust-authenticated disposable cluster, and storage contention assertions failed; the in-scope authoring path-portability fixture was corrected and passed; targeted changed-code suites passed | Remaining failures do not establish a regression in native development; full Mac suite is not claimed |
+| Hex package listing | Native C source, Makefile and Elixir grammar were included; build stopped on existing private-package metadata/internal-dependency constraints | Does not prove publishable Hex package |
 
 ### Not verified
 
-Restricted-role PostgreSQL setup, complete BEAM lifecycle, native
-ADBC/DuckLake behavior, the full Darwin failure matrix, cross-host artifacts,
-native CI, and production image builds on this Mac remain unverified. Mermaid
-rendering on GitHub awaits publication of a reviewed plan.
+Hosted macOS/Linux CI, exact cross-host artifact parity, Linux worker lifecycle
+regressions, exhaustive completion-race interleavings, complete
+consumer CLI use, production image builds, and Hex publication remain
+unverified. The native Mac source-lifecycle and DuckLake smoke paths above are
+verified. Mermaid rendering on GitHub awaits PR publication.
 
 ## Final review
 
 | Field | Result |
 | --- | --- |
-| Reviewer | Pending independent reviewer |
+| Reviewer | Independent Astra (`gpt-6-astra`) at xhigh reasoning, 2026-09-22 |
 | Comparison required | Approved baseline, implementation, actual complexity, deviations, docs, Linux evidence and native Mac evidence |
-| Findings and recheck | Pending implementation |
-| Verdict | Pending implementation |
+| Findings and recheck | Final review identified a non-blocking fast-exit race in test calls to `await_worker/4`; production had already retained the initial PID. Tests now pass captured PIDs to `await_worker/5`; 31 native tests passed again, and Astra rechecked the correction and this outcome record with no further findings. |
+| Verdict | Astra approved the implementation with no blocking findings. Hosted Linux/macOS tests and exact-byte parity must pass before merge. |

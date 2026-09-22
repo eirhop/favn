@@ -44,7 +44,7 @@ defmodule Favn.MultiAssetPortabilityTest do
     File.write!(source_path, source)
 
     File.cd!(root, fn ->
-      assert [{@module, _beam}] = Code.compile_file(source_path)
+      assert [{@module, _beam}] = Code.compile_file("lib/portable_consumer.ex")
       {apply(@module, :__favn_assets__, []), apply(@module, :__favn_assets_raw__, [])}
     end)
   end

@@ -21,7 +21,27 @@ defmodule FavnLocal.DistributionTest do
 
     assert File.read!(path) == """
            {lookup, [file, native]}.
-           {host, {127, 0, 0, 2}, ["favn-local.test"]}.
+           {host, {127, 0, 0, 1}, ["favn-local.test"]}.
            """
+  end
+
+  test "replaces an existing old loopback resolver idempotently", %{test: test} do
+    root_dir =
+      Path.join(
+        Path.expand("../../../_build/test-artifacts", __DIR__),
+        "#{test}_#{System.unique_integer([:positive])}"
+      )
+
+    path = Path.join([root_dir, ".favn", "local", "inetrc"])
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(path, "{host, {127, 0, 0, 2}, [\"favn-local.test\"]}.\n")
+    on_exit(fn -> File.rm_rf(root_dir) end)
+
+    assert {:ok, ^path} = Distribution.write_runner_resolver(root_dir)
+    updated = File.read!(path)
+    assert updated =~ "{127, 0, 0, 1}"
+    refute updated =~ "{127, 0, 0, 2}"
+    assert {:ok, ^path} = Distribution.write_runner_resolver(root_dir)
+    assert File.read!(path) == updated
   end
 end

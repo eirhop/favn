@@ -118,12 +118,20 @@ this version; publish a business-date column when needed.
 
 ## Build and inspect
 
-Use Linux with Python 3 and an installed supported DuckDB shared library through
-the `:favn_duckdb_adbc` plugin. Native validation uses an isolated one-shot process,
+Use Linux with DuckDB 1.5.2 or 1.5.5, or native macOS 26 arm64 with DuckDB 1.5.5,
+and an installed DuckDB shared library through the `:favn_duckdb_adbc` plugin.
+Build the plugin with a C compiler and Make (Xcode Command Line Tools on macOS).
+Favn does not require Python. Native validation uses an isolated one-shot process,
 not a production data connection. It does not download extensions or drivers.
 Configure the installed driver using the plugin's normal driver configuration or
 `DUCKDB_ADBC_DRIVER`. Unsupported environments and validation/cleanup failures
 produce no artifact.
+
+On macOS, a debugger or `SIGSTOP` that suspends the entire native worker also
+suspends its owner-death watcher. If its supervisor exits while the worker is
+stopped, the worker can terminate only after it is resumed; treat an interrupted
+build as cleanup-unconfirmed until the process has exited. This limitation does
+not affect an ordinary blocked DuckDB load or query.
 
 ```sh
 export MIX_BUILD_PATH=_build_semantic

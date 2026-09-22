@@ -13,6 +13,8 @@ defmodule FavnDuckdbADBC.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       test_ignore_filters: [~r/test\/support\//],
+      compilers: [:elixir_make] ++ Mix.compilers(),
+      package: [files: ["lib", "mix.exs", "Makefile", "c_src", "README.md"]],
       deps: deps()
     ]
   end
@@ -29,7 +31,8 @@ defmodule FavnDuckdbADBC.MixProject do
       internal_dep(:favn_authoring, "../favn_authoring", only: :test),
       internal_dep(:favn_azure, "../favn_azure", only: :test),
       internal_dep(:favn_test_support, "../favn_test_support", only: :test),
-      {:adbc, "~> 0.12"}
+      {:adbc, "~> 0.12"},
+      {:elixir_make, "~> 0.9", runtime: false}
     ]
   end
 
