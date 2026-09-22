@@ -27,6 +27,7 @@ defmodule Favn.SQL.Error do
           | :admission_timeout
           | :pool_timeout
           | :operation_timeout
+          | :transaction_conflict
           | :catalog_conflict
           | :catalog_integrity_failure
           | :catalog_schema_conflict
@@ -42,6 +43,53 @@ defmodule Favn.SQL.Error do
           details: map(),
           cause: term()
         }
+
+  @doc "True only for an adapter-issued rejected transaction without contradictory uncertainty."
+  @spec rejected_transaction?(term()) :: boolean()
+  def rejected_transaction?(
+        %__MODULE__{
+          type: :transaction_conflict,
+          operation: :transaction,
+          details: %{transaction_outcome: :rolled_back, transaction_stage: :commit}
+        } = error
+      ),
+      do: not uncertain?(error)
+
+  def rejected_transaction?(_), do: false
+
+  defp uncertain?(%__MODULE__{type: :operation_timeout}), do: true
+  defp uncertain?(%_{} = value), do: uncertain?(Map.from_struct(value))
+
+  defp uncertain?(value) when is_map(value) do
+    Enum.any?(value, fn
+      {key, type}
+      when key in [:type, "type"] and type in [:operation_timeout, "operation_timeout"] ->
+        true
+
+      {key, outcome} when key in [:transaction_outcome, "transaction_outcome"] ->
+        outcome in [:unknown, "unknown"]
+
+      {key, true} when key in [:unknown_outcome?, "unknown_outcome?"] ->
+        true
+
+      {key, classification}
+      when key in [:classification, "classification"] and
+             classification in [
+               :unknown_commit_state,
+               :unknown_outcome_timeout,
+               "unknown_commit_state",
+               "unknown_outcome_timeout"
+             ] ->
+        true
+
+      {_, child} ->
+        uncertain?(child)
+    end)
+  end
+
+  defp uncertain?(value) when is_list(value), do: Enum.any?(value, &uncertain?/1)
+  defp uncertain?(value) when is_tuple(value), do: value |> Tuple.to_list() |> uncertain?()
+  defp uncertain?(_), do: false
 
   @sensitive_key_parts ~w(password passwd token secret credential api_key access_key dsn metadata data_path account_name)
 

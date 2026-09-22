@@ -442,11 +442,42 @@ qualification is separate from local and CI evidence.
 
 ## Implementation outcome
 
-Not started. This change contains the plan and its independent review only.
+Implemented native rejection classification, the optional native qualification
+callback, a single owned session deadline, and the four-attempt managed runner
+loop. Ordinary checked writes, combined append and group replacement use this
+boundary. Group rendering is retained outside retries. Rejected attempts discard
+body/check results. Replacement acquisition failures retain the safe prior write
+outcome while preserving their resource failure category and preventing outer
+node retry. Known completion reaches the guard before cleanup.
+
+Canonical runtime-catalog/check documentation and the adapter error contract are
+updated. The closed codec recognizes the new bounded diagnostics. No schema or
+runner contract version change is needed: the diagnostics travel through the
+existing normalized error envelope.
+
+The proposed behavior diagram above also describes the final behavior; the
+implementation adds no new state or durable owner. Astra review corrections
+retain the original native failure proof, veto normalized nested timeout
+errors, preserve pre-admission no-write outcomes, and reap blocked native
+children before a scoped timeout returns. Retry telemetry includes bounded
+publication/run/step/asset identity, attempt, delay, remaining budget and conflict
+type; it contains no SQL or parameters.
+
+Independent final review and exact-head CI qualification are in progress.
 
 ## Deviations from the approved plan
 
-None. Implementation has not started.
+| Deviation | Reason and impact |
+| --- | --- |
+| Extract the session owner into internal `SessionScope` rather than adding another receive loop directly to `Client` | Names the lifetime contract and keeps the already large client readable; uses the existing monitored-guard pattern. |
+| Scoped sessions are discarded after success as well as rejection | Native handles remain children of the short-lived owner. Returning those handles to idle storage would require a new ownership transfer; fresh scope acquisition preserves the approved lifetime guarantee. This adds connection/bootstrap cost per managed asset. |
+| Dispose native resources in the scope owner before pool checkin | Existing pool checkin performs disconnect synchronously in its GenServer. Doing native disposal first keeps slow cleanup under the scope deadline; existing idempotent pool discard remains the final cleanup path. |
+| Scoped pool identity is separate from ordinary idle sessions | Prevents borrowing a handle whose native parent belongs to a previous owner. The existing admission gate still enforces catalog capacity. |
+| Scoped inner-operation watchdogs report to the lifetime guard | The guard retains native resource monitors and kills/reaps blocked children before returning. Existing operation deadlines and telemetry remain active. |
+| Full lifecycle evidence is composed across native runner and PostgreSQL tests | Native PostgreSQL-backed DuckLake regression runs the actual managed runner path; the existing PostgreSQL lifecycle fixture injects the terminal rejected-commit shape after a confirmed transaction rollback. It proves durable settlement with node retries enabled, not a single native-to-control-plane end-to-end run. |
+
+The approved plan above is unchanged. These implementation choices and proof
+boundaries require confirmation in final review.
 
 ## Decision log
 
@@ -462,11 +493,55 @@ None. Implementation has not started.
 | Three-process native reproduction | 3/3 independent writes; 1/3 with shared guard; both rejected transactions succeeded fresh | Native mechanism only, not Favn lifecycle qualification |
 | Record links, diagrams and whitespace | All local links resolve; no whitespace errors; both diagrams render in GitHub's Mermaid renderer and were visually inspected | Documentation validation only |
 
+| Focused adapter rejection tests | 36 passed | Exact native error and cleanup qualification; negative cleanup and lost-ack behavior |
+| SQL runtime fast tests | 139 passed | Scope acquisition/admission/completion/cancellation, pool/admission bounds and existing SQL behavior |
+| Runner fast tests | 287 passed; final retry/execution subset 61 passed | Bounded retry and existing runtime behavior |
+| Existing native runtime-catalog tests | 36 passed | Table, window, combined append, groups and publication regressions |
+| New native concurrent runner regression | 2 passed | Three independent owners, cold and warm rounds: 3/3 success, six transaction attempts in each round; actual ADBC partial-allocation cleanup; preserved exact native signature, lost acknowledgement, later contradictory uncertainty, append and group retry without duplicate rows or receipts |
+| PostgreSQL lifecycle fixture | 2 passed | Known rollback and exhausted conflict settle task/claim/run, preserve independent work, release ownership; node max attempts is three |
+| Native pins | DuckDB 1.5.5; DuckLake `d8a1881e`; postgres scanner `41223e5`; PostgreSQL 18 | Local disposable database only |
+| Test-tag guard | Passed | New native regressions use the existing CI-covered `adbc_integration` tier |
+
+| Core result codec | 30 passed | New bounded diagnostics survive the closed codec |
+| Acceptance subset | 2 passed | Owning public SQL acceptance checks |
+| Compile, format and test-tier guard | Passed | Warnings treated as errors; native test added to explicit CI file list |
+| Full fast suite | All backend apps passed; View 839/840 | View teardown exited during `GenServer.stop`; unchanged file passed 5/5 on targeted rerun. An earlier broad run hit two other timing failures; both passed targeted reruns. No claim of a fully green local umbrella run. |
+| Final scope/qualification subset | 13 passed, including independent reviewer execution | Blocked trapping native child is dead before timeout returns; nested normalized timeouts veto replay |
+
+### Actual complexity
+
+Counts use `git diff -w` against the implementation base, excluding this record,
+dependency links and formatter-only indentation. The native acceptance fixture is
+counted in slice 4; the shared SQL error/qualification matrix is counted in slice 1.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 145 | 37 | 122 | 3 |
+| 2 | 292 | 8 | 274 | 0 |
+| 3 | 282 | 43 | 258 | 0 |
+| 4 | 8 | 0 | 593 | 9 |
+
+Slice 2 adds explicit resource monitors and the acknowledged admission gate to
+close the demonstrated native-child lifetime race. Its deletion count is lower
+because ordinary SQL operations retain their existing lifecycle.
+Slice 3 exceeds its production ceiling because group rendering must stay outside
+replay, pre-admission outcomes must remain safe, and publication qualification
+and telemetry are explicit. It replaces the old managed transaction call sites;
+there is no parallel managed retry path. Supporting deletions in slices 1–3 are
+lower because these are new regressions alongside existing coverage, not rewrites.
+Slice 4 exceeds its supporting ceiling to prove native cold/warm concurrent
+commits, lost acknowledgement, contradictory later evidence, combined append,
+group replacement and partial-native cleanup in the actual runner path. The
+existing durable lifecycle fixture is parameterized rather than duplicated;
+its formatter-only indentation is excluded. These overruns add proof and required
+failure semantics, not new product scope.
+
 ### Not verified
 
-The retry implementation, Favn lifecycle convergence, final CI, sustained-load
-throughput, and a deployment containing this fix are not yet verified.
+Final CI, sustained-load throughput, and a deployment containing this fix remain
+unverified. Native-to-control-plane behavior is qualified by composed tests as
+described above; a single deployed end-to-end test has not been performed.
 
 ## Final review
 
-Pending implementation; plan approval is not implementation approval.
+Astra xhigh implementation review requested; verdict pending.

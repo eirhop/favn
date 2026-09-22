@@ -182,3 +182,18 @@ selects candidate metadata inside the existing table-swap transaction. PostgreSQ
 uses existing target locks and the durable start barrier to fence older writers;
 it does not store or schedule target freshness updates. See the
 [runtime catalog guide](../../apps/favn/guides/sql-runtime-catalog.md).
+
+The internal `Client.with_session/3` scope owns acquisition, read-only retry
+qualification, an acknowledged callback-entry gate and cleanup under one
+absolute deadline. Operations remain in the scope owner. Completed results
+reach the guard before disconnect; stalled cleanup cannot erase a known commit
+or rejection. Before callback admission, interruption has no managed write;
+after admission it is unknown unless completion was reported. This helper is
+single-attempt and is not part of the authoring facade.
+
+`Favn.SQLAsset.MaterializationRetry` owns the bounded replay policy described in
+[the runtime catalog guide](../../apps/favn/guides/sql-runtime-catalog.md).
+`RuntimeCatalog.qualify_materialization_retry/4` defaults to unsupported when a
+backend lacks the callback. Native message recognition belongs to the adapter;
+shared code uses `Error.rejected_transaction?/1`. Ordinary client transaction
+callbacks never replay automatically.

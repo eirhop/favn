@@ -168,9 +168,22 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
       TestSupport.record({:commit, conn_ref})
 
       case TestSupport.mode(:commit_mode, :ok) do
-        :ok -> :ok
-        :error -> {:error, :commit_failed}
-        :raise -> raise "commit reply lost"
+        :ok ->
+          :ok
+
+        :error ->
+          {:error, :commit_failed}
+
+        :raise ->
+          raise "commit reply lost"
+
+        :rejected ->
+          {:error,
+           %Adbc.Error{
+             message:
+               "TransactionContext Error: Failed to commit: Failed to commit DuckLake transaction.\nTransaction conflict - attempting to insert into table with index \"10\" - but another transaction has deleted inlined data from it",
+             vendor_code: 0
+           }}
       end
     end
 
@@ -264,10 +277,39 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
   test "a raised commit is never relabeled as a rolled-back body failure" do
     TestSupport.put_mode(:commit_mode, :raise)
     {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+
     assert_raise RuntimeError, "commit reply lost", fn ->
       ADBC.transaction(conn, fn _ -> {:ok, :written} end, [])
     end
+
     refute Enum.any?(events(), &match?({:rollback, _}, &1))
+  end
+
+  test "native rejected commits retain proof only with qualified rollback cleanup" do
+    TestSupport.put_mode(:commit_mode, :rejected)
+    {:ok, conn} = ADBC.connect(resolved(), duckdb_adbc_client: FakeClient)
+
+    for cleanup <- [:ok, :no_active_transaction_error] do
+      TestSupport.put_mode(:rollback_mode, cleanup)
+
+      assert {:error, error} =
+               ADBC.transaction(conn, fn _ -> {:ok, :discarded} end,
+                 preserve_body_result_on_commit_error?: true
+               )
+
+      assert Error.rejected_transaction?(error)
+      assert error.details.classification == Adbc.Error
+      assert error.details.transaction_stage == :commit
+      assert error.message =~ "deleted inlined data"
+      refute Map.has_key?(error.details, :transaction_body_result)
+    end
+
+    for cleanup <- [:error, :no_active_transaction] do
+      TestSupport.put_mode(:rollback_mode, cleanup)
+      assert {:error, error} = ADBC.transaction(conn, fn _ -> {:ok, :discarded} end, [])
+      refute Error.rejected_transaction?(error)
+      assert error.details.transaction_stage == :rollback
+    end
   end
 
   test "commit failure can retain a bounded checked body result" do
