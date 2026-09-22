@@ -239,3 +239,27 @@ The computer-use runtime rejected this WSL workspace URI, so the initial visual
 check was delayed. Both unchanged diagrams were then rendered in a Linux headless
 browser using GitHub's live Mermaid renderer and visually inspected successfully
 before final review. No diagram syntax or semantic correction was needed.
+
+## Approved CI qualification amendment, 22 September 2026
+
+Final-head image CI failed with the new Grype database built
+`2026-09-22T06:30:41Z`. A scan of the published control-plane digest
+`sha256:c1b0ed4d50aebe3c3c4cce5500012eb1f9d1a5823d0a37ca92eeadb426998301`
+reproduced one unexcepted High finding: `perl-base 5.40.1-6+deb13u1`,
+[CVE-2026-82560](https://security-tracker.debian.org/tracker/CVE-2026-82560).
+Debian reports no fixed package. The affected code is `Pod::Text`, which is
+absent from that image: package ownership lookup and filesystem search found
+no `Pod/Text.pm`, and inspection of Perl's module search path confirmed absence.
+This establishes package-level overmatching for that image, not a patched Perl.
+
+Astra (`gpt-6-astra`, xhigh) independently approved this amendment before
+implementation. Approved narrow deviation: add an exception scoped
+to this CVE, Debian 13, binary package `perl-base`, exact version
+`5.40.1-6+deb13u1`, type `deb`, and `not-fixed` state. Keep the existing
+28 September review deadline and High gate. Both exact-image contracts must
+assert absence of `Pod/Text.pm` on Perl's module search path before scanning;
+final image CI must prove that condition for both newly built images. Document
+that adding Perl modules or changing the search path invalidates this assessment.
+No package, application, lifecycle, or deployment runtime change is proposed.
+Budget: at most 20 policy/contract lines plus 35 documentation lines. Final
+review will assess the exact exception and positive/negative contract probes.
