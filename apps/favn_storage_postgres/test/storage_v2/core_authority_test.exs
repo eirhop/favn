@@ -102,6 +102,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.RenewMaterializationClaim
   alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Commands.RenewRunOwnership
+  alias FavnOrchestrator.Persistence.Commands.RenewTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.ClaimDueSchedules
   alias FavnOrchestrator.Persistence.Commands.ClaimRunSubmissions
   alias FavnOrchestrator.Persistence.Commands.ClaimScheduleOccurrences
@@ -910,6 +911,167 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
+  @tag expired_combined_lock: true
+  test "recovery drains terminal siblings with an expired combined-window lock and an unknown write",
+       _fixture do
+    fixture = continuation_distinct_target_fixture!()
+
+    {run, _keys} =
+      create_continuation_pipeline_run!(fixture, 3, %{},
+        distinct_targets?: true,
+        combined_window?: true
+      )
+
+    # Durable terminal recovery must work without the live result router.
+    share_repo_sandbox!()
+    start_supervised!({FavnOrchestrator.ExecutionAdmission.Coordinator, []})
+    assert {:ok, first} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    original_task_ids = await_runner_task_ids!(fixture.workspace_id, run.id, 3)
+
+    :ok = :sys.suspend(first)
+    kill_run_owner!(fixture, run.id, first)
+
+    error = RunnerError.new(type: :commit_interrupted, outcome: :unknown, retryable?: false)
+
+    tasks =
+      for index <- 1..3 do
+        assert {:ok, task} = claim_asset_task(fixture, "expired-lock-#{index}")
+        assert task != nil
+        assert :ok = start_runner_task(task)
+
+        if task.payload.asset_ref == {MyApp.PrivateAsset, :private} do
+          assert :ok =
+                   finish_runner_task(task,
+                     outcome: :unknown,
+                     retry_class: :unknown_do_not_retry,
+                     error: error
+                   )
+        else
+          assert :ok = complete_asset_task(task, task.payload, false)
+        end
+
+        task
+      end
+
+    [failed] = Enum.filter(tasks, &(&1.payload.asset_ref == {MyApp.PrivateAsset, :private}))
+    lock = failed.orchestration_context.materialization_claim.target_operation_lock
+    assert lock != nil
+
+    guard_sql =
+      "SELECT effect_state, effect_task_id, effect_assignment_generation FROM favn_control.materialization_claims WHERE workspace_id=$1 AND effect_task_id=$2"
+
+    guard_args = [fixture.workspace_id, failed.task_id]
+    assert %{rows: [["outcome_unknown", _, _]] = guard} = SQL.query!(Repo, guard_sql, guard_args)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.target_operation_locks SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE workspace_id=$1 AND target_id=$2",
+      [fixture.workspace_id, lock.target_id]
+    )
+
+    assert %{rows: [["not_started", nil, fence]]} =
+             SQL.query!(
+               Repo,
+               "SELECT effect_state,effect_task_id,fencing_token FROM favn_control.target_operation_locks WHERE workspace_id=$1 AND target_id=$2",
+               [fixture.workspace_id, lock.target_id]
+             )
+
+    assert fence == lock.fencing_token
+
+    task_state_sql =
+      "SELECT task_id,assignment_generation,status FROM favn_control.runner_tasks WHERE workspace_id=$1 AND run_id=$2 ORDER BY task_id"
+
+    task_state_args = [fixture.workspace_id, run.id]
+    assert %{rows: task_state} = SQL.query!(Repo, task_state_sql, task_state_args)
+    assert Enum.all?(task_state, fn [_, _, status] -> status in ["succeeded", "unknown"] end)
+    assert {:ok, saved} = get_run(fixture, run.id)
+    assert saved.status == :running
+
+    # Exercise ownership renewal between the incremental recovery callbacks.
+    handler = {__MODULE__, :expired_lock_renewal, make_ref()}
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:favn, :persistence, :operation, :stop],
+        fn _, _, metadata, observer ->
+          if metadata.store == :runner_tasks and metadata.operation == :get and
+               metadata.result == :ok do
+            send(self(), :renew_storage_ownership)
+          end
+
+          if metadata.store == :run_ownership and metadata.operation == :renew_run do
+            send(observer, {:recovered_ownership_renewal, self(), metadata.result})
+          end
+        end,
+        self()
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    assert {:ok, recovered} =
+             RunServer.start_link(%{
+               run_state: saved,
+               version: fixture.version,
+               recovering?: true
+             })
+
+    Process.unlink(recovered)
+    monitor = Process.monitor(recovered)
+    assert_receive {:DOWN, ^monitor, :process, ^recovered, :normal}, 5_000
+    :telemetry.detach(handler)
+    assert_received {:recovered_ownership_renewal, ^recovered, :ok}
+
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :error
+    assert Enum.count(finished.result.node_results, &(&1.status == :ok)) == 2
+    assert run_event_count(fixture.workspace_id, run.id, "step_settled") == 3
+
+    assert Enum.sort(runner_task_ids(fixture.workspace_id, run.id)) ==
+             Enum.sort(original_task_ids)
+
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+    assert_runner_demand!(fixture, queued: 0, active: 0, outstanding: 0)
+    assert %{rows: ^guard} = SQL.query!(Repo, guard_sql, guard_args)
+    assert %{rows: ^task_state} = SQL.query!(Repo, task_state_sql, task_state_args)
+
+    assert {:ok, candidates} =
+             RunOwnership.claim_recovery_batch(fixture.workspace_context, "next-sweep",
+               unowned_grace_period_ms: 0
+             )
+
+    refute Enum.any?(candidates, &(&1.run_id == run.id))
+
+    assert {:error, %{details: %{reason_code: "target_write_outcome_unknown"}}} =
+             TargetOperationLockStore.acquire_many(%AcquireTargetOperationLocks{
+               workspace_context: fixture.workspace_context,
+               command_id: "replacement:" <> run.id,
+               target_ids: [lock.target_id],
+               operation_id: "replacement:" <> run.id,
+               operation_type: :materialization,
+               lease_owner: "replacement",
+               lease_duration_ms: 30_000,
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:error, %{details: %{reason_code: "target_write_outcome_unknown"}}} =
+             MaterializationStore.claim(%ClaimMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "replacement-claim:" <> run.id,
+               claim_key: "replacement-claim:" <> run.id,
+               deployment_id: fixture.deployment_id,
+               target_kind: :asset,
+               target_id: lock.target_id,
+               target_generation_id: fixture.private_generation.target_generation_id,
+               evidence_generation_id: fixture.private_generation.target_generation_id,
+               partition_key: Favn.Freshness.Key.latest(),
+               run_id: run.id,
+               owner_id: "replacement",
+               lease_duration_ms: 30_000,
+               occurred_at: DateTime.utc_now()
+             })
+  end
+
   test "target operation locks fence takeover and gate new materialization writes", fixture do
     target_ids = [fixture.target_id, fixture.target_id <> ":downstream"]
     occurred_at = DateTime.utc_now()
@@ -971,6 +1133,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       "UPDATE favn_control.target_operation_locks SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE workspace_id = $1",
       [fixture.workspace_id]
     )
+
+    assert {:error, %{kind: :fenced}} =
+             TargetOperationLockStore.renew_many(%RenewTargetOperationLocks{
+               workspace_context: fixture.workspace_context,
+               command_id: "expired-lock-renewal:" <> fixture.workspace_id,
+               operation_id: acquire.operation_id,
+               lease_owner: acquire.lease_owner,
+               locks:
+                 Enum.map(locks, &%{target_id: &1.target_id, fencing_token: &1.fencing_token}),
+               lease_duration_ms: 30_000,
+               occurred_at: DateTime.utc_now()
+             })
 
     assert {:error, %{kind: :conflict, details: %{reason_code: "target_operation_in_progress"}}} =
              MaterializationStore.claim(%{
@@ -17098,12 +17272,28 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       if Keyword.get(opts, :distinct_targets?, false) do
         private_ref = {MyApp.PrivateAsset, :private}
         old_key = keys.b
-        new_key = {private_ref, elem(old_key, 1)}
+        original_node = Map.fetch!(plan.nodes, old_key)
+
+        window =
+          if Keyword.get(opts, :combined_window?, false) do
+            RuntimeWindow.new_range!(
+              :day,
+              original_node.window.start_at,
+              DateTime.add(original_node.window.end_at, 1, :day),
+              original_node.window.anchor_key,
+              logical_window_count: 2
+            )
+          else
+            original_node.window
+          end
+
+        new_key = {private_ref, window.key}
 
         private_node = %{
-          Map.fetch!(plan.nodes, old_key)
+          original_node
           | ref: private_ref,
             node_key: new_key,
+            window: window,
             target_id: Favn.TargetIdentity.for_asset(private_ref),
             target_generation_id: fixture.private_generation.target_generation_id,
             evidence_generation_id: fixture.private_generation.target_generation_id,

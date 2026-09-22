@@ -400,6 +400,22 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
       [f.id]
     )
 
+    takeover = %C.AcquireTargetOperationLocks{
+      workspace_context: f.context,
+      command_id: "takeover",
+      target_ids: [command.write_target_id],
+      operation_id: "new-operation",
+      operation_type: :target_recovery,
+      lease_owner: "new-owner",
+      lease_duration_ms: 30_000,
+      occurred_at: DateTime.add(f.now, 62, :second)
+    }
+
+    assert {:error, %{details: %{reason_code: "target_write_in_progress"}}} =
+             FavnStoragePostgres.TargetOperationLocks.Store.acquire_many(takeover)
+
+    assert effect(f) == {"in_flight", assigned.task_id, 1}
+
     SQL.query!(
       Repo,
       "UPDATE favn_control.runner_tasks SET assignment_expires_at='1990-01-01' WHERE workspace_id=$1 AND task_id=$2",
@@ -435,19 +451,8 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
     assert effect(f) == {"outcome_unknown", assigned.task_id, 1}
     assert {:error, _} = Store.enqueue(marker_command(f, "competitor"))
 
-    assert {:error, _} =
-             FavnStoragePostgres.TargetOperationLocks.Store.acquire_many(
-               %C.AcquireTargetOperationLocks{
-                 workspace_context: f.context,
-                 command_id: "takeover",
-                 target_ids: [command.write_target_id],
-                 operation_id: "new-operation",
-                 operation_type: :target_recovery,
-                 lease_owner: "new-owner",
-                 lease_duration_ms: 30_000,
-                 occurred_at: DateTime.add(f.now, 62, :second)
-               }
-             )
+    assert {:error, %{details: %{reason_code: "target_write_outcome_unknown"}}} =
+             FavnStoragePostgres.TargetOperationLocks.Store.acquire_many(takeover)
 
     assert {:ok, _} = Store.enqueue(enqueue(f, "read-only"))
     assert {:ok, %{task_kind: :relation_inspection}} = Store.claim(claim(f, "reader"))
