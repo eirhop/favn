@@ -8,6 +8,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   alias Favn.Manifest.Version
   alias Favn.Contracts.RelationInspectionRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.ResourceOutcome
+  alias Favn.Resource.Ref
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerWork
   alias Favn.Contracts.RunnerTask.LeaseRenewal
@@ -90,6 +92,57 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
      workspace_context: workspace_context,
      platform_context: platform_context,
      now: now}
+  end
+
+  @tag jsonb_diagnostics: true
+  test "task error projection normalizes diagnostics without truncating resource outcomes",
+       fixture do
+    assert {:ok, _} = Store.enqueue(enqueue_command(fixture, "binary-error"))
+    assert {:ok, claimed} = Store.claim(claim_command(fixture, "binary-error", "binary-runner"))
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, claimed, "binary-start", :running))
+
+    outcomes =
+      for index <- 1..51 do
+        ResourceOutcome.new!(
+          resource: Ref.new!(:connection, "connection-#{index}"),
+          status: :failure,
+          category: if(index == 1, do: String.duplicate("c", 8_193), else: "backend")
+        )
+      end
+
+    error = %RunnerError{
+      type: :backend_execution_failed,
+      phase: nil,
+      reason: nil,
+      message: "commit\0failed",
+      details: %{cause: %{<<255>> => <<255>>, state: <<0, 0, 0, 0, 0>>}},
+      outcome: :unknown,
+      retryable?: false,
+      retry_after_ms: 123,
+      resource_outcomes: outcomes
+    }
+
+    command = %{
+      complete_command(fixture, running, "binary-complete", nil)
+      | outcome: :unknown,
+        retry_class: :unknown_do_not_retry,
+        error: error
+    }
+
+    assert {:ok, completed} = Store.complete(command)
+    assert completed.status == :unknown
+    assert completed.error["message"] == "commit\\u0000failed"
+    assert completed.error["details"]["cause"]["state"] == String.duplicate("\\u0000", 5)
+    assert completed.error["details"]["cause"]["<<255>>"] == "<<255>>"
+    assert completed.error["phase"] == nil
+    assert completed.error["reason"] == nil
+    assert completed.error["outcome"] == "unknown"
+    assert completed.error["retryable?"] == false
+    assert completed.error["retry_after_ms"] == 123
+    assert {:ok, ^outcomes} = ResourceOutcome.normalize_many(completed.error["resource_outcomes"])
+    assert {:ok, ^completed} = Store.complete(command)
   end
 
   for phase <- [:assigned, :preparing] do

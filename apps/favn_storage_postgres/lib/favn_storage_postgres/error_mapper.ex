@@ -33,6 +33,12 @@ defmodule FavnStoragePostgres.ErrorMapper do
     Error.new(:conflict, "transient database concurrency conflict", retryable?: true)
   end
 
+  def map(%Postgrex.Error{postgres: %{code: :untranslatable_character}}) do
+    Error.new(:invalid, "persistence diagnostic contains unsupported Unicode",
+      details: %{reason_code: "unsupported_unicode", sqlstate: "22P05"}
+    )
+  end
+
   def map(%DBConnection.ConnectionError{}) do
     Error.new(:unavailable, "database connection unavailable", retryable?: true)
   end

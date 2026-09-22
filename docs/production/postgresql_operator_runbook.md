@@ -511,6 +511,38 @@ requires a production-size restored snapshot, high-growth query-plan comparison,
 rollback/restore rehearsal, and explicit architecture approval. Storage V2 currently
 accepts PostgreSQL 18 only.
 
+## Backend diagnostics rejected as unsupported Unicode
+
+PostgreSQL JSONB cannot store NUL characters even when they arrive as legal JSON
+escapes. Favn renders NUL and invalid UTF-8 diagnostic keys and values as bounded
+text before persistence. Ordinary Unicode is preserved. If normalized keys
+collide, their values become `[DIAGNOSTIC KEY COLLISION]`; sensitive values remain
+redacted. Re-encoding saved diagnostics preserves unknown outcome and retry
+classification. A remaining PostgreSQL `22P05` rejection is reported as
+`unsupported_unicode`, without SQL, parameters, or raw database error text.
+
+For a run affected before this correction:
+
+1. Correct the triggering backend configuration separately and upgrade the
+   control plane. Keep the existing run and terminal task records.
+2. Let normal orphan-run recovery acquire the run after the old ownership lease
+   expires. Recovery reads the stored result; it must not resubmit the unknown
+   write. Check that the failed-step event is saved, active siblings finish,
+   and execution leases settle. Runner demand reaches zero only when no other
+   tasks remain queued or active.
+3. A settled run does not establish whether the external commit succeeded.
+   Its unknown-write hold must remain until the administrator completes the
+   [held-write resolution procedure](elastic_runners.md#resolve-a-held-write)
+   with the required evidence. Do not edit database statuses or automatically
+   rerun the write.
+4. If recovery attention persists, retain the run/task diagnostics and investigate
+   the reported phase. The encoding fix does not repair unrelated checkpoint,
+   ownership, or backend failures. Do not infer successful repair from zero
+   runner demand alone.
+
+No data migration is required. Rolling back the control-plane fix can reintroduce
+the diagnostic rejection on subsequent writes.
+
 ## Recovery receipt volume
 
 Recovery emits `[:favn, :runner_task_recovery, :tick]` once per executed tick,

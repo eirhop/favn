@@ -54,6 +54,56 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
            }
   end
 
+  test "normalizes binary diagnostics and key collisions stably without exposing sensitive values" do
+    long = String.duplicate("k", 8_192)
+
+    input = %{
+      "nul" => <<0, 0, 0, 0, 0>>,
+      "unicode" => "blå 🐟",
+      "invalid" => <<255>>,
+      "atom" => :"nul\0atom",
+      "tuple" => {:backend, :"state\0"},
+      "key\0" => 1,
+      "key\\u0000" => 2,
+      <<255>> => 3,
+      "<<255>>" => 4,
+      (long <> "a") => 5,
+      (long <> "b") => 6,
+      "password\0" => "first-secret",
+      "password\\u0000" => "second-secret",
+      (long <> "password") => "third-secret"
+    }
+
+    normalized = JsonSafe.data(input)
+    assert normalized["nul"] == String.duplicate("\\u0000", 5)
+    assert normalized["unicode"] == "blå 🐟"
+    assert normalized["invalid"] == "<<255>>"
+    assert normalized["atom"] == "nul\\u0000atom"
+    assert normalized["tuple"] == %{"module" => "backend", "name" => "state\\u0000"}
+
+    for error <- [
+          :"type\0",
+          %{type: :"type\0", message: "failed"},
+          %{__exception__: true, __struct__: :"type\0", message: "failed"}
+        ] do
+      assert JsonSafe.error(error)["type"] == "type\\u0000"
+    end
+
+    for key <- ["key\\u0000", "<<255>>", "password\\u0000", String.slice(long, 0, 8_189) <> "..."] do
+      assert normalized[key] == "[DIAGNOSTIC KEY COLLISION]"
+    end
+
+    expanded = JsonSafe.data(String.duplicate(<<0>>, 8_192))
+    assert byte_size(expanded) == 8_192
+    assert JsonSafe.data(expanded) == expanded
+    assert JsonSafe.execution_evidence(input) == normalized
+    assert JsonSafe.data(normalized) == normalized
+    assert normalized |> Jason.encode!() |> Jason.decode!() |> JsonSafe.data() == normalized
+    refute Jason.encode!(normalized) =~ "secret"
+    assert Enum.all?(Map.keys(normalized), &(byte_size(&1) <= 8_192))
+    assert JsonSafe.data(%{(long <> "password") => "secret"}) |> Map.values() == ["[REDACTED]"]
+  end
+
   test "normalizes tuples to lists except module name refs" do
     assert JsonSafe.data({:ok, 1, "two"}) == ["ok", 1, "two"]
 

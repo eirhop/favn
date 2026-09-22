@@ -9,6 +9,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   alias Favn.Window.Selection
   alias FavnOrchestrator.Redaction
 
+  @key_collision "[DIAGNOSTIC KEY COLLISION]"
   @max_depth 8
   @max_entries 50
   @max_string_bytes 8_192
@@ -39,16 +40,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
         key_to_string(key) in ["check_results", "contract_validation"]
       end)
       |> Enum.take(@max_entries)
-      |> Map.new(fn {key, child} ->
-        key_string = key_to_string(key)
-
-        normalized =
-          if sensitive_key?(key_string),
-            do: redact_sensitive_value(child),
-            else: data(child, key_string, @max_depth - 1)
-
-        {key_string, normalized}
-      end)
+      |> diagnostic_map(@max_depth - 1)
 
     ordinary
     |> maybe_put_assurance_field(value, :check_results, &check_results_to_dto/1)
@@ -83,7 +75,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
       "reason" => safe_existing_error_reason(value.reason),
       "details" => data(value.details, "details", @max_depth - 1),
       "retryable" => value.retryable?,
-      "outcome" => value.outcome,
+      "outcome" => scalar_string(value.outcome, nil),
       "redacted" => true,
       "truncated" => false
     }
@@ -94,16 +86,17 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def error(%{type: :missing_runtime_config} = value), do: runtime_config_diagnostic(value)
   def error(%{"type" => "missing_runtime_config"} = value), do: runtime_config_diagnostic(value)
 
-  def error(%{"kind" => kind, "message" => message, "reason" => reason, "type" => type} = value) do
+  def error(%{"kind" => kind, "message" => message, "type" => type} = value) do
     %{
       "kind" => scalar_string(kind, "error"),
       "type" => meaningful_error_type(type, value, kind),
       "message" => safe_error_message(message),
-      "reason" => safe_existing_error_reason(reason),
+      "reason" => safe_existing_error_reason(Map.get(value, "reason")),
       "redacted" => true,
       "truncated" => false
     }
     |> maybe_put_error_details(Map.get(value, "details"))
+    |> Map.merge(data(Map.take(value, ["phase", "outcome", "retryable"])))
   end
 
   def error(%{kind: kind} = value) do
@@ -142,7 +135,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     # itself on the next snapshot write instead of falling to the catch-all.
     %{
       "kind" => "error",
-      "type" => Atom.to_string(type),
+      "type" => scalar_string(type, "error"),
       "message" => safe_error_message(message || type),
       "reason" => safe_existing_error_reason(reason || Atom.to_string(type)),
       "redacted" => true,
@@ -154,7 +147,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def error(%{__exception__: true, __struct__: module} = exception) when is_atom(module) do
     %{
       "kind" => "error",
-      "type" => Atom.to_string(module),
+      "type" => scalar_string(module, "error"),
       "message" => safe_error_message(exception_message(exception) || exception),
       "reason" => safe_error_reason(exception),
       "redacted" => true,
@@ -222,18 +215,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp data(value, _key, depth) when is_map(value) do
     value
     |> Enum.take(@max_entries)
-    |> Map.new(fn {child_key, child_value} ->
-      key_string = key_to_string(child_key)
-
-      normalized_value =
-        if sensitive_key?(key_string) do
-          redact_sensitive_value(child_value)
-        else
-          data(child_value, key_string, depth - 1)
-        end
-
-      {key_string, normalized_value}
-    end)
+    |> diagnostic_map(depth - 1)
   end
 
   defp data(value, _key, depth) when is_list(value) do
@@ -243,7 +225,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   end
 
   defp data({module, name}, _key, _depth) when is_atom(module) and is_atom(name),
-    do: ref({module, name})
+    do: diagnostic_map(ref({module, name}), 1)
 
   defp data(value, _key, depth) when is_tuple(value) do
     value
@@ -256,7 +238,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp data(value, _key, _depth) when is_integer(value) or is_float(value), do: value
   defp data(value, _key, _depth) when is_boolean(value), do: value
   defp data(nil, _key, _depth), do: nil
-  defp data(value, _key, _depth) when is_atom(value), do: Atom.to_string(value)
+  defp data(value, _key, _depth) when is_atom(value), do: value |> Atom.to_string() |> truncate()
   defp data(value, _key, _depth), do: inspect_value(value)
 
   defp selection_expansion(:none), do: "none"
@@ -359,16 +341,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   defp check_metrics_to_dto(metrics) when is_map(metrics) do
     metrics
     |> Enum.take(@max_check_metrics)
-    |> Map.new(fn {key, metric} ->
-      key_string = key_to_string(key)
-
-      normalized =
-        if sensitive_key?(key_string),
-          do: redact_sensitive_value(metric),
-          else: data(metric, key_string, @max_depth)
-
-      {key_string, normalized}
-    end)
+    |> diagnostic_map(@max_depth)
   end
 
   defp check_metrics_to_dto(_metrics), do: %{}
@@ -466,9 +439,9 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     |> scalar_string("error")
   end
 
-  defp error_type(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
+  defp error_type(%{__struct__: module}) when is_atom(module), do: scalar_string(module, "error")
   defp error_type(value) when is_boolean(value), do: "boolean"
-  defp error_type(value) when is_atom(value), do: Atom.to_string(value)
+  defp error_type(value) when is_atom(value), do: scalar_string(value, "error")
   defp error_type(value) when is_map(value), do: "map"
   defp error_type(value) when is_tuple(value), do: "tuple"
   defp error_type(value) when is_list(value), do: "list"
@@ -478,7 +451,10 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
 
   defp scalar_string(value, _default) when is_binary(value), do: truncate(value)
   defp scalar_string(nil, default), do: default
-  defp scalar_string(value, _default) when is_atom(value), do: Atom.to_string(value)
+
+  defp scalar_string(value, _default) when is_atom(value),
+    do: value |> Atom.to_string() |> truncate()
+
   defp scalar_string(value, _default), do: inspect_value(value)
 
   defp atom_string(nil), do: nil
@@ -495,13 +471,28 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
     Enum.any?(@sensitive_key_fragments, &String.contains?(key, &1))
   end
 
+  defp diagnostic_map(entries, depth) do
+    Enum.reduce(entries, %{}, fn {key, value}, acc ->
+      original_key = key_to_string(key)
+      normalized_key = truncate(original_key)
+
+      normalized_value =
+        if sensitive_key?(original_key) or sensitive_key?(normalized_key),
+          do: redact_sensitive_value(value),
+          else: data(value, normalized_key, depth)
+
+      Map.update(acc, normalized_key, normalized_value, fn _ -> @key_collision end)
+    end)
+  end
+
+  defp redact_sensitive_value(@key_collision), do: @key_collision
   defp redact_sensitive_value(value) when is_boolean(value), do: value
   defp redact_sensitive_value(nil), do: nil
   defp redact_sensitive_value(_value), do: "[REDACTED]"
 
   defp truncate(value) when is_binary(value) do
     if String.valid?(value) do
-      truncate_valid(value)
+      value |> String.replace(<<0>>, "\\u0000") |> truncate_valid()
     else
       value
       |> inspect(limit: 20, printable_limit: @max_string_bytes)

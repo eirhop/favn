@@ -2,6 +2,7 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
   use ExUnit.Case, async: false
 
   alias Favn.Backfill.RangeResolver
+  alias Favn.Contracts.RunnerError
   alias Favn.Connection.CircuitPolicySet
   alias Favn.ExecutionPool.PolicySet
   alias Favn.Manifest
@@ -58,6 +59,91 @@ defmodule FavnOrchestrator.Storage.RunSnapshotCodecTest do
     assert restored.id == run.id
     assert restored.asset_ref == {__MODULE__.Asset, :asset}
     assert restored.status == :pending
+  end
+
+  test "preserves unknown runner error fields through snapshot and result round trips" do
+    version = manifest_version("mv_binary_error", __MODULE__.Asset)
+    assert {:ok, manifest_record} = ManifestCodec.to_record(version)
+    ref = {__MODULE__.Asset, :asset}
+
+    for reason <- [nil, "commit failed"] do
+      error = %RunnerError{
+        type: :backend_execution_failed,
+        phase: :materialize,
+        message: "commit failed",
+        reason: reason,
+        outcome: :unknown,
+        retryable?: false,
+        details: %{cause: %{state: <<0, 0, 0, 0, 0>>, vendor_code: 0}}
+      }
+
+      run = %{
+        run_state("run_binary_error", version, __MODULE__.Asset)
+        | error: error,
+          result: %{
+            asset_results: [
+              %AssetResult{
+                ref: ref,
+                stage: 0,
+                status: :error,
+                duration_ms: 0,
+                attempt_count: 1,
+                max_attempts: 1,
+                error: error
+              }
+            ],
+            node_results: [
+              NodeResult.new(%{
+                node_key: {ref, nil},
+                ref: ref,
+                status: :error,
+                duration_ms: 0,
+                attempt_count: 1,
+                max_attempts: 1,
+                error: error
+              })
+            ]
+          }
+      }
+
+      assert {:ok, first} = RunSnapshotCodec.encode_run(run)
+      # Older diagnostics can omit the optional reason entirely.
+      dto = Jason.decode!(first)
+      dto = if is_nil(reason), do: update_in(dto["error"], &Map.delete(&1, "reason")), else: dto
+
+      assert {:ok, decoded} =
+               RunSnapshotCodec.decode_run(
+                 %{
+                   run_blob: Jason.encode!(dto),
+                   manifest_version_id: version.manifest_version_id
+                 },
+                 manifest_record
+               )
+
+      assert {:ok, second} = RunSnapshotCodec.encode_run(decoded)
+      dto = Jason.decode!(second)
+
+      for diagnostic <- [
+            dto["error"],
+            hd(dto["result"]["asset_results"])["error"],
+            hd(dto["result"]["node_results"])["error"]
+          ] do
+        assert diagnostic["outcome"] == "unknown"
+        assert diagnostic["retryable"] == false
+        assert diagnostic["phase"] == "materialize"
+        assert diagnostic["details"]["cause"]["state"] == String.duplicate("\\u0000", 5)
+      end
+
+      assert {:ok, decoded_again} =
+               RunSnapshotCodec.decode_run(
+                 %{run_blob: second, manifest_version_id: version.manifest_version_id},
+                 manifest_record
+               )
+
+      assert {:ok, third} = RunSnapshotCodec.encode_run(decoded_again)
+      third_dto = Jason.decode!(third)
+      assert Map.take(third_dto, ["error", "result"]) == Map.take(dto, ["error", "result"])
+    end
   end
 
   test "recovery diagnostics survive metadata beyond the ordinary entry limit" do

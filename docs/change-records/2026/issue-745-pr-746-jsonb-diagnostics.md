@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#745](https://github.com/eirhop/favn/issues/745) |
 | Pull request | [#746](https://github.com/eirhop/favn/pull/746) |
@@ -152,7 +152,90 @@ the planned redaction and second-pass stability tests.
 
 ## Implementation outcome
 
-Not started. This request covers the planning record and independent review.
-Before implementation, publish the reviewed baseline and open the required draft
-PR. Record actual changes, deviations, size, verification, and independent final
-review here without rewriting the approved plan.
+The shared diagnostic codec now escapes NUL, renders invalid UTF-8, bounds keys,
+marks collisions, and preserves error classification on snapshot round trips.
+The PostgreSQL mapper reports a safe `unsupported_unicode` classification.
+The additional plain task-error projection normalizes diagnostic fields only.
+No lifecycle, concurrency, schema, typed-result, or backend configuration changed.
+
+The real PostgreSQL regression passes: a fresh RunServer reads a typed terminal
+unknown result that still contains the original NUL bytes, saves the failed step,
+preserves a running sibling, finishes the queued sibling, and settles the run and
+execution leases. Demand reaches zero. The original nonempty unknown-write guard
+survives and a replacement materialization claim is rejected.
+
+The operator procedure is in the
+[PostgreSQL operator runbook](../../production/postgresql_operator_runbook.md#backend-diagnostics-rejected-as-unsupported-unicode).
+Implementation and operational complexity remain low: existing boundaries and
+recovery behavior are reused.
+
+### Actual scope and complexity
+
+Counts exclude this record and compare against the pre-implementation tree.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 39 | 43 | 229 | 0 |
+| 2 | 6 | 0 | 16 | 0 |
+| 3 | 0 | 0 | 188 | 0 |
+
+Slice 1 exceeds the supporting-line upper budget by 69 lines: 53 lines cover the
+newly discovered task-error projection, including 51 resource outcomes and a long
+category that generic diagnostic normalization would truncate. Actual snapshot
+and PostgreSQL fixtures, including the reviewer-requested atom conversion cases,
+account for the remaining size. Production is smaller
+than the estimate; sharing the map normalizer removes three repeated mappings.
+Slice 3 remains within the allowed variance. No lifecycle implementation was added.
+
+## Verification evidence
+
+| Check | Result | Boundary |
+| --- | --- | --- |
+| Orchestrator fast app suite | 932 passed, 2 excluded | Local automated tests |
+| Event/snapshot/JSON-safe codec slice | 72 passed | Actual codec round trips |
+| Updated JSON-safe slice | 27 passed | Includes expanded NUL bounds and evidence projection |
+| PostgreSQL diagnostic and recovery regressions | 3 passed | Real PostgreSQL 18; fresh RunServer, typed stored result, siblings, leases, demand and write exclusion |
+| Broader affected PostgreSQL files | 253 passed, 3 excluded | Fresh isolated PostgreSQL 18; before final atom-path correction, subsequently covered by focused rerun |
+| Format, warnings-as-errors compile, test-tier guard | Passed | Static/build checks |
+| PR CI | [Published-head checks](https://github.com/eirhop/favn/pull/746/checks) are the delivery gate | Final-head qualification is required before handoff; local checks do not substitute for CI |
+
+The documented Docker setup was attempted; development bootstrap reported
+`unsafe_migrator_ownership` for the existing development database. Testing instead
+used the separate existing disposable `favn_test` database owned by the bootstrap
+role on port 5433; its documented test migration setup succeeded. Development
+ownership was not repaired or reset. The broader run on that pre-existing test
+database produced 15 projection/outbox failures. A rerun on a fresh, isolated
+PostgreSQL 18 container (`favn-745-postgres`, port 5545, disposable `favn_test`)
+passed all 253 selected tests. Subsequent PostgreSQL qualification uses that
+isolated container.
+
+No live customer environment repair, TLS configuration qualification, scale
+qualification, or fresh operating-system-process crash test is claimed. The
+recovery test uses distinct RunServer processes against real PostgreSQL.
+
+## Final review
+
+Astra xhigh compared the change with baseline `bda3dd60`, the approved deviation,
+and the evidence above. The first review found one P2: direct atom-to-error-type
+and two-atom diagnostic tuple conversions still bypassed normalization. Those
+paths now use the shared text/map normalizer; canonical identity references are
+unchanged. Codec and PostgreSQL coverage includes these cases. Astra xhigh
+rechecked the amended implementation, record, and passing test logs: approved,
+with no remaining actionable findings. Final-head CI remains a delivery gate.
+
+## Deviations from the approved plan
+
+The PostgreSQL recovery regression found that `RunnerTasks.Store.persisted_error/1`
+also bypasses `JsonSafe`: terminal completion itself rejects a NUL diagnostic in
+the plain task error column. Extend slice 1 to normalize only that projection's
+`type`, `phase`, `message`, `reason`, and `details`. Preserve outcome, retry fields,
+and the full semantic resource-outcome list. This adds a small boundary adapter
+using the same codec, without changing typed results or lifecycle behavior.
+Astra xhigh approved this addition before implementation, requiring a regression
+with more than 50 resource outcomes to prevent semantic truncation.
+
+GitHub's Markdown API rendered the published record with both Mermaid containers.
+The computer-use runtime rejected this WSL workspace URI, so the initial visual
+check was delayed. Both unchanged diagrams were then rendered in a Linux headless
+browser using GitHub's live Mermaid renderer and visually inspected successfully
+before final review. No diagram syntax or semantic correction was needed.
