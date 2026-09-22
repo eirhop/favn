@@ -20,7 +20,7 @@ defmodule FavnUmbrella.MixProject do
         :favn_test_support,
         :favn_view
       ],
-      version: "0.5.0-rc.15",
+      version: "0.5.0-rc.16",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
