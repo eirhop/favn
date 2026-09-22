@@ -1,4 +1,4 @@
-# Change Record: Native macOS arm64 development and semantic compilation
+# Change Record: Native macOS arm64 development and Python-free semantic compilation
 
 | Field | Value |
 | --- | --- |
@@ -7,15 +7,34 @@
 | Primary issue | Intentionally omitted with the repository owner's explicit authorization |
 | Pull request | Pending |
 | Related work | [Semantic compiler baseline](issue-718-pr-723-semantic-model.md); [production release boundary, issue 522](https://github.com/eirhop/favn/issues/522) |
-| Affected areas | `favn_local`, `favn_duckdb_adbc`, qualification scripts and CI, public and contributor documentation |
-| Approved plan commit | This reviewed planning commit; hash recorded in implementation outcome |
+| Affected areas | `favn_local`, `favn_duckdb_adbc`, Core semantic error classification, qualification scripts and CI, public and contributor documentation |
+| Approved plan commit | Original baseline `ff06fd4a49e0cf6ec1fdf2548cae926d17730843`; independently reviewed Python-removal amendment preserved in the next planning commit |
 | Last updated | 2026-09-22 |
 
 The owner requested full native semantic compilation as part of this work after
 the first independent review. This record omits the issue filename segment;
 rename it to `pr-<number>-macos-arm64-development.md` when a PR exists.
-The first draft was not approved. These revisions therefore update the proposed
-plan directly; an approved implementation baseline has not yet been established.
+The original plan is preserved below and in its approved baseline commit.
+The owner subsequently authorized removing all repository-owned Python code in
+this same PR. The [Python-removal amendment](#python-removal-amendment) supersedes
+the Python runtime, worker topology/build details, and estimates in the original
+plan following Astra xhigh's independent approval below. Do not implement the superseded Python-based
+Mac path. No separate issue is requested or created.
+
+## Current scope
+
+Make native Mac development work **without requiring Python anywhere in Favn's
+build, runtime, or maintained tests**. Preserve Linux support, semantic results,
+isolated native execution, bounded failure, and confirmed cleanup. This removes
+an existing Linux dependency as well as the proposed Mac prerequisite; it is not
+merely a macOS compatibility shim.
+
+The next sections retain the original approved plan for comparison. The amendment
+records the new design, added work, and required review separately.
+
+This is a requirement on Favn-owned code and supported workflows, not a promise
+to remove unrelated interpreters from users' machines or rewrite optional code
+inside third-party dependencies.
 
 ## One-minute summary
 
@@ -79,9 +98,9 @@ story. This revision makes that unresolved design an explicit gate.
 | Astra xhigh loopback probes on 2026-09-22 | `127.0.0.1` works; bind to `127.0.0.2` fails and wildcard-listener connection through it times out | Ephemeral TCP evidence, not a full BEAM lifecycle test |
 | [Source release verifier](../../../apps/favn_runner/lib/favn_runner/release_verifier.ex) | Darwin and arm64 source identity already exist; production requires Linux/amd64 | Target classification does not prove execution |
 | [Semantic compiler](../../../apps/favn_duckdb_adbc/lib/favn_duckdb_adbc/semantic_compiler.ex) | Linux-only prerequisite gate | No Darwin ownership implementation |
-| [Worker supervisor](../../../apps/favn_duckdb_adbc/lib/favn_duckdb_adbc/semantic_compiler/worker.py) | Linux parent-death mechanism and the common cleanup defects above | Requires fault-injection regressions |
+| [Worker supervisor at baseline](https://github.com/eirhop/favn/blob/ff06fd4a49e0cf6ec1fdf2548cae926d17730843/apps/favn_duckdb_adbc/lib/favn_duckdb_adbc/semantic_compiler/worker.py) | Linux parent-death mechanism and the common cleanup defects above | Requires fault-injection regressions |
 | Astra in-memory supervisor probes | Owner loss can report ordinary failure with cleanup unconfirmed; successful cleanup can invoke termination twice | No assertion that an unrelated real process was signaled |
-| [Existing lifecycle tests](../../../apps/favn_duckdb_adbc/test/semantic_compiler_lifecycle.py) | Linux success, timeout, caller loss, and supervisor death coverage | Linux `prctl` and `/proc` assertions cannot prove Darwin behavior |
+| [Existing lifecycle tests at baseline](https://github.com/eirhop/favn/blob/ff06fd4a49e0cf6ec1fdf2548cae926d17730843/apps/favn_duckdb_adbc/test/semantic_compiler_lifecycle.py) | Linux success, timeout, caller loss, and supervisor death coverage | Linux `prctl` and `/proc` assertions cannot prove Darwin behavior |
 | [CPython 3.9.6 loader](https://github.com/python/cpython/blob/v3.9.6/Modules/_ctypes/callproc.c#L1388) | Library loading cannot be assumed to release the GIL | Other Python versions must be inspected and qualified separately |
 | [CI](../../../.github/workflows/ci.yml) | Existing native qualification runs on Ubuntu with Linux DuckDB downloads | No Apple Silicon coverage |
 | [Local-development guide](../../../apps/favn/guides/local-development.md) | External PostgreSQL, host-native runner, no DNS or hosts-file setup | This is the intended contract, not proof that the current Mac path works |
@@ -501,14 +520,236 @@ freshly fetched `origin/main` at `3a44bc61` (RC17).
 
 ## Implementation outcome
 
-Pending. No implementation changes have been made in this task. Actual scope,
-per-slice additions/deletions, canonical-doc updates, and operational impact must
-be recorded here before final review.
+Implementation began against `ff06fd4a`: the working tree contains the loopback
+change, partial Python cleanup fixes, and Darwin helper/build/test integration.
+Those changes are uncommitted and are not a qualified implementation. They have
+been stopped for the owner-requested Python-removal amendment. Preserve the
+loopback work; replace the temporary Python-specific changes and guard dylib
+integration after the amendment is reviewed. Do not leave two worker paths.
+
+The original native ownership probe and dependency compilation passed. Neither
+proves the replacement executable, full source lifecycle, or cross-host parity.
+Actual implementation, final diff counts, and verification remain outstanding.
 
 ## Deviations from the approved plan
 
-No approved baseline exists. The revisions above address review findings before
-approval; later deviations must be recorded against the eventual baseline.
+| Baseline | Proposed deviation | Reason and impact | Review |
+| --- | --- | --- | --- |
+| Preserve Python supervisor and add Darwin guard dylib | Remove production Python worker and both Python test scripts; use Elixir validation and a packaged isolated native executable on both hosts | Explicit owner direction: users and contributors must not need a Python interpreter; larger native protocol/build and test migration scope | Approved by Astra xhigh; amendment below |
+| 65,536-byte worker receipt; parsed AST stays inside Python | Bounded provisional AST crosses to Elixir before binding, separate from the final receipt | Keep grammar policy in Elixir without adding a C JSON parser; requires explicit transport/state bounds and fail-closed tests | Approved by Astra xhigh |
+| Original provisional line budget and 12-20 days | Revised per-slice estimates below; original numbers remain intact above | Replaces existing implementation instead of extending it, and ports all Python tests | Approved as revised planning estimates; actual diff review still required |
+
+## Python-removal amendment
+
+### Intent and inventory
+
+The owner approved this scope change on 2026-09-22 after learning that semantic
+builds require an installed Python interpreter. Remove repository-owned Python
+source, inline Python programs, Python invocation/prerequisite checks, and active
+installation instructions. Historical records may explain the removed design;
+third-party dependencies, generated build trees, and Git history are not rewritten.
+Do not hide Python in an embedded interpreter, downloaded executable, or shell
+wrapper, and do not require it for Favn's maintained tests or qualification.
+
+The original baseline contains exactly three tracked Python files:
+
+| File under `apps/favn_duckdb_adbc` | Existing responsibility | Replacement |
+| --- | --- | --- |
+| `lib/favn_duckdb_adbc/semantic_compiler/worker.py` (334 lines) | Native loading, private database, grammar/offset checks, supervisor and cleanup | Elixir grammar validation plus bounded native executable |
+| `test/semantic_compiler_lifecycle.py` (106 lines) | Real timeout, owner-loss, supervisor-death and uncertain-cleanup tests | ExUnit driving the real executable and small native fault fixtures |
+| `test/semantic_compiler_macro.py` (134 lines) | SQL macro semantics, native plans, snapshots and type evidence | ExUnit using the existing ADBC test connection boundary |
+
+Also replace the inline Python programs in lifecycle ExUnit tests. Remove
+`:semantic_python_unavailable` from the plugin and Core's recognized errors;
+use existing start/platform failures and a bounded ownership-unavailable error
+where appropriate. Preserve the public validator result shape and artifact
+format. Update the canonical semantic guide, local setup, module docs, `Favn.AI`
+routing, Features, and contributor/CI instructions together.
+
+### Selected boundary and alternatives
+
+Keep expression policy in Elixir within `favn_duckdb_adbc`: closed node shapes,
+allowed functions, depth/aggregate/input limits, logical types, original-byte
+offsets, and composition provenance. Use Jason for bounded native AST decoding;
+do not create atoms from native input. Core remains the shared semantic contract
+owner, not the native-process implementation owner.
+
+Compile one small C executable with `elixir_make` for Linux and Darwin. It has
+one supervisor process and one forked native child; only the child dynamically
+loads the explicitly configured DuckDB library. The supervisor owns deadlines,
+caller-liveness observation, signaling, and `waitpid`. Link the Darwin watcher
+into this executable rather than building/loading the temporary guard dylib.
+Linux retains `PR_SET_PDEATHSIG`; Darwin retains the reviewed kqueue/native-thread
+mechanism and its explicit whole-process-suspension limitation.
+
+Calling ADBC in the main BEAM is rejected for this boundary: an Elixir Task
+cannot contain a native crash or establish process-level cleanup for a stuck
+NIF. A separate BEAM would preserve isolation but still need an OS ownership
+mechanism and a larger boot/code-path surface. Reimplementing the grammar or
+JSON parser in C would move policy out of Elixir and add unnecessary native
+parsing risk. Prefer the dedicated executable with a narrow protocol; this is
+not a general-purpose SQL service or reusable process-supervision framework.
+
+### Protocol and lifecycle
+
+```mermaid
+sequenceDiagram
+    participant E as Elixir validator
+    participant S as Native supervisor
+    participant W as Isolated DuckDB child
+    E->>S: Bounded request and owner pipe
+    S->>W: Fork and establish native ownership
+    W-->>S: Ready then serialized expression AST
+    S-->>E: Provisional bounded AST
+    E->>E: Validate closed grammar and exact offsets
+    E->>S: Accept or reject
+    S->>W: Bind permission only on accept
+    W-->>S: Type and runtime evidence, then exit
+    S->>S: Reap child exactly once
+    S-->>E: Final bounded receipt, or cleanup uncertainty
+```
+
+Use a versioned, length-prefixed binary protocol over the Port and native pipes.
+Use raw binary Port output and an incremental bounded frame decoder; do not let
+an unchecked native length field request a large allocation through packet mode.
+The initial request contains bounded driver path, escaped parse query, and
+synthetic `DESCRIBE` query constructed by Elixir; C reads lengths and byte fields,
+not JSON requests or shell commands. Reject embedded NULs, invalid lengths,
+unknown tags, duplicate/out-of-order messages, incomplete frames, and trailing
+payload. Only the fixed parse/approval/bind workflow is allowed. No dynamic
+customer database, file, extension, or arbitrary query service is introduced.
+
+The child opens a private in-memory DuckDB with external access and extension
+auto-install/load disabled, one execution thread, 128 MB memory limit, and the
+existing expression-depth bound. It parses first. The existing closed AST checks
+must succeed in Elixir before that same child may bind the expression against
+synthetic typed columns. A rejection initiates termination/cleanup and waits for
+confirmation before returning the validation error. Partial AST/type messages
+never authorize artifact publication.
+
+Transport limits are separate and explicit: at most 262,144 request bytes,
+2,000,000 serialized AST bytes (the existing internal AST limit), and 65,536
+final-receipt bytes. Accept at most one AST and one final receipt per invocation;
+allow at most one initial identity and one readiness message, with at most 1,024
+total framing/control bytes. The aggregate supervisor-to-BEAM byte ceiling is
+therefore 2,066,560. Permit only one accept/reject command after the AST. The AST is a provisional internal
+message, never an artifact field, log entry, or public result. Enforce lengths
+before allocation/copy. Before calling Jason, use a bounded linear lexical
+preflight that respects strings/escapes, limits JSON nesting to 512 and container
+count to 262,144, and checks the invocation deadline. Then decode and apply the
+existing semantic depth-64/node-shape rules; check the deadline again before
+approval. Do not rely on post-decoding AST checks to bound the JSON decoder.
+Preserve
+the SQL 65,536-byte, 64-input, 1,024-aggregate and offset limits.
+
+The supervisor uses nonblocking bounded pipe I/O and monotonic deadlines so a
+partial request, oversized output, blocked writer, or caller disappearing during
+AST transfer cannot bypass cleanup. Ignore `SIGPIPE` and handle `EPIPE` through
+the same cleanup path instead of allowing an output write to kill the supervisor.
+Keep ten seconds for startup, one shared
+five-second expression deadline including parse, Elixir approval, bind and native
+close, two seconds for TERM and three for KILL, within the 24-second outer bound.
+The startup deadline starts when the executable launches and includes initial
+request intake, fork, guard setup and native loading. No phase silently resets
+the budget or adds a separate request-intake timeout outside the total.
+
+All pipe ends have one owner. The supervisor never loads DuckDB; the native child
+closes the caller-facing descriptors and unused pipe ends before arming ownership
+and loading the library. Redirect native-child stdout/stderr away from the Port
+protocol (to the null device); only its dedicated result pipe carries bounded
+messages. Native diagnostics must not leak SQL or corrupt framing. Only the
+supervisor signals its unreaped direct child;
+the Darwin thread signals only itself. Setup and post-readiness watch failures
+fail closed. All final outcomes, including malformed data, rejection and owner
+loss, flow through one cleanup owner. A reap ends permission to signal that PID.
+Unconfirmed cleanup takes precedence over ordinary errors, includes only known
+process identity, prevents artifact publication, and never triggers retry.
+Elixir accepts success only after exactly one valid post-reap final receipt and
+normal supervisor exit. Trailing output, an invalid message sequence, or nonzero
+supervisor exit invalidates success; merely receiving a result is insufficient.
+
+Keep Linux DuckDB 1.5.2/1.5.5 acceptance and qualify Darwin arm64 on 1.5.5 as
+originally planned. Preserve `duckdb-semantic-v1` only if golden tests establish
+identical semantic evidence and artifact bytes; any intentional evidence change
+requires an explicit reviewed version decision, not silently reused identity.
+
+### Build and distribution
+
+Declare `elixir_make` directly and build the executable into `MIX_APP_PATH/priv`
+without a shared source-priv symlink. Resolve it from the installed app at runtime;
+package the C source and Makefile, retain executable mode, and verify a clean
+consumer build and isolated `MIX_BUILD_PATH`. Use checked, pinned DuckDB C API
+declarations from a pinned official public-header subset for the already-supported
+versions, with provenance and license; verify all required symbols on both Linux
+pins and the Darwin pin. Do not download headers or
+libraries during application startup. Record any vendored declarations/license
+and their maintenance owner rather than inventing an unversioned ABI.
+
+Users building the plugin need the platform C compiler and Make (Xcode Command
+Line Tools on Mac, normal native build tools on Linux), already consistent with
+the ADBC native dependency. A prebuilt release carries the executable; invoking
+semantic builds requires the supplied DuckDB library but no Python or build
+compiler at runtime. Unsupported platforms remain explicit failures, not
+silent in-process fallback. Production target remains Linux/amd64.
+
+### Verification and revised complexity budget
+
+Retain the original complete Mac source workflow, PostgreSQL/DuckLake, separate
+BEAM communication/adoption, and same-pin Linux/Mac artifact acceptance criteria.
+Add these replacement-specific gates:
+
+- Port every grammar and macro assertion, including malformed AST shapes,
+  Unicode byte offsets, composition origin checks, native query-plan equivalence,
+  null/zero denominators, and snapshot semantics. Do not delete coverage with the
+  Python files.
+- Freeze representative Linux 1.5.5 semantic artifact bytes from the original
+  baseline before deleting the worker; require replacement parity on Linux and
+  Darwin. Retain Linux 1.5.2 functional tests.
+- Exercise real blocked native constructors and queries, process crashes, ignored
+  TERM, caller/supervisor death at setup boundaries, watch failures, and completion
+  races through C fixtures/ExUnit. Inject failures only in test builds.
+- Test fragmented/truncated/oversized frames, slow input/output, repeated ready
+  or AST messages, rejection before binding, missing binaries/libraries/symbols,
+  unsupported versions, and cleanup uncertainty. Prove no post-reap signal,
+  leaked helper, silent deadline extension, or raw SQL/native-error logging.
+- Build/package/run on both hosts, including an isolated build path and a clean
+  environment with Python absent from `PATH`. CI asserts the native executable
+  exists and actually executes; native suites cannot silently skip.
+- Add a lightweight Elixir repository guard for tracked Python source and Python
+  invocation patterns, scoped to maintained code/scripts/workflows. Confirm the
+  repository inventory manually as well; do not present a text scan as a proof
+  about every third-party dependency or historical document.
+
+These replace the original estimates for planning, not the preserved baseline
+numbers. Counts are the eventual diff against `ff06fd4a`, excluding this record,
+generated artifacts, lockfiles and vendored upstream headers. Supporting counts
+include tests, fixtures, CI and canonical docs. Treat a new large C module or
+generic transport abstraction as review pressure rather than a target to fill.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| Portable local source lifecycle | 10-50 | 5-30 | 100-240 | 5-40 |
+| Python-free validator, native executable and packaging (replaces original slices 2-3) | 650-1,000 | 360-470 | 650-1,000 | 250-330 |
+| Native qualification, repository guard, CI, scripts and docs | 20-100 | 5-35 | 220-450 | 20-70 |
+| **Total** | **680-1,150** | **370-535** | **970-1,690** | **275-440** |
+
+Revised rough effort is **18-28 engineering days total**, not an additional
+18-28 days on top of the original estimate. The uncertainty is now the native
+transport/cleanup implementation and coverage migration rather than Python
+installation or feasibility of Darwin process observation. Review the actual
+diff against both budgets and explain the owner-approved scope expansion and
+any further overrun under the same 25-percent/100-line rule.
+
+### Amendment review
+
+| Field | Result |
+| --- | --- |
+| Request | Owner explicitly approved removal in this PR; no separate issue |
+| Reviewer | Independent Astra (`gpt-6-astra`), xhigh reasoning |
+| Findings addressed | Explicit rejection cleanup, shared deadline through approval/bind/close, raw bounded framing, SIGPIPE/EPIPE handling, native output isolation, pre-Jason work bounds, final receipt plus normal supervisor exit, pinned ABI provenance |
+| Recheck and verdict | Astra xhigh rechecked the actual amended record on 2026-09-22 and approved it as the replacement implementation baseline with non-blocking notes; no blocking plan findings remain. This is not implementation acceptance. |
+| Non-blocking note | Preserve historical Python evidence links using baseline-pinned source URLs before deleting the files; corrected in this amendment |
+| Remaining evidence | All replacement protocol, executable, packaging and parity tests; previous Python probe is feasibility evidence only |
 
 ## Decision log
 
@@ -519,6 +760,7 @@ approval; later deviations must be recorded against the eventual baseline.
 | 2026-09-22 | Replace prescribed watchdog with a gated design experiment | Independent review found unresolved lifetime and GIL constraints |
 | 2026-09-22 | Repair shared supervisor cleanup while preserving Linux parent-death mechanism | Independent review identified discarded cleanup uncertainty and repeated termination |
 | 2026-09-22 | Create PR after implementation review | Explicit owner request; preserve the reviewed planning commit first |
+| 2026-09-22 | Remove repository-owned Python in the same PR | Explicit owner approval; amend and independently review the design before replacing the worker |
 
 ## Verification evidence
 
@@ -530,10 +772,14 @@ approval; later deviations must be recorded against the eventual baseline.
 | Shell syntax | Passed during initial analysis | Does not prove host-command portability |
 | Independent loopback probes | `127.0.0.1` succeeds; `127.0.0.2` fails on target Mac | Ephemeral TCP, not BEAM integration |
 | Independent mocked supervisor probes | Lost cleanup uncertainty and duplicate termination reproduced | In-memory behavior, not real PID-reuse damage |
+| Original Darwin feasibility experiment | Constructor-entry handshake and native watcher passed; independently rerun by Astra | Proves observation during blocked loading, not the replacement executable |
+| Native dependency compilation | Passed on macOS 26.5.1 with Elixir 1.20.4/OTP 29.1; dependency warnings recorded separately | Not full test/asset/source-lifecycle qualification |
+| Disposable native PostgreSQL 18.6 | Temporary cluster started | No restricted-role or integration qualification yet |
+| Partial Python lifecycle adaptation | Failed before native PID receipt; stopped when owner rejected Python-based approach | Superseded work, not a passing regression suite |
 
 ### Not verified
 
-Dependency compilation, live PostgreSQL setup, complete BEAM lifecycle, native
+Restricted-role PostgreSQL setup, complete BEAM lifecycle, native
 ADBC/DuckLake behavior, the full Darwin failure matrix, cross-host artifacts,
 native CI, and production image builds on this Mac remain unverified. Mermaid
 rendering on GitHub awaits publication of a reviewed plan.
