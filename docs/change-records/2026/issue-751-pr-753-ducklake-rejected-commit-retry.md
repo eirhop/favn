@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#751](https://github.com/eirhop/favn/issues/751) |
 | Pull request | [#753](https://github.com/eirhop/favn/pull/753) |
@@ -463,7 +463,8 @@ children before a scoped timeout returns. Retry telemetry includes bounded
 publication/run/step/asset identity, attempt, delay, remaining budget and conflict
 type; it contains no SQL or parameters.
 
-Independent final review and exact-head CI qualification are in progress.
+Astra xhigh approved the implementation against the baseline on 2026-09-22.
+Exact-head CI qualification is tracked on the linked pull request.
 
 ## Deviations from the approved plan
 
@@ -492,7 +493,6 @@ boundaries require confirmation in final review.
 | Azure metadata and durable incident inspection | Root cause confirmed before planning | Read-only point-in-time evidence; no recovery performed |
 | Three-process native reproduction | 3/3 independent writes; 1/3 with shared guard; both rejected transactions succeeded fresh | Native mechanism only, not Favn lifecycle qualification |
 | Record links, diagrams and whitespace | All local links resolve; no whitespace errors; both diagrams render in GitHub's Mermaid renderer and were visually inspected | Documentation validation only |
-
 | Focused adapter rejection tests | 36 passed | Exact native error and cleanup qualification; negative cleanup and lost-ack behavior |
 | SQL runtime fast tests | 139 passed | Scope acquisition/admission/completion/cancellation, pool/admission bounds and existing SQL behavior |
 | Runner fast tests | 287 passed; final retry/execution subset 61 passed | Bounded retry and existing runtime behavior |
@@ -501,7 +501,6 @@ boundaries require confirmation in final review.
 | PostgreSQL lifecycle fixture | 2 passed | Known rollback and exhausted conflict settle task/claim/run, preserve independent work, release ownership; node max attempts is three |
 | Native pins | DuckDB 1.5.5; DuckLake `d8a1881e`; postgres scanner `41223e5`; PostgreSQL 18 | Local disposable database only |
 | Test-tag guard | Passed | New native regressions use the existing CI-covered `adbc_integration` tier |
-
 | Core result codec | 30 passed | New bounded diagnostics survive the closed codec |
 | Acceptance subset | 2 passed | Owning public SQL acceptance checks |
 | Compile, format and test-tier guard | Passed | Warnings treated as errors; native test added to explicit CI file list |
@@ -544,4 +543,14 @@ described above; a single deployed end-to-end test has not been performed.
 
 ## Final review
 
-Astra xhigh implementation review requested; verdict pending.
+Astra (`gpt-6-astra`, xhigh) independently compared the implementation and this
+record with approved baseline `45f58e382f88d78e4d009fc2f99bb9232e382db8`.
+Verdict on 2026-09-22: **approved; no remaining blocking findings**.
+
+All reported safety issues were corrected and rechecked. The reviewer accepted
+the session-lifetime deviations, composed persistence evidence and explained
+complexity overruns. Independent checks included 13 scope/qualification tests,
+a blocked trapping native-child cleanup probe and the public runtime's
+pre-admission timeout outcome. The two verification-table formatting gaps were
+removed after review. CI remained pending at the review point; no deployed proof
+was claimed.
