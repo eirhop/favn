@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#751](https://github.com/eirhop/favn/issues/751) |
-| Pull request | Pending |
+| Pull request | [#753](https://github.com/eirhop/favn/pull/753) |
 | Related work | [#740](https://github.com/eirhop/favn/issues/740), [#742](https://github.com/eirhop/favn/pull/742); run-ownership recovery [#752](https://github.com/eirhop/favn/issues/752) remains separate |
 | Affected areas | DuckDB adapter transaction outcomes, SQL runtime error contract, runner managed SQL execution, persistence qualification, SQL documentation |
-| Approved plan commit | Recorded in the immediate PR-number update |
+| Approved plan commit | `45f58e382f88d78e4d009fc2f99bb9232e382db8` |
 | Last updated | 2026-09-22 |
 
 ## One-minute summary
