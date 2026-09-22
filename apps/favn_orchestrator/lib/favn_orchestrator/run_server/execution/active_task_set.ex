@@ -179,13 +179,28 @@ defmodule FavnOrchestrator.RunServer.Execution.ActiveTaskSet do
   @doc false
   @spec renew_materialization_locks(t()) :: :ok | {:error, term()}
   def renew_materialization_locks(%__MODULE__{} = work_set) do
-    Enum.reduce_while(work_set.materialization_claims, :ok, fn {_task_id, claim}, :ok ->
-      case MaterializationClaims.renew_operation_lock(claim) do
+    Enum.reduce_while(work_set.materialization_claims, :ok, fn {task_id, claim}, :ok ->
+      result =
+        if terminal_entry?(Map.get(work_set.entries, task_id)),
+          do: :ok,
+          else: MaterializationClaims.renew_operation_lock(claim)
+
+      case result do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, {:error, reason}}
       end
     end)
   end
+
+  # Terminal results need run ownership to settle, but no longer authorize work.
+  # Keep their claims and locks intact: an unknown external write remains held.
+  defp terminal_entry?(%{terminal_task?: true}), do: true
+
+  defp terminal_entry?(%{recovery_pending?: true, recovery_evidence: %{status: status}})
+       when status in [:succeeded, :failed, :cancelled, :unknown],
+       do: true
+
+  defp terminal_entry?(_entry), do: false
 
   @doc "Reads in-flight task ids from run metadata."
   @spec active_runner_task_ids(RunState.t()) :: [task_id()]

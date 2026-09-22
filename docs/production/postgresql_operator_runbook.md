@@ -504,6 +504,33 @@ Retry only with the exact command/idempotency identity. Its transactional record
 domain command identity resolves whether the mutation committed. Never generate a
 new identity merely because the client lost its connection.
 
+## Recovery blocked by an expired combined-window lock
+
+After an interruption, a combined-window materialization can retain an expired
+target-operation lock even though its runner task is already terminal. Recovery
+settles those durable task results without renewing their execution locks. Run
+ownership remains fenced, and unresolved write claims and target locks remain
+held. A lock marked `not_started` does not prove that the associated
+materialization claim has no unresolved external write.
+
+For runs already reporting `target operation lock fence is stale`:
+
+1. Upgrade the control plane with this recovery correction, preserving the run,
+   task, claim, and lock records.
+2. Let normal orphan-run recovery claim the run after its previous ownership
+   lease expires. When all tasks are terminal, check that every step settles,
+   the parent run reaches its terminal state, and its execution leases are
+   released. Repeated ownership sweeps must not resubmit the completed tasks.
+3. Resolve any remaining unknown-write hold separately through the
+   [held-write procedure](elastic_runners.md#resolve-a-held-write). A terminal
+   run does not prove that an external write rolled back.
+
+This correction does not authorize takeover for work that may still execute.
+If tasks remain nonterminal or recovery reports another failure, inspect that
+durable task state before proceeding. Do not edit run statuses, delete locks,
+extend expired leases, or rerun an unknown write to unblock recovery. No data
+migration is required.
+
 ## PostgreSQL upgrades
 
 Minor upgrades require CI, restore-drill, and canary evidence. A major upgrade also

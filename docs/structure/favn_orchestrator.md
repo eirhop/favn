@@ -78,7 +78,9 @@ original cause and operation while preserving the successful asset result.
 These continuations are process-owned. Crash or ownership-loss recovery remains
 fail-closed for incomplete settlement; it never blindly replays completed asset
 writes. The run server renews run ownership and paused target-operation locks;
-admission leases and permits retain their original finite lifetimes. Structured
+recovered terminal tasks settle without renewing their execution locks, while
+their durable unresolved-write holds remain intact. Admission leases and permits
+retain their original finite lifetimes. Structured
 retry diagnostics identify the operation, phase, node/step, original error,
 attempt count, elapsed time, and budget. See the
 [history-lock protocol](../storage/postgresql/retention.md#live-execution-history-locks)
