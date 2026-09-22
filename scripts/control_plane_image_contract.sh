@@ -50,6 +50,8 @@ embedded_metadata=$(docker run --rm --entrypoint /bin/sh "$image" -c \
 
 contract=$(cat <<'SH'
 set -eu
+# CVE-2026-82560 affects Pod::Text, which must remain absent.
+perl -e 'for (@INC) { die "Pod::Text invalidates CVE-2026-82560 assessment\n" if -e "$_/Pod/Text.pm" }'
 # Minimum Debian security fixes from the 14 September 2026 runtime snapshot.
 dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libc6)" ge 2.41-12+deb13u4
 dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libc-bin)" ge 2.41-12+deb13u4

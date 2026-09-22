@@ -26,6 +26,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias Favn.Coverage.Spec, as: CoverageSpec
   alias Favn.Contracts.GenerationCapabilitiesRequest
   alias Favn.Contracts.RelationInspectionResult
+  alias Favn.Contracts.RunnerAssetResult
+  alias Favn.Contracts.RunnerResult
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask.Registration
   alias Favn.Manifest
@@ -696,6 +698,216 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     on_exit(fn -> restore_app_env(:api_service_tokens, previous_tokens) end)
 
     {:ok, provision_deploy_fixture()}
+  end
+
+  @tag jsonb_diagnostics: true
+  test "event and snapshot diagnostics are JSONB-safe and Unicode rejections are classified",
+       fixture do
+    error = %RunnerError{
+      type: :backend_execution_failed,
+      phase: :materialize,
+      message: "commit failed",
+      outcome: :unknown,
+      retryable?: false,
+      details: %{
+        cause: %{state: <<0, 0, 0, 0, 0>>, vendor_code: 0},
+        tuple: {:backend, :"state\0"},
+        nested: %{<<0>> => <<255>>, <<255>> => "blå 🐟", "password\0" => "hidden"}
+      }
+    }
+
+    {_command, run} = create_run_command(fixture)
+
+    for diagnostic <- [error, :"type\0", %{type: :"type\0", message: "failed"}] do
+      assert {:ok, snapshot} =
+               FavnOrchestrator.Storage.RunSnapshotCodec.encode_run(%{run | error: diagnostic})
+
+      assert {:ok, event} =
+               FavnOrchestrator.Storage.RunEventCodec.encode(%{
+                 run_id: run.id,
+                 sequence: 2,
+                 event_type: :step_failed,
+                 status: :running,
+                 occurred_at: DateTime.utc_now(),
+                 data: %{error: diagnostic}
+               })
+
+      for encoded <- [event, snapshot] do
+        assert %{rows: [[stored]]} = SQL.query!(Repo, "SELECT $1::text::jsonb", [encoded])
+        assert stored == Jason.decode!(encoded)
+        refute encoded =~ "hidden"
+        refute String.contains?(encoded, <<0>>)
+      end
+    end
+
+    assert {:error, rejected} =
+             SQL.query(
+               Repo,
+               "SELECT $1::text::jsonb",
+               [Jason.encode!(%{state: <<0>>, password: "private-diagnostic"})],
+               mode: :savepoint
+             )
+
+    mapped = FavnStoragePostgres.ErrorMapper.map(rejected)
+    assert mapped.kind == :invalid
+    refute mapped.retryable?
+    assert mapped.details == %{reason_code: "unsupported_unicode", sqlstate: "22P05"}
+    refute inspect(mapped) =~ "private-diagnostic"
+    refute inspect(mapped) =~ "SELECT"
+  end
+
+  @tag jsonb_diagnostics: true
+  test "recovery persists a terminal unknown diagnostic while retaining siblings and the write guard",
+       _fixture do
+    fixture = continuation_distinct_target_fixture!()
+    {run, _keys} = create_continuation_pipeline_run!(fixture, 3, %{}, distinct_targets?: true)
+    start_pipeline_runtime!()
+    assert {:ok, first} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    original_task_ids = await_runner_task_ids!(fixture.workspace_id, run.id, 3)
+    assert length(original_task_ids) == 3
+
+    tasks =
+      for index <- 1..2 do
+        assert {:ok, task} = claim_asset_task(fixture, "jsonb-#{index}")
+        assert :ok = start_runner_task(task)
+        await_runner_task_waiter!(task)
+        task
+      end
+
+    {[failed], siblings} =
+      Enum.split_with(tasks, &(&1.payload.asset_ref == {MyApp.PrivateAsset, :private}))
+
+    assert failed.write_target_id != nil
+    :ok = :sys.suspend(first)
+
+    error = %RunnerError{
+      type: :backend_execution_failed,
+      phase: :materialize,
+      message: "commit failed; rollback could not establish outcome",
+      outcome: :unknown,
+      retryable?: false,
+      details: %{cause: %{state: <<0, 0, 0, 0, 0>>, vendor_code: 0}}
+    }
+
+    work = failed.payload
+
+    result = %RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: :error,
+      error: error,
+      asset_results: [
+        %RunnerAssetResult{
+          ref: work.asset_ref,
+          status: :error,
+          error: error,
+          asset_step_id: work.asset_step_id,
+          attempt_count: work.attempt,
+          max_attempts: work.max_attempts,
+          target_operation: work.target_operation,
+          logical_target_id: work.logical_target_id,
+          target_generation_id: work.target_generation_id,
+          write_relation: work.write_relation,
+          write_outcome: :outcome_unknown
+        }
+      ]
+    }
+
+    assert :ok =
+             finish_runner_task(failed,
+               outcome: :unknown,
+               retry_class: :unknown_do_not_retry,
+               error: error,
+               result: result
+             )
+
+    assert {:ok, stored_task} = RunnerTasks.fetch(fixture.workspace_id, failed.task_id)
+    assert stored_task.result.error.details["cause"]["state"] == <<0, 0, 0, 0, 0>>
+
+    guard_sql =
+      "SELECT effect_state, effect_task_id, effect_assignment_generation FROM favn_control.materialization_claims WHERE workspace_id=$1 AND effect_task_id=$2"
+
+    guard_args = [fixture.workspace_id, failed.task_id]
+
+    assert %{rows: [["outcome_unknown", task_id, generation]] = guard} =
+             SQL.query!(Repo, guard_sql, guard_args)
+
+    assert task_id == failed.task_id
+    assert generation == failed.assignment_generation
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 3
+    kill_run_owner!(fixture, run.id, first)
+    assert {:ok, saved} = get_run(fixture, run.id)
+    assert saved.status == :running
+    assert run_event_count(fixture.workspace_id, run.id, "step_failed") == 0
+
+    assert {:ok, recovered} =
+             RunServer.start_link(%{
+               run_state: saved,
+               version: fixture.version,
+               recovering?: true
+             })
+
+    monitor = Process.monitor(recovered)
+    await_run_event!(fixture.workspace_id, run.id, "step_failed", 1)
+
+    for sibling <- siblings do
+      assert :running ==
+               await_runner_task_status!(fixture.workspace_id, sibling.task_id, :running)
+    end
+
+    assert Process.alive?(recovered)
+    assert_runner_demand!(fixture, queued: 1, active: 1, outstanding: 2)
+
+    for sibling <- siblings do
+      await_runner_task_waiter!(sibling)
+      assert :ok = complete_asset_task(sibling, sibling.payload, false)
+    end
+
+    assert {:ok, last} = claim_asset_task(fixture, "jsonb-last")
+    assert last != nil
+    assert :ok = start_runner_task(last)
+    await_runner_task_waiter!(last)
+    assert :ok = complete_asset_task(last, last.payload, false)
+    assert_receive {:DOWN, ^monitor, :process, ^recovered, :normal}, 5_000
+    assert {:ok, finished} = get_run(fixture, run.id)
+    assert finished.status == :error
+    assert Enum.count(finished.result.node_results, &(&1.status == :ok)) == 2
+
+    assert [diagnostic] =
+             for(
+               result <- finished.result.node_results,
+               result.status == :error,
+               do: result.error
+             )
+
+    assert diagnostic["outcome"] == "unknown", inspect(diagnostic, limit: :infinity)
+    assert diagnostic["details"]["cause"]["state"] == String.duplicate("\\u0000", 5)
+
+    assert Enum.sort(runner_task_ids(fixture.workspace_id, run.id)) ==
+             Enum.sort(original_task_ids)
+
+    assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
+    assert_runner_demand!(fixture, queued: 0, active: 0, outstanding: 0)
+    assert %{rows: ^guard} = SQL.query!(Repo, guard_sql, guard_args)
+
+    assert {:error, %{details: %{reason_code: "target_write_outcome_unknown"}}} =
+             MaterializationStore.claim(%ClaimMaterialization{
+               workspace_context: fixture.workspace_context,
+               command_id: "replacement:" <> run.id,
+               claim_key: "replacement:" <> run.id,
+               deployment_id: fixture.deployment_id,
+               target_kind: :asset,
+               target_id: failed.write_target_id,
+               target_generation_id: fixture.private_generation.target_generation_id,
+               evidence_generation_id: fixture.private_generation.target_generation_id,
+               partition_key: Favn.Freshness.Key.latest(),
+               run_id: run.id,
+               owner_id: "replacement",
+               lease_duration_ms: 30_000,
+               occurred_at: DateTime.utc_now()
+             })
   end
 
   test "target operation locks fence takeover and gate new materialization writes", fixture do

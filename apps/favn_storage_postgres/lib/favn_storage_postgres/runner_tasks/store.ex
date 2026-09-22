@@ -2283,6 +2283,11 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     reason
     |> RunnerError.normalize()
     |> Map.from_struct()
+    |> Map.new(fn {key, value} ->
+      if key in [:type, :phase, :message, :reason, :details],
+        do: {key, JsonSafe.data(value)},
+        else: {key, value}
+    end)
     |> CanonicalJSON.encode()
     |> case do
       {:ok, encoded} ->
