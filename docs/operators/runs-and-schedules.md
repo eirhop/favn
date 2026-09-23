@@ -279,53 +279,18 @@ the recorded generation and investigate out-of-band DDL. For
 unmanaged relation automatically. Repeated ordinary runs cannot clear any of
 these blocking states.
 
-### Finish Registration After A Rejected Initial Marker Task
+### Missing Initial Marker
 
-The `operation history not found` regression can leave successful materializations
-with an uninitialized target binding because the marker task was never saved.
-Deploy the corrected control plane first. Preserve the asset data and the failed
-run; rerunning the asset is not the repair.
+The former console repair script has been removed. It dispatched run-associated
+marker work outside the run's ownership lifecycle and could not safely operate
+under the current fencing contract. There is currently no supported in-place
+repair for a terminal failed run whose initial marker was never created.
 
-This is a maintenance-only procedure. Pause all submissions, schedules and
-backfills that can write this target, and let existing asset writes and other
-target operations stop before beginning. Keep the target quiescent until
-registration succeeds, or until every task dispatched by the repair has been
-inspected and settled or reconciled. Leave operation runners connected. A timeout
-can leave a queued or running marker task; the console returning is not permission
-to resume writes. The script checks
-current write holds but does not acquire a maintenance lock against future
-writes. If target quiescence cannot be assured, do not use this procedure.
-
-Copy the reviewed [registration repair script](../../scripts/repair_initial_registration.exs)
-from the same corrected checkout to a readable absolute path on the control-plane
-host. Release images do not include repository scripts. Load that copied file in
-an administrator console attached to the **existing** control plane:
-
-```elixir
-Code.require_file("/absolute/path/repair_initial_registration.exs")
-{:ok, context} = FavnOrchestrator.Persistence.WorkspaceContext.new(
-  "WORKSPACE_ID", "ADMINISTRATOR_ID", [:workspace_admin])
-FavnMaintenance.InitialRegistration.repair(context, "ORIGINAL_SUCCESSFUL_ASSET_TASK_ID")
-```
-
-Use the successful asset task, not an inspection or marker task. Keep the original
-manifest/release active and its runner available. The script requires a failed
-run, a readable successful task for the earliest successful materialization of
-that initial generation, and the
-original initial generation and uninitialized binding. It refuses unresolved
-write holds. It then reuses the original registration identities for physical
-inspection, capability checking, marker initialization and activation. Each
-runner wait is bounded to five minutes. Repeating the call after activation is
-a no-op; the asset is never dispatched and the failed run remains failed.
-
-A preflight rejection means the saved evidence is insufficient or the target
-changed. A later timeout, unavailable runner, or unknown outcome can leave durable
-operation tasks outstanding; inspect them and preserve any write hold before
-ending maintenance. Preserve the evidence for diagnosis; do not clear locks, reset the binding, manufacture a
-marker, or substitute a different task. The separate recovery workflow below
-applies when a matching marker already exists. This script is a narrow
-administrator repair for retained current-format evidence, not an automatic
-restart mechanism or an ownership claim on an arbitrary table.
+Preserve its successful materialization, original task evidence and unresolved
+write holds. Do not rerun the asset, clear locks or manufacture a marker as a
+registration repair. Restoring this capability requires a separately authorized
+target-owned repair lifecycle. The recovery workflow below remains supported
+when a matching marker already exists; it is not a missing-marker repair.
 
 ### Recover An Interrupted Initial Materialization
 

@@ -4528,7 +4528,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
   end
 
   test "missing run authority cannot enqueue or claim owned work", fixture do
-    assert {:error, %{kind: :not_found}} =
+    assert {:error, %{kind: :fenced}} =
              Store.enqueue(enqueue_command(fixture, "missing", run_id: "missing-run"))
   end
 
@@ -4843,6 +4843,14 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       payload_hash: payload_hash,
       orchestration_context: orchestration_context,
       run_id: Keyword.get(opts, :run_id),
+      run_authority:
+        if(task_kind != :asset_attempt,
+          do:
+            FavnStoragePostgres.TestSupport.RunFixture.authority(
+              fixture.workspace_context,
+              Keyword.get(opts, :run_id)
+            )
+        ),
       operation_id: nil,
       asset_step_id: nil,
       required_capability:

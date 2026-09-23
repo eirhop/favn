@@ -19,6 +19,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.RunnerSessions.Store, as: SessionsStore
   alias Favn.Contracts.RunnerError
   alias FavnStoragePostgres.CanonicalJSON
+  alias FavnStoragePostgres.RunnerTasks.CleanupReads
   alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Registry.DeploymentOwnership
@@ -140,7 +141,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           )
 
       workspace_id = command.workspace_context.workspace_id
-      if command.run_id, do: CancellationOwnership.guard!(workspace_id, command.run_id)
+
+      if not is_nil(command.run_id) and not cleanup_read?(command),
+        do: CancellationOwnership.guard!(workspace_id, command.run_id)
 
       row = %{
         workspace_id: workspace_id,
@@ -156,6 +159,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         write_lock_fence: command.write_lock_fence,
         task_kind: Atom.to_string(command.task_kind),
         run_id: command.run_id,
+        cleanup_fencing_token: CleanupReads.stamp(command),
         operation_id: command.operation_id,
         deployment_operation_id: command.deployment_operation_id,
         asset_step_id: command.asset_step_id,
@@ -534,10 +538,14 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   def request_cancellation(%C.RequestRunnerTaskCancellation{} = command) do
     idempotent_transact(command, "request_cancellation", fn ->
       workspace_id = command.workspace_context.workspace_id
+      lock_cancellation_owner!(command)
       WriteOwnership.lock_task_target!(workspace_id, command.task_id)
       task = lock_task!(workspace_id, command.task_id)
 
       cond do
+        command.preserve_cleanup? and CleanupReads.authorized?(task) ->
+          task
+
         task.status in @terminal_statuses ->
           task
 
@@ -664,7 +672,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           command
         end
 
-      cancelled? = CancellationOwnership.cancelled?(task.workspace_id, task.run_id)
+      cancelled? =
+        CancellationOwnership.cancelled?(task.workspace_id, task.run_id) and
+          not CleanupReads.authorized?(task)
 
       command =
         cond do
@@ -770,7 +780,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         Repo.rollback(Error.new(:conflict, "runner task is not a retryable terminal failure"))
       end
 
-      if CancellationOwnership.cancelled?(task.workspace_id, task.run_id) do
+      if CancellationOwnership.cancelled?(task.workspace_id, task.run_id) and
+           not cleanup_read?(command) do
         update_task!(task, command,
           status: "cancelled",
           cancellation_requested_at: command.occurred_at,
@@ -779,6 +790,11 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       else
         update_task!(task, command,
           status: "queued",
+          cleanup_fencing_token:
+            if(cleanup_read?(command) and not is_nil(task.run_id),
+              do: command.run_authority.fencing_token,
+              else: nil
+            ),
           assigned_runner_instance_id: nil,
           assigned_runner_session_generation: nil,
           assigned_at: nil,
@@ -2382,6 +2398,72 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp optional_bounded_id(nil), do: :ok
   defp optional_bounded_id(value), do: bounded_id(value)
 
+  defp validate_run_authority!(%{run_authority: %{} = authority} = command) do
+    workspace = command.workspace_context.workspace_id
+
+    run_id =
+      case command do
+        %C.EnqueueRunnerTask{run_id: id} ->
+          id
+
+        %C.RetryRunnerTask{task_id: id} ->
+          Repo.one(
+            from(t in RunnerTask,
+              where: t.workspace_id == ^workspace and t.task_id == ^id,
+              select: t.run_id
+            )
+          )
+      end
+
+    unless workspace == authority.workspace_id and (is_nil(run_id) or run_id == authority.run_id),
+      do: Repo.rollback(Error.new(:fenced, "run helper authority does not match task"))
+
+    CancellationOwnership.lock!(workspace, authority.run_id)
+    FavnStoragePostgres.RunOwnership.Store.validate_execution!(authority, helper_kind(command))
+    unless cleanup_read?(command), do: CancellationOwnership.guard!(workspace, authority.run_id)
+  end
+
+  defp validate_run_authority!(%C.EnqueueRunnerTask{run_id: run, task_kind: kind})
+       when is_binary(run) and kind != :asset_attempt,
+       do: Repo.rollback(Error.new(:fenced, "run helper requires current authority"))
+
+  defp validate_run_authority!(%C.RetryRunnerTask{} = command) do
+    task =
+      Repo.get_by(RunnerTask,
+        workspace_id: command.workspace_context.workspace_id,
+        task_id: command.task_id
+      )
+
+    if task && task.run_id && task.task_kind != "asset_attempt",
+      do: Repo.rollback(Error.new(:fenced, "run helper retry requires current authority"))
+
+    :ok
+  end
+
+  defp validate_run_authority!(_command), do: :ok
+
+  defp helper_kind(%C.EnqueueRunnerTask{task_kind: kind}), do: kind
+
+  defp helper_kind(%C.RetryRunnerTask{} = command) do
+    task =
+      Repo.get_by!(RunnerTask,
+        workspace_id: command.workspace_context.workspace_id,
+        task_id: command.task_id
+      )
+
+    task_kind!(task.task_kind)
+  end
+
+  defp cleanup_read?(%{run_authority: %{claim_purpose: :cleanup}} = command),
+    do:
+      helper_kind(command) in [
+        :relation_inspection,
+        :generation_capabilities,
+        :generation_marker_read
+      ]
+
+  defp cleanup_read?(_), do: false
+
   defp idempotent_transact(command, operation, fun) do
     transact(fn ->
       lock_deployment_command!(command)
@@ -2395,6 +2477,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         do:
           CancellationOwnership.lock_new!(command.workspace_context.workspace_id, command.run_id)
 
+      validate_run_authority!(command)
       now = database_now!()
       validate_command_time!(command, operation, now)
       command = canonicalize_enqueue_issued_at!(command, operation, scope_id)
@@ -2532,10 +2615,19 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp command_hash(command) do
     command
     |> legacy_enqueue_shape()
+    |> Map.delete(:run_authority)
+    |> legacy_cancellation_shape()
     |> Map.put(:occurred_at, nil)
     |> :erlang.term_to_binary([:deterministic])
     |> then(&:crypto.hash(:sha256, &1))
   end
+
+  defp legacy_cancellation_shape(
+         %C.RequestRunnerTaskCancellation{preserve_cleanup?: false} = command
+       ),
+       do: Map.delete(command, :preserve_cleanup?)
+
+  defp legacy_cancellation_shape(command), do: command
 
   defp command_scope(%{workspace_context: %{workspace_id: workspace_id}}),
     do: "workspace:" <> workspace_id
@@ -3130,7 +3222,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp transact(fun) do
-    case Repo.transaction(fun) do
+    case FavnStoragePostgres.RunTransaction.transaction(fun) do
       {:ok, %RunnerTask{} = task} -> {:ok, to_state(task)}
       {:ok, %Demand{} = demand} -> {:ok, to_demand(demand)}
       {:ok, tasks} when is_list(tasks) -> {:ok, tasks}
@@ -3290,7 +3382,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       is_nil(task) ->
         choose_claim_candidate(rest, command)
 
-      CancellationOwnership.cancelled?(task.workspace_id, task.run_id) ->
+      CancellationOwnership.cancelled?(task.workspace_id, task.run_id) and
+          not CleanupReads.authorized?(task) ->
         if WriteOwnership.try_lock_target!(task.workspace_id, task.write_target_id) do
           WriteOwnership.finish_unstarted!(task)
 

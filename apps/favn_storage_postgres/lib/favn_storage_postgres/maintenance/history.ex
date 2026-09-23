@@ -63,10 +63,10 @@ defmodule FavnStoragePostgres.Maintenance.History do
         EXISTS (SELECT 1 FROM favn_control.projection_cursors c WHERE c.last_publication_id < o.publication_id))
   """
 
-  def guard!(workspace, run_id) do
+  def guard!(workspace, run_id, repo \\ Repo) do
     %{rows: roots} =
       SQL.query!(
-        Repo,
+        repo,
         "SELECT root_execution_group_id FROM favn_control.runs WHERE workspace_id=$1 AND run_id=$2",
         [workspace, run_id]
       )
@@ -74,14 +74,14 @@ defmodule FavnStoragePostgres.Maintenance.History do
     Enum.each(roots, fn [root] ->
       %{rows: [[locked]]} =
         SQL.query!(
-          Repo,
+          repo,
           "SELECT pg_try_advisory_xact_lock_shared(hashtextextended(jsonb_build_array('execution_history',$1::text,$2::text)::text,0))",
           [workspace, root]
         )
 
       unless locked,
         do:
-          Repo.rollback(
+          repo.rollback(
             Error.new(:conflict, "execution history owner is busy",
               retryable?: true,
               details: %{reason_code: "execution_history_owner_busy"}
@@ -89,7 +89,7 @@ defmodule FavnStoragePostgres.Maintenance.History do
           )
     end)
 
-    check!(workspace, run_id)
+    check!(workspace, run_id, repo)
   end
 
   @spec try_guard!(String.t(), String.t()) :: boolean()
@@ -117,10 +117,10 @@ defmodule FavnStoragePostgres.Maintenance.History do
     locked?
   end
 
-  def check!(workspace, run_id) do
+  def check!(workspace, run_id, repo \\ Repo) do
     %{rows: rows} =
       SQL.query!(
-        Repo,
+        repo,
         """
         SELECT root.retiring FROM favn_control.runs member
         JOIN favn_control.runs root ON root.workspace_id=member.workspace_id
@@ -130,7 +130,7 @@ defmodule FavnStoragePostgres.Maintenance.History do
         [workspace, run_id]
       )
 
-    if rows == [[true]], do: Repo.rollback(Error.new(:expired, "execution history is retiring"))
+    if rows == [[true]], do: repo.rollback(Error.new(:expired, "execution history is retiring"))
     :ok
   end
 

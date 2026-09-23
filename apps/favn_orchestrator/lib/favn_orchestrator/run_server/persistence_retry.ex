@@ -51,8 +51,21 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
   def persist(%__MODULE__{command: nil} = retry),
     do: Persistence.persist_run_step(retry.run, retry.event_type, retry.data)
 
-  def persist(%__MODULE__{event_type: :runner_admission, command: command, run: run}),
-    do: Persistence.normalize_result(run, RunnerTasks.admit(command))
+  def persist(%__MODULE__{event_type: :runner_admission, command: command, run: run}) do
+    permitted =
+      with :ok <- FavnOrchestrator.RunLeaseKeeper.permit(run),
+           do: FavnOrchestrator.RunTargetMaintenance.register(run, command.enqueue.task_id)
+
+    command =
+      case permitted do
+        {:ok, observer} -> %{command | acquisition_observer: observer}
+        _ -> %{command | reconcile_only?: true}
+      end
+
+    result = RunnerTasks.admit(command)
+    FavnOrchestrator.RunTargetMaintenance.admission_result(run, command.enqueue.task_id, result)
+    Persistence.normalize_result(run, result)
+  end
 
   def persist(%__MODULE__{event_type: :resource_outcomes, command: command}),
     do: ResourceCircuits.persist_settlement(command)
@@ -68,6 +81,8 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
 
   @doc false
   @spec recovery_required?(term()) :: boolean()
+  def recovery_required?({:cleanup_read_requires_reconciliation, _task}), do: true
+
   def recovery_required?(%Error{kind: kind}) when kind in [:unavailable, :timeout], do: true
   def recovery_required?(%Error{kind: :conflict, retryable?: true}), do: true
   def recovery_required?(:runner_task_timeout), do: true

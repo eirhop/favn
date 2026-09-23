@@ -15,7 +15,6 @@ defmodule FavnOrchestrator.Application do
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Runtime, as: PersistenceRuntime
   alias FavnOrchestrator.RebuildDispatcher
-  alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunRecovery
   alias FavnOrchestrator.RunSubmission.Supervisor, as: RunSubmissionSupervisor
   alias FavnOrchestrator.RuntimeConfig
@@ -79,11 +78,10 @@ defmodule FavnOrchestrator.Application do
             {AuthStore, []},
             {Phoenix.PubSub, name: pubsub_name()},
             {AdmissionCoordinator, []},
-            {Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor},
-            {DynamicSupervisor, strategy: :one_for_one, name: FavnOrchestrator.RunSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.RunManagerTaskSupervisor},
             {Task.Supervisor, name: FavnOrchestrator.ManifestDeploymentTaskSupervisor},
-            {RunManager, []},
+            {FavnOrchestrator.RunControlSupervisor,
+             max_active_runs: runtime_config.max_active_runs},
             {RunSubmissionSupervisor, config: runtime_config.run_submissions},
             {FavnOrchestrator.ResourceRecovery, []},
             {Task.Supervisor, name: FavnOrchestrator.RunnerSessionTaskSupervisor},

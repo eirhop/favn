@@ -881,8 +881,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
           state.run.timeout_ms
       end
 
-    {pid, monitor_ref} =
-      spawn_monitor(fn ->
+    {:ok, pid} =
+      FavnOrchestrator.RunHelper.start_waiter(fn ->
         FavnOrchestrator.RunnerTaskResultRouter.await(
           state.run.workspace_id,
           entry.task_id,
@@ -891,6 +891,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
         )
       end)
 
+    monitor_ref = Process.monitor(pid)
     timeout_token = make_ref()
 
     timeout_ref =
@@ -935,6 +936,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:error, :external_cancel} ->
         {:terminal, Snapshots.cancelled_snapshot(state.run)}
+
+      {:error, :fenced} ->
+        exit({:shutdown, :run_ownership_lost})
 
       {:error, reason} ->
         OperationalEvents.emit(
@@ -1722,12 +1726,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
     entry = pending.entry
 
     task =
-      Task.Supervisor.async_nolink(
-        @post_step_supervisor,
-        InitialTargetGenerationReconciler,
-        :reconcile,
-        [entry]
-      )
+      FavnOrchestrator.RunHelper.async(state.run, fn ->
+        InitialTargetGenerationReconciler.reconcile(entry)
+      end)
 
     OperationalEvents.emit(
       :post_step_continuation_started,

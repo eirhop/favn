@@ -4,7 +4,7 @@ alias Ecto.Adapters.SQL
 alias FavnOrchestrator.Persistence.Commands, as: C
 alias FavnOrchestrator.Persistence.Queries, as: Q
 alias FavnOrchestrator.Persistence.{Runtime, SystemContext}
-alias FavnOrchestrator.{RunManager, RunOwnership, RunnerTasks, RunnerTaskResultRouter}
+alias FavnOrchestrator.{RunManager, RunnerTasks, RunnerTaskResultRouter}
 alias FavnStoragePostgres.{Backend, Config, Repo}
 
 # The write counter belongs to the actual asset callback, so every invocation is visible.
@@ -40,6 +40,7 @@ f = fixture_file |> File.read!() |> Jason.decode!()
   )
 
 {:ok, _} = Repo.start_link(options)
+{:ok, _} = FavnStoragePostgres.RunLeaseRepo.start_link(Keyword.put(options, :pool_size, 2))
 {:ok, runtime} = Runtime.new(Backend, [])
 {:ok, _} = Runtime.start_link(runtime)
 {:ok, _} = FavnOrchestrator.Lifecycle.start_link(shutdown_drain_timeout_ms: 120_000)
@@ -48,10 +49,8 @@ f = fixture_file |> File.read!() |> Jason.decode!()
 {:ok, _} = Task.Supervisor.start_link(name: FavnOrchestrator.RunnerClaimSupervisor)
 {:ok, _} = RunnerTaskResultRouter.start_link([])
 
-{:ok, _} =
-  DynamicSupervisor.start_link(name: FavnOrchestrator.RunSupervisor, strategy: :one_for_one)
-
-{:ok, _} = RunManager.start_link([])
+{:ok, _} = Task.Supervisor.start_link(name: FavnOrchestrator.RunManagerTaskSupervisor)
+{:ok, _} = FavnOrchestrator.RunControlSupervisor.start_link([])
 context = SystemContext.workspace(f["workspace"], :run_worker)
 
 {:ok, run} =
@@ -95,12 +94,24 @@ if phase != "finish" do
     )
 end
 
-# Use the same fenced batch and manager entrypoint as the production recovery sweep.
-{:ok, [ownership]} =
-  RunOwnership.claim_recovery_batch(context, "fresh-process-recovery", unowned_grace_period_ms: 0)
+# Use the same reservation-before-claim path as the production recovery sweep.
+{:ok, _} = RunManager.recover_candidate(context, run.id)
 
-{:ok, _} = RunManager.recover_claimed_run(context, ownership)
-server = Map.fetch!(:sys.get_state(RunManager).run_pids, {f["workspace"], run.id})
+await_server = fn await_server, remaining ->
+  case Map.get(:sys.get_state(RunManager).run_pids, {f["workspace"], run.id}) do
+    pid when is_pid(pid) ->
+      pid
+
+    nil when remaining > 0 ->
+      Process.sleep(20)
+      await_server.(await_server, remaining - 1)
+
+    _ ->
+      raise "run preparation did not finish"
+  end
+end
+
+server = await_server.(await_server, 500)
 monitor = Process.monitor(server)
 
 if phase != "step_settled" do

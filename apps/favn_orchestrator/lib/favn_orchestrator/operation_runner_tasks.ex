@@ -115,7 +115,10 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   end
 
   defp ensure_persisted(context, nil, command) do
-    with {:ok, _receipt} <- RunnerTasks.enqueue(command), do: fetch(context, command.task_id)
+    with {:ok, authority} <-
+           FavnOrchestrator.RunHelper.permit_new_work(command.run_id, command.task_kind),
+         {:ok, _receipt} <- RunnerTasks.enqueue(%{command | run_authority: authority}),
+         do: fetch(context, command.task_id)
   end
 
   defp ensure_persisted(context, existing, command) do
@@ -154,6 +157,9 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
         existing.payload_version != PersistenceCodec.payload_version() or
           existing.orchestration_context_hash != context_hash ->
         {:error, {:operation_runner_task_identity_mismatch, existing.task_id}}
+
+      not FavnOrchestrator.RunHelper.existing_task_allowed?(existing) ->
+        {:error, {:cleanup_read_requires_reconciliation, existing.task_id}}
 
       not is_nil(existing.deployment_operation_id) ->
         ensure_persisted(context, nil, command)
@@ -275,7 +281,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
     workspace_id = context.workspace_id
     caller = self()
 
-    case Task.Supervisor.start_child(FavnOrchestrator.RunnerTaskWaitSupervisor, fn ->
+    case FavnOrchestrator.RunHelper.start_waiter(fn ->
            RunnerTaskResultRouter.await(workspace_id, task_id, caller)
          end) do
       {:ok, waiter} ->
@@ -322,11 +328,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   end
 
   defp stop_waiter(waiter, monitor) do
-    _ =
-      Task.Supervisor.terminate_child(
-        FavnOrchestrator.RunnerTaskWaitSupervisor,
-        waiter
-      )
+    Process.exit(waiter, :shutdown)
 
     Process.demonitor(monitor, [:flush])
   end

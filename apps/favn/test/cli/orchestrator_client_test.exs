@@ -11,6 +11,22 @@ defmodule Favn.CLI.OrchestratorClientTest do
   alias Favn.Manifest.Version
   alias Favn.SQL.Template
 
+  test "resume recovery sends the displayed revision and reports conflict" do
+    {:ok, base_url, _server} = start_server(~s({"data":{"resumed":true,"run_id":"run_a"}}), 200)
+
+    assert {:ok, %{"resumed" => true, "run_id" => "run_a"}} =
+             OrchestratorClient.resume_run_recovery(base_url, "token", "run_a", 7, %{
+               "workspace_id" => "local-dev"
+             })
+
+    {:ok, base_url, _server} = start_server(~s({"error":{"code":"conflict"}}), 409)
+
+    assert {:error, %{operation: :resume_run_recovery, reason: {:http_error, 409, _}}} =
+             OrchestratorClient.resume_run_recovery(base_url, "token", "run_a", 6, %{
+               "workspace_id" => "local-dev"
+             })
+  end
+
   test "in_flight_runs/3 parses run ids" do
     {:ok, base_url, _server} = start_server(~s({"data":{"run_ids":["run_a","run_b"]}}), 200)
 

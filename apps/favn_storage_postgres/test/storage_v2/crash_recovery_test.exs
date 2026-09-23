@@ -967,7 +967,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
 
       SQL.query!(
         Repo,
-        "UPDATE favn_control.run_ownerships SET expires_at=clock_timestamp()-interval '1 second' WHERE workspace_id=$1 AND run_id=$2",
+        "UPDATE favn_control.run_ownerships SET expires_at=clock_timestamp()-interval '1 second', next_recovery_at=clock_timestamp()-interval '1 second' WHERE workspace_id=$1 AND run_id=$2",
         [f.id, run.id]
       )
     end

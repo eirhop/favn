@@ -168,7 +168,13 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     )
 
     start_supervised!({Phoenix.PubSub, name: Events.pubsub_name()})
-    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor})
+
+    FavnOrchestrator.TestSupport.UnitRunAuthority.start(%RunState{
+      id: "run-post-step",
+      workspace_id: "workspace-post-step",
+      storage_owner_id: "run-owner",
+      storage_fencing_token: 1
+    })
 
     on_exit(fn ->
       Application.delete_env(:favn_orchestrator, @control_key)
@@ -500,6 +506,23 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
              Execution.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
 
     assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
+    refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
+  end
+
+  test "cleanup reconciliation refusal preserves accepted success for attention" do
+    fixture = fixture([:a])
+    assert {:cont, pending} = deliver_result(awaiting_state(fixture, [:a]), fixture, :a, :ok)
+    assert_receive {:worker_binding_read, worker, _}
+    [{ref, _}] = Map.to_list(pending.post_step_continuations)
+    refusal = {:cleanup_read_requires_reconciliation, "original-task"}
+    release_worker(worker, {:error, refusal})
+    assert_receive {^ref, {:error, reason}}
+
+    assert {:recovery_required, recovering, {:generation_registration_unavailable, _, _}} =
+             Execution.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+
+    assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
+    assert recovering.run.status != :error
     refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
   end
 

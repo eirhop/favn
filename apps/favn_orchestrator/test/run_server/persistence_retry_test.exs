@@ -36,7 +36,7 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetryTest do
     assert error.details.reason_code == "persistence_retry_exhausted"
   end
 
-  test "cancellation retains completed bookkeeping at both retry and renewal gates" do
+  test "cancellation retains completed bookkeeping during persistence retry" do
     for event <- [
           :resource_outcomes,
           :step_finished,
@@ -47,8 +47,7 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetryTest do
         ],
         retry = PersistenceRetry.new(struct(RunState), event, %{}, nil),
         pending <- [
-          %{execution_persist_pending: %{retry: retry}},
-          %{storage_renewal_pending: %{purpose: {:resume, retry}}}
+          %{execution_persist_pending: %{retry: retry}}
         ] do
       message = {:favn_run_cancel_requested, :operator}
       assert {:noreply, retained} = RunServer.handle_info(message, pending)

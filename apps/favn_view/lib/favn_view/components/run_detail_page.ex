@@ -92,6 +92,28 @@ defmodule FavnView.Components.RunDetailPage do
       >
         {cancellation_message(@run[:cancellation_status])}
       </.notice>
+      <.notice
+        :if={@run[:recovery] && @run.recovery["disposition"] == "attention"}
+        tone={:warning}
+        data-testid="run-recovery-attention"
+      >
+        Recovery needs attention: {@run.recovery["reason"] || "safe progress could not be confirmed"}.
+        Automatic recovery attempts: {@run.recovery["attempts"]}.
+        Last confirmed renewal: {@run.recovery["last_confirmed_renewal"] || "not confirmed"}.
+        <.button
+          :if={@run.recovery["operator_action"] == "resume_recovery"}
+          phx-click="resume_recovery"
+          data-command-operation="run_resume_recovery"
+          data-command-resource={"#{@run_id}:#{@run.recovery["revision"]}"}
+          phx-disable-with="Resuming..."
+          data-testid="resume-run-recovery"
+        >
+          Resume recovery
+        </.button>
+        <span :if={@run.recovery["operator_action"] == "resume_recovery"}>
+          Resume after resolving the cause. Existing work is checked before execution continues.
+        </span>
+      </.notice>
       <Submission.submission_panel :if={@run[:submission?]} run={@run} />
       <NotFound.not_found_panel :if={!@run[:found?] && !@run[:submission?]} run={@run} />
       <.execution_group_page

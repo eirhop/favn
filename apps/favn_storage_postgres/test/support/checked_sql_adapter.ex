@@ -3,7 +3,7 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
   alias Favn.SQL.{Capabilities, Result}
 
   def connect(resolved, _) do
-    options = System.fetch_env!("FAVN_DATABASE_URL") |> Ecto.Repo.Supervisor.parse_url()
+    options = resolved.config.database_url |> Ecto.Repo.Supervisor.parse_url()
     {:ok, pid} = Postgrex.start_link(Keyword.put(options, :ssl, false))
     {:ok, {pid, resolved.config.observer}}
   end

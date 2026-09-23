@@ -98,6 +98,7 @@ defmodule FavnOrchestrator.Persistence.Results.RunViewHeader do
     :window_end_at,
     :error_code,
     :error_message,
+    :recovery,
     :counts
   ]
 

@@ -161,6 +161,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
       config.active_run_plan_max_bytes
     )
 
+    Application.put_env(:favn_orchestrator, :run_lease_duration_ms, config.run_lease_duration_ms)
+    Application.put_env(:favn_orchestrator, :max_active_runs, config.max_active_runs)
     Application.put_env(:favn_orchestrator, :scheduler, config.scheduler)
     Application.put_env(:favn_orchestrator, :run_submissions, config.run_submissions)
     Application.put_env(:favn_orchestrator, :runner_pools, config.runner_pools)
@@ -200,6 +202,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          {:ok, workspace_ids} <- workspace_ids(env),
          {:ok, auth_session_ttl_seconds} <- auth_session_ttl_seconds(env),
          {:ok, active_run_plan_max_bytes} <- active_run_plan_max_bytes(env),
+         {:ok, run_lease_duration_ms} <-
+           int(env, "FAVN_RUN_LEASE_DURATION_MS", "120000", 120_000, 600_000),
+         {:ok, max_active_runs} <- int(env, "FAVN_MAX_ACTIVE_RUNS", "64", 1, 512),
          {:ok, scheduler} <- scheduler(env, workspace_ids),
          {:ok, run_submissions} <- run_submissions(env),
          {:ok, operator_command_hmac_key} <- operator_command_hmac_key(env),
@@ -219,6 +224,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
          workspace_ids: workspace_ids,
          auth_session_ttl_seconds: auth_session_ttl_seconds,
          active_run_plan_max_bytes: active_run_plan_max_bytes,
+         run_lease_duration_ms: run_lease_duration_ms,
+         max_active_runs: max_active_runs,
          scheduler: scheduler,
          run_submissions: run_submissions,
          runner_pools: runner_pools,

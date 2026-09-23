@@ -46,6 +46,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   alias FavnStoragePostgres.Maintenance.History
   alias FavnStoragePostgres.Maintenance.Replay
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunTransaction
   alias FavnStoragePostgres.Runs.Decoder
   alias FavnStoragePostgres.Runs.RuntimeInputPinCodec
   alias FavnStoragePostgres.RuntimeInputKeys
@@ -96,7 +97,9 @@ defmodule FavnStoragePostgres.Runs.Store do
   defp cancellation_query(query, fun) do
     with :ok <- validate_workspace_read(query.workspace_context),
          true <- valid_identity?(query.run_id) do
-      Repo.transaction(fn -> fun.(query.workspace_context.workspace_id, query.run_id) end)
+      RunTransaction.transaction(fn ->
+        fun.(query.workspace_context.workspace_id, query.run_id)
+      end)
     else
       false -> {:error, Error.new(:invalid, "invalid run identity")}
       error -> error
@@ -126,7 +129,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   def request_operation_cancellation(%RequestRunCancellation{} = command) do
     with :ok <- validate_cancellation(command),
          {:ok, :ok} <-
-           Repo.transaction(fn ->
+           RunTransaction.transaction(fn ->
              IdempotencyTransaction.execute!(
                command.workspace_context.workspace_id,
                command.idempotency,
@@ -147,7 +150,7 @@ defmodule FavnStoragePostgres.Runs.Store do
     with :ok <- validate_create(command),
          {:ok, encoded} <- encode_write(command.run, command.event, persist_plan?: true),
          {:ok, result} <-
-           Repo.transaction(fn ->
+           RunTransaction.transaction(fn ->
              Replay.validate_timestamp!(encoded.occurred_at)
 
              [command.run.root_run_id, command.run.parent_run_id, command.run.rerun_of_run_id]
@@ -198,7 +201,7 @@ defmodule FavnStoragePostgres.Runs.Store do
     with :ok <- validate_transition(command),
          {:ok, encoded} <- encode_write(command.run, command.event),
          {:ok, result} <-
-           Repo.transaction(fn ->
+           RunTransaction.transaction(fn ->
              FavnStoragePostgres.RunIdentity.lock!(
                command.workspace_context.workspace_id,
                command.run.id
@@ -225,7 +228,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   def request_cancellation(%RequestRunCancellation{} = command) do
     with :ok <- validate_cancellation(command),
          {:ok, result} <-
-           Repo.transaction(fn ->
+           RunTransaction.transaction(fn ->
              IdempotencyTransaction.execute!(
                command.workspace_context.workspace_id,
                command.idempotency,
@@ -241,6 +244,14 @@ defmodule FavnStoragePostgres.Runs.Store do
     end
   rescue
     error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @doc false
+  def locked_snapshot(workspace_id, run_id) do
+    case lock_run(workspace_id, run_id) do
+      nil -> {:error, Error.new(:not_found, "run not found")}
+      row -> decode_run(row)
+    end
   end
 
   @impl true
@@ -380,7 +391,9 @@ defmodule FavnStoragePostgres.Runs.Store do
     with :ok <- validate_runtime_input_command(command),
          {:ok, {key_version, key}} <- RuntimeInputKeys.current(),
          {:ok, pins} <-
-           Repo.transaction(fn -> persist_runtime_input_pins!(command, key_version, key) end) do
+           RunTransaction.transaction(fn ->
+             persist_runtime_input_pins!(command, key_version, key)
+           end) do
       {:ok, pins}
     else
       {:error, %Error{} = error} -> {:error, error}
@@ -419,7 +432,7 @@ defmodule FavnStoragePostgres.Runs.Store do
   def put_execution_checkpoint(%PutRunExecutionCheckpoint{} = command) do
     with :ok <- validate_execution_checkpoint(command),
          {:ok, result} <-
-           Repo.transaction(fn ->
+           RunTransaction.transaction(fn ->
              if transition = command.transition do
                unless transition.run.id == command.run_id and
                         transition.workspace_context.workspace_id ==
@@ -1362,7 +1375,41 @@ defmodule FavnStoragePostgres.Runs.Store do
           )
 
         if updated != 1, do: Repo.rollback(Error.new(:conflict, "run sequence changed"))
+        update_recovery_state!(command)
         committed(command.run, encoded.event, event_id, outbox.outbox_event_id, false)
+    end
+  end
+
+  defp update_recovery_state!(command) do
+    workspace = command.workspace_context.workspace_id
+    event = command.event.event_type
+
+    cond do
+      event == :run_recovery_required ->
+        if is_nil(command.owner_id),
+          do: Repo.rollback(Error.new(:fenced, "attention requires an owner"))
+
+        SQL.query!(
+          Repo,
+          """
+          UPDATE favn_control.run_ownerships SET recovery_disposition='attention', attention_revision=fencing_token
+          WHERE workspace_id=$1 AND run_id=$2
+          """,
+          [workspace, command.run.id]
+        )
+
+      event in [:step_settled, :run_finished, :run_failed, :run_cancelled] ->
+        SQL.query!(
+          Repo,
+          """
+          UPDATE favn_control.run_ownerships SET recovery_attempts=0, next_recovery_at=expires_at
+          WHERE workspace_id=$1 AND run_id=$2 AND recovery_disposition='automatic'
+          """,
+          [workspace, command.run.id]
+        )
+
+      true ->
+        :ok
     end
   end
 

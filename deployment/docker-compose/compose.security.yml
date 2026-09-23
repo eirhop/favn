@@ -84,11 +84,14 @@ services:
 
   security-browser:
     image: favn-security-probe:${FAVN_IMAGE_TAG}
+    user: ${FAVN_SECURITY_PROBE_USER:-1001:1001}
     build:
       context: ./security
       dockerfile: Dockerfile
     command: ["npx", "playwright", "test"]
     environment:
+      HOME: /tmp
+      npm_config_cache: /tmp/npm-cache
       FAVN_SECURITY_BASE_URL: https://favn.localhost
       FAVN_SECURITY_WORKSPACE_ID: elastic-simulation
       FAVN_SECURITY_ADMIN_USERNAME: security-admin
@@ -119,8 +122,11 @@ services:
 
   security-api:
     image: favn-security-probe:${FAVN_IMAGE_TAG}
+    user: ${FAVN_SECURITY_PROBE_USER:-1001:1001}
     command: ["node", "/security/api-security.mjs"]
     environment:
+      HOME: /tmp
+      npm_config_cache: /tmp/npm-cache
       FAVN_SECURITY_API_URL: http://control-plane:4101
       FAVN_SECURITY_PLATFORM_TOKEN: ${FAVN_PLATFORM_TOKEN}
       FAVN_SECURITY_CAPACITY_TOKEN: ${FAVN_CAPACITY_TOKEN}

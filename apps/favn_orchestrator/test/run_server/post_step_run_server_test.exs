@@ -8,7 +8,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
   the persistence runtime and gates the runner-task store so the relation
   inspection the reconciler needs stays queued until the test releases it. While
   it is held, the test drives ownership renewals, cancellation, and fenced
-  writes as ordinary messages to the run process.
+  writes through the managed run lifecycle. Renewal runs independently of the coordinator.
   """
 
   use ExUnit.Case, async: false
@@ -74,7 +74,17 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
     # runs
 
-    def get_run(_query), do: {:ok, latest_run()}
+    def get_run(_query) do
+      case Agent.get(agent(), &Map.get(&1, :read_failure)) do
+        nil -> {:ok, latest_run()}
+        reason -> {:error, reason}
+      end
+    end
+
+    def require_diagnosis(command) do
+      notify({:diagnosis_required, command.reason_code, command.fencing_token})
+      :ok
+    end
 
     def page_events(query) do
       run = latest_run()
@@ -204,6 +214,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
     # run ownership
 
+    def get_deployment_manifest(_query), do: {:ok, Agent.get(agent(), & &1.version)}
+    def maintain_targets(_, _, _, _), do: {:ok, %{}}
     def claim_run(command), do: {:ok, ownership(command)}
 
     def renew_run(command) do
@@ -246,7 +258,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         run_id: command.run_id,
         owner_id: command.owner_id,
         fencing_token: Map.get(command, :fencing_token) || 7,
-        expires_at: DateTime.add(DateTime.utc_now(), 30, :second)
+        expires_at: DateTime.add(DateTime.utc_now(), 120, :second),
+        database_observed_at: DateTime.utc_now()
       }
     end
 
@@ -441,7 +454,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     )
 
     start_supervised!({Phoenix.PubSub, name: Events.pubsub_name()})
-    start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunPostStepSupervisor})
+    FavnOrchestrator.TestSupport.ManagedRun.ensure_started()
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerClaimSupervisor})
     start_supervised!({Task.Supervisor, name: FavnOrchestrator.RunnerTaskWaitSupervisor})
     start_supervised!({RunnerTaskResultRouter, []})
@@ -449,6 +462,125 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     on_exit(fn -> Application.delete_env(:favn_orchestrator, :post_step_run_server_agent) end)
 
     {:ok, fixture: fixture}
+  end
+
+  test "replacement has its own handoff deadline after the old stop acknowledgement timed out", %{
+    fixture: fixture
+  } do
+    manager = FavnOrchestrator.RunManager
+    old_id = make_ref()
+    key = {fixture.run.workspace_id, fixture.run.id}
+
+    old =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> Process.exit(old, :kill) end)
+
+    :sys.replace_state(manager, fn state ->
+      %{
+        state
+        | lifecycles: %{
+            old_id => %{
+              key: key,
+              phase: :stopping,
+              ownership: nil,
+              coordinator: nil,
+              preparer: nil,
+              keeper: nil,
+              maintenance: nil,
+              maintenance_ready?: false,
+              diagnostic_reason: nil,
+              waiting: [],
+              pids: MapSet.new([old])
+            }
+          }
+      }
+    end)
+
+    ownership = %Ownership{
+      workspace_id: fixture.run.workspace_id,
+      run_id: fixture.run.id,
+      owner_id: "run-owner",
+      fencing_token: @fencing_token,
+      expires_at: DateTime.add(DateTime.utc_now(), 120, :second),
+      database_observed_at: DateTime.utc_now()
+    }
+
+    context =
+      FavnOrchestrator.Persistence.SystemContext.workspace(
+        fixture.run.workspace_id,
+        :run_recovery
+      )
+
+    send(manager, {:stop_ack_timeout, old_id})
+    assert :sys.get_state(manager).lifecycles[old_id].phase == :stopping
+    assert {:ok, _} = manager.recover_claimed_run(context, ownership)
+    entry = :sys.get_state(manager).lifecycles |> Map.delete(old_id) |> Map.values() |> hd()
+    preparer_monitor = Process.monitor(entry.preparer)
+    keeper_monitor = Process.monitor(entry.keeper)
+    assert entry.coordinator == nil
+
+    assert_receive {:diagnosis_required, "prior_generation_stop_unconfirmed", @fencing_token},
+                   12_000
+
+    assert_receive {:DOWN, ^preparer_monitor, :process, _, _}, 2_000
+    assert_receive {:DOWN, ^keeper_monitor, :process, _, _}, 2_000
+
+    assert HarnessStore.latest_run().metadata["recovery_attention"]["phase"] ==
+             "prior_generation_stop_unconfirmed"
+
+    assert :sys.get_state(manager).run_pids == %{}
+    assert :sys.get_state(manager).lifecycles[old_id].phase == :stopping
+  end
+
+  test "a blocked activation does not hold the run supervisor or manager", %{fixture: fixture} do
+    {healthy, _} = start_run(fixture)
+    healthy_keeper = :sys.get_state(healthy).lease_keeper
+    observer = self()
+
+    blocked_keeper =
+      spawn(fn ->
+        receive do
+          {:"$gen_call", _from, {:transfer, _pid}} ->
+            send(observer, :transfer_blocked)
+
+            receive do
+              :stop -> :ok
+            end
+        end
+      end)
+
+    on_exit(fn -> Process.exit(blocked_keeper, :kill) end)
+
+    args = %{
+      run_state: fixture.run,
+      version: fixture.version,
+      lease_keeper: blocked_keeper,
+      storage_ownership: :sys.get_state(healthy).storage_ownership
+    }
+
+    assert {:ok, inert} =
+             DynamicSupervisor.start_child(
+               FavnOrchestrator.RunSupervisor,
+               %{
+                 id: :blocked_activation,
+                 start: {RunServer, :start_link, [args]},
+                 restart: :temporary
+               }
+             )
+
+    refute_receive :transfer_blocked, 20
+    send(inert, :activate)
+    assert_receive :transfer_blocked
+    assert {:ok, _} = GenServer.call(FavnOrchestrator.RunManager, :active_runs, 200)
+    assert is_list(DynamicSupervisor.which_children(FavnOrchestrator.RunSupervisor))
+    send(healthy_keeper, :renew)
+    assert_receive {:ownership_renewed, @fencing_token}, 1_000
+    DynamicSupervisor.terminate_child(FavnOrchestrator.RunSupervisor, inert)
   end
 
   test "ownership renews while the inspection task is held and the run then completes", %{
@@ -462,7 +594,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert_receive {:runner_task_held, :relation_inspection, worker}, 5_000
 
     for _renewal <- 1..3 do
-      send(pid, :renew_storage_ownership)
+      send(:sys.get_state(pid).lease_keeper, :renew)
       assert_receive {:ownership_renewed, @fencing_token}, 1_000
     end
 
@@ -488,11 +620,10 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     complete_asset_task(fixture)
     assert_receive {:runner_task_held, :relation_inspection, worker}, 5_000
 
-    send(pid, :renew_storage_ownership)
+    send(:sys.get_state(pid).lease_keeper, :renew)
 
     assert_receive {:ownership_renewal_attempt, renewal_id, :busy}, 1_000
-    send(pid, :renew_storage_ownership)
-    refute_receive {:ownership_renewal_attempt, _, _}, 100
+    send(:sys.get_state(pid).lease_keeper, :renew)
     assert_receive {:ownership_renewal_attempt, ^renewal_id, :ok}, 2_000
     assert_receive {:ownership_renewed, @fencing_token}, 1_000
     assert Process.alive?(pid)
@@ -517,7 +648,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     end
   end
 
-  test "recovery attention is fenced, deduplicated and cleared by real progress", %{
+  test "recovery attention reports persistence and survives ordinary progress", %{
     fixture: fixture
   } do
     alias FavnOrchestrator.RunServer.RecoveryAttention
@@ -531,14 +662,14 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         }
       )
 
-    assert :ok = RecoveryAttention.record(run, reason)
+    assert :saved = RecoveryAttention.record(run, reason)
     saved = HarnessStore.latest_run()
     assert saved.metadata["recovery_attention"]["phase"] == "resource_outcomes"
     assert saved.event_seq == run.event_seq + 1
-    assert :ok = RecoveryAttention.record(run, reason)
+    assert :already_saved = RecoveryAttention.record(run, reason)
     assert HarnessStore.latest_run() == saved
     another_phase = %{reason | details: %{reason.details | operation: :step_finished}}
-    assert :ok = RecoveryAttention.record(saved, another_phase)
+    assert :saved = RecoveryAttention.record(saved, another_phase)
     assert HarnessStore.latest_run().metadata["recovery_attention"]["reports"] == 2
 
     assert HarnessStore.latest_run().metadata["recovery_attention"]["first_reason"] ==
@@ -553,12 +684,12 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
                %{}
              )
 
-    refute Map.has_key?(HarnessStore.latest_run().metadata, "recovery_attention")
+    assert Map.has_key?(HarnessStore.latest_run().metadata, "recovery_attention")
     assert fixture.run.id == run.id
   end
 
   @tag store_opts: [held_task_kinds: []]
-  test "recovered live state cannot restore stale attention after later progress", %{
+  test "ordinary writes preserve attention until explicit resume", %{
     fixture: fixture
   } do
     metadata = Map.put(fixture.run.metadata, "recovery_attention", %{"phase" => "prior_failure"})
@@ -574,8 +705,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     complete_asset_task(fixture)
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
     assert HarnessStore.latest_run().status == :ok
-    refute Map.has_key?(HarnessStore.latest_run().metadata, "recovery_attention")
-    refute Enum.any?(HarnessStore.commits(), &Map.has_key?(&1.run.metadata, "recovery_attention"))
+    assert Map.has_key?(HarnessStore.latest_run().metadata, "recovery_attention")
+    assert Enum.all?(HarnessStore.commits(), &Map.has_key?(&1.run.metadata, "recovery_attention"))
   end
 
   test "cancellation while the inspection task is held terminates the worker and the run", %{
@@ -603,10 +734,19 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
   @tag store_opts: [commit_failures: %{run_started: :cancel_once}]
   test "a cancellation racing run start leaves durable work for recovery", %{fixture: fixture} do
-    {:ok, pid} = RunServer.start_link(%{run_state: fixture.run, version: fixture.version})
-    Process.unlink(pid)
-    monitor = Process.monitor(pid)
-    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    Agent.update(
+      Application.fetch_env!(:favn_orchestrator, :post_step_run_server_agent),
+      &%{&1 | run: %{&1.run | status: :pending}}
+    )
+
+    context =
+      FavnOrchestrator.Persistence.SystemContext.workspace(
+        fixture.run.workspace_id,
+        :run_recovery
+      )
+
+    assert {:ok, _} = FavnOrchestrator.RunManager.recover_candidate(context, fixture.run.id)
+    assert_receive {:ownership_released, @fencing_token}, 5_000
     assert HarnessStore.latest_run().metadata[:cancel_requested]
     refute_receive {:run_transition_committed, :run_cancelled}, 20
     refute_receive {:materialization_finished, _, _}, 20
@@ -646,7 +786,6 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     refute_receive {:materialization_finished, _, _}, 20
   end
 
-  @tag store_opts: [renew_result: :fenced]
   test "ownership loss while the inspection task is held stops the run and kills the worker",
        %{fixture: fixture} do
     {pid, monitor} = start_run(fixture)
@@ -655,41 +794,148 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert_receive {:runner_task_held, :relation_inspection, worker}, 5_000
     worker_monitor = Process.monitor(worker)
 
-    send(pid, :renew_storage_ownership)
+    Agent.update(
+      Application.fetch_env!(:favn_orchestrator, :post_step_run_server_agent),
+      &%{&1 | renew_result: :fenced}
+    )
+
+    send(:sys.get_state(pid).lease_keeper, :renew)
 
     assert_receive {:ownership_renewal_rejected, @fencing_token}, 1_000
-    assert_receive {:DOWN, ^monitor, :process, ^pid, {:shutdown, :run_ownership_lost}}, 5_000
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :shutdown}, 5_000
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}, 5_000
     refute_receive {:reconcile_initial, _generation_id}, 20
   end
 
-  @tag store_opts: [renew_result: :busy]
-  test "retryable ownership contention stops when the known lease is no longer safely live", %{
+  test "a keeper deadline stops a blocked coordinator and its owned helper", %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:runner_task_held, :relation_inspection, worker}, 5_000
+    worker_monitor = Process.monitor(worker)
+    keeper = :sys.get_state(pid).lease_keeper
+    :sys.suspend(pid)
+    :sys.replace_state(keeper, &%{&1 | deadline: System.monotonic_time(:millisecond) + 9_000})
+    send(keeper, :check)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 6_000
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, _}, 6_000
+  end
+
+  for deadline <- [:checkout_deadline, :acquisition_deadline] do
+    test "#{deadline} closes admission outside a blocked acquisition", %{fixture: fixture} do
+      {pid, monitor} = start_run(fixture)
+      run = :sys.get_state(pid).run_state
+
+      assert {:ok, {maintenance, reference}} =
+               FavnOrchestrator.RunTargetMaintenance.register(run, "pending-acquisition")
+
+      initial = :sys.get_state(maintenance).watches["pending-acquisition"]
+      assert initial.acquisition_deadline - initial.checkout_deadline == 17_000
+      :sys.suspend(pid)
+
+      :sys.replace_state(maintenance, fn state ->
+        put_in(
+          state.watches["pending-acquisition"][unquote(deadline)],
+          System.monotonic_time(:millisecond) - 1
+        )
+      end)
+
+      # A late checkout acknowledgement must not grant a new budget.
+      send(maintenance, {:acquisition_checked_out, reference})
+      assert {:error, _} = FavnOrchestrator.RunTargetMaintenance.permit(run, 1_000)
+      send(maintenance, :deadline_check)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 6_000
+    end
+  end
+
+  for deadline <- [:checkout_deadline, :acquisition_deadline] do
+    test "late waiting admission cannot erase expired #{deadline}", %{fixture: fixture} do
+      {pid, monitor} = start_run(fixture)
+      run = :sys.get_state(pid).run_state
+
+      assert {:ok, {maintenance, _}} =
+               FavnOrchestrator.RunTargetMaintenance.register(run, "late-waiting")
+
+      :sys.suspend(pid)
+
+      :sys.replace_state(maintenance, fn state ->
+        put_in(
+          state.watches["late-waiting"][unquote(deadline)],
+          System.monotonic_time(:millisecond) - 1
+        )
+      end)
+
+      FavnOrchestrator.RunTargetMaintenance.admission_result(
+        run,
+        "late-waiting",
+        {:ok, %{status: :waiting}}
+      )
+
+      assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 6_000
+    end
+  end
+
+  test "an unavailable attention snapshot requests fenced diagnosis and reports failure", %{
     fixture: fixture
   } do
-    ownership = %Ownership{
-      workspace_id: fixture.run.workspace_id,
-      run_id: fixture.run.id,
-      owner_id: "run-owner",
-      fencing_token: @fencing_token,
-      expires_at: DateTime.add(DateTime.utc_now(), 500, :millisecond)
-    }
+    agent = Application.fetch_env!(:favn_orchestrator, :post_step_run_server_agent)
+    Agent.update(agent, &Map.put(&1, :read_failure, Error.new(:unavailable, "test unavailable")))
 
-    state = %{
-      storage_context:
-        FavnOrchestrator.Persistence.SystemContext.workspace(
-          fixture.run.workspace_id,
-          :run_worker
-        ),
-      storage_ownership: ownership,
-      execution_state: %RunExecutionState{run: fixture.run},
-      run_state: fixture.run
-    }
+    assert {:error, %{kind: :unavailable}} =
+             FavnOrchestrator.RunServer.RecoveryAttention.record(
+               %{
+                 fixture.run
+                 | storage_fencing_token: @fencing_token,
+                   storage_owner_id: "test-owner"
+               },
+               :unsafe_recovery
+             )
 
-    assert {:stop, {:shutdown, :run_ownership_lost}, stopped} =
-             RunServer.handle_info(:renew_storage_ownership, state)
+    assert_receive {:diagnosis_required, "attention_snapshot_unavailable", @fencing_token}
+  end
 
-    assert stopped.storage_ownership == ownership
+  test "manager death removes the complete run subtree before replacement", %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:runner_task_held, :relation_inspection, worker}, 5_000
+    worker_monitor = Process.monitor(worker)
+    keeper = :sys.get_state(pid).lease_keeper
+    keeper_monitor = Process.monitor(keeper)
+    manager = Process.whereis(FavnOrchestrator.RunManager)
+    Process.exit(manager, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 6_000
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, _}, 6_000
+    assert_receive {:DOWN, ^keeper_monitor, :process, ^keeper, _}, 6_000
+    refute Process.alive?(manager)
+  end
+
+  test "late responsiveness response cannot reopen a revoked keeper", %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    keeper = :sys.get_state(pid).lease_keeper
+    :sys.suspend(pid)
+    state = :sys.get_state(keeper)
+
+    :sys.replace_state(
+      keeper,
+      &%{&1 | last_response: System.monotonic_time(:millisecond) - 45_001}
+    )
+
+    send(keeper, {:lease_response, pid, @fencing_token, state.challenge})
+    send(keeper, :check)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 6_000
+  end
+
+  test "keeper death stops a suspended coordinator without relying on terminate", %{
+    fixture: fixture
+  } do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:runner_task_held, :relation_inspection, worker}, 5_000
+    worker_monitor = Process.monitor(worker)
+    keeper = :sys.get_state(pid).lease_keeper
+    :sys.suspend(pid)
+    Process.exit(keeper, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, _}, 6_000
+    assert_receive {:DOWN, ^worker_monitor, :process, ^worker, _}, 6_000
   end
 
   @tag store_opts: [commit_failures: %{step_finished: :fenced}]
@@ -722,54 +968,21 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
   end
 
   describe "run server routing" do
-    test "a heartbeat cannot replace a pending admission-resume ownership proof" do
-      pending = %{
-        storage_renewal_pending: %{
-          token: make_ref(),
-          timer: make_ref(),
-          purpose: {:resume, :frozen_admission},
-          renewal_id: "resume-renewal",
-          reason: :busy
-        }
+    test "replayed lease receipt does not restore elapsed budget" do
+      observed = DateTime.utc_now()
+
+      receipt = %Ownership{
+        workspace_id: "w",
+        run_id: "r",
+        owner_id: "o",
+        fencing_token: 1,
+        expires_at: DateTime.add(observed, 120, :second),
+        database_observed_at: observed
       }
 
-      assert {:noreply, ^pending} = RunServer.handle_info(:renew_storage_ownership, pending)
-    end
-
-    test "a completed pending heartbeat schedules the next renewal", %{fixture: fixture} do
-      token = make_ref()
-
-      ownership = %Ownership{
-        workspace_id: fixture.run.workspace_id,
-        run_id: fixture.run.id,
-        owner_id: "run-owner",
-        fencing_token: @fencing_token,
-        expires_at: DateTime.add(DateTime.utc_now(), 30, :second)
-      }
-
-      state = %{
-        storage_context:
-          FavnOrchestrator.Persistence.SystemContext.workspace(
-            fixture.run.workspace_id,
-            :run_worker
-          ),
-        storage_ownership: ownership,
-        execution_state: %RunExecutionState{run: fixture.run},
-        storage_renewal_pending: %{
-          token: token,
-          timer: make_ref(),
-          purpose: :heartbeat,
-          renewal_id: "same-renewal",
-          reason: :busy
-        }
-      }
-
-      assert {:noreply, renewed} =
-               RunServer.handle_info({:retry_storage_ownership, token}, state)
-
-      assert is_reference(renewed.storage_renewal_timer)
-      refute Map.has_key?(renewed, :storage_renewal_pending)
-      Process.cancel_timer(renewed.storage_renewal_timer)
+      assert FavnOrchestrator.RunLeaseKeeper.deadline(receipt, 100) == 120_100
+      replay = %{receipt | database_observed_at: DateTime.add(observed, 20, :second)}
+      assert FavnOrchestrator.RunLeaseKeeper.deadline(replay, 20_100) == 120_100
     end
 
     test "a worker reply is deferred while a persist retry is pending", %{fixture: fixture} do
@@ -827,11 +1040,12 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       run_id: fixture.run.id,
       owner_id: "run-owner",
       fencing_token: @fencing_token,
-      expires_at: DateTime.add(DateTime.utc_now(), 30, :second)
+      expires_at: DateTime.add(DateTime.utc_now(), 120, :second),
+      database_observed_at: DateTime.utc_now()
     }
 
     {:ok, pid} =
-      RunServer.start_link(%{
+      FavnOrchestrator.TestSupport.ManagedRun.start_link(%{
         run_state: fixture.run,
         version: fixture.version,
         recovering?: true,

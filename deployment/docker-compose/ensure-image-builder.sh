@@ -30,7 +30,7 @@ for expected in \
   "reservedSpace = '2GB'" \
   "maxUsedSpace = '12GB'" \
   "minFreeSpace = '20GB'"; do
-  if ! printf '%s\n' "$inspection" | grep -Fq "$expected"; then
+  if ! printf '%s\n' "$inspection" | tr '\042' '\047' | grep -Fq "$expected"; then
     echo "Docker builder $builder_name does not have the expected bounded GC policy" >&2
     echo "remove that builder explicitly, then rerun this command to recreate it" >&2
     exit 1

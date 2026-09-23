@@ -211,6 +211,40 @@ defmodule FavnOrchestrator.API.RunsRouter do
     end
   end
 
+  post "/:run_id/resume-recovery" do
+    with :ok <- Authentication.ensure_service(conn),
+         {:ok, session, actor, context} <- actor_context(conn, :operator),
+         %{"expected_revision" => revision} when is_integer(revision) and revision > 0 <-
+           conn.body_params do
+      idempotent_run(
+        conn,
+        context,
+        "run.resume_recovery",
+        Authentication.command_principal(session, actor),
+        {"run", run_id},
+        %{run_id: run_id, expected_revision: revision},
+        fn idempotency ->
+          case FavnOrchestrator.resume_run_recovery(context, run_id, revision,
+                 idempotency: idempotency.command_idempotency
+               ) do
+            :ok ->
+              {:ok, 200, %{resumed: true, run_id: run_id}, "run", run_id}
+
+            {:error, %Error{kind: :conflict}} ->
+              {:error, 409, "conflict", "Recovery state changed or cancellation is active", %{}}
+
+            {:error, _} ->
+              {:error, 503, "recovery_resume_unavailable",
+               "Recovery resumption could not be confirmed", %{}}
+          end
+        end
+      )
+    else
+      {:error, reason} -> authentication_error(conn, reason)
+      _ -> validation_error(conn, "expected_revision must be a positive integer")
+    end
+  end
+
   match _ do
     Response.error(conn, 404, "not_found", "Route was not found")
   end

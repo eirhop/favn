@@ -2273,6 +2273,8 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
       payload_hash: hash,
       orchestration_context: context,
       run_id: run_id,
+      run_authority:
+        FavnStoragePostgres.TestSupport.RunFixture.authority(fixture.workspace_context, run_id),
       operation_id: nil,
       asset_step_id: nil,
       required_capability: "relation_inspection",

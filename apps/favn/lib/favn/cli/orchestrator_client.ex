@@ -184,6 +184,27 @@ defmodule Favn.CLI.OrchestratorClient do
     end
   end
 
+  @doc false
+  @spec resume_run_recovery(String.t(), String.t(), String.t(), pos_integer(), session_context()) ::
+          {:ok, map()} | {:error, term()}
+  def resume_run_recovery(base_url, service_token, run_id, revision, session_context) do
+    input = %{expected_revision: revision}
+    url = base_url <> "/api/orchestrator/v1/runs/#{URI.encode(run_id)}/resume-recovery"
+
+    case request_post(
+           :resume_run_recovery,
+           url,
+           service_token,
+           input,
+           session_context,
+           idempotency_key(:resume_run_recovery, session_context, Map.put(input, :run_id, run_id))
+         ) do
+      {:ok, %{"data" => data}} -> {:ok, data}
+      {:error, _} = error -> error
+      _ -> {:error, operation_error(:resume_run_recovery, :post, url, :invalid_response)}
+    end
+  end
+
   @spec password_login(String.t(), String.t(), String.t(), String.t(), String.t()) ::
           {:ok, session_context()} | {:error, term()}
   def password_login(base_url, service_token, workspace_id, username, password)

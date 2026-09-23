@@ -157,8 +157,8 @@ This is a coordinated pre-v1 format change. Drain old-format runs before switchi
 the control plane and runners, preserve retained data and unknown-write holds,
 and verify restart with work created by the new build. There is no reader that
 invents missing intent or settlement evidence for interrupted old-format runs.
-The [initial registration repair](../production/postgresql_operator_runbook.md)
-uses saved successful writes and leaves an already failed run terminal.
+For terminal runs, [missing-marker repair is unsupported](../operators/runs-and-schedules.md#missing-initial-marker).
+Recovery with a matching existing marker remains available.
 
 Adopting this breaking persistence format requires the explicit
 [fresh development database procedure](../production/upgrade_and_rollback.md#task-persistence-format-adoption).

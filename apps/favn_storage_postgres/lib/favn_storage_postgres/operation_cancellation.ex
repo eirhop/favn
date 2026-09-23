@@ -248,7 +248,10 @@ defmodule FavnStoragePostgres.OperationCancellation do
           ),
         task_ids:
           Repo.all(
-            from(t in tasks(workspace, owner),
+            from(
+              t in FavnStoragePostgres.RunnerTasks.CleanupReads.exclude_authorized(
+                tasks(workspace, owner)
+              ),
               where: t.status in @active_tasks,
               order_by: [asc: t.updated_at, asc: t.task_id],
               limit: @batch_size,
@@ -290,7 +293,7 @@ defmodule FavnStoragePostgres.OperationCancellation do
         run_ids: if(run && run.status in ["pending", "running"], do: [run_id], else: []),
         task_ids:
           Repo.all(
-            from(t in RunnerTask,
+            from(t in FavnStoragePostgres.RunnerTasks.CleanupReads.exclude_authorized(RunnerTask),
               where:
                 t.workspace_id == ^workspace and t.run_id == ^run_id and
                   t.status in @active_tasks,

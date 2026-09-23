@@ -20,6 +20,7 @@ defmodule FavnStoragePostgres.Schemas.RunnerTask do
     field(:persistence_failure, :string)
     field(:task_kind, :string)
     field(:run_id, :string)
+    field(:cleanup_fencing_token, :integer)
     field(:operation_id, :string)
     field(:deployment_operation_id, :string)
     field(:asset_step_id, :string)

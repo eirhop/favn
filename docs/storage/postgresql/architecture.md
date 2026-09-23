@@ -240,11 +240,14 @@ Redis is not required for correctness or initial multi-node scale.
   changing phase. Recovery reconciles an admitting submission before deciding
   whether requeue is safe. Failed rows remain terminal; a safe retry is a new
   linked submission, and an unknown outcome is never retried blindly.
-- Recovery claims abandoned runs in bounded batches and reconstructs work from
+- Recovery selects candidate IDs, reserves bounded local capacity, then claims
+  individual generations and reconstructs work from
   pinned manifests, immutable run plans, and persisted checkpoints. A newly
-  persisted, never-claimed run has one ownership-lease interval to complete its
+  persisted, never-claimed run has a 30-second grace period to complete its
   normal RunServer handoff before recovery may claim it; if that handoff crashes,
   the same row becomes recoverable after the bounded grace period.
+- Durable recovery purpose, attention and pacing follow the
+  [run ownership contract](../../architecture/run-ownership-and-recovery.md).
 - Derived projections are repairable from authoritative rows/outbox events.
 - Unknown transaction outcomes are resolved using the original command identity.
 - Circuit and recovery rows survive orchestrator restarts. A successful probe

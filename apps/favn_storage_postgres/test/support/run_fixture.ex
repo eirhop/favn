@@ -8,6 +8,22 @@ defmodule FavnStoragePostgres.TestSupport.RunFixture do
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
   alias FavnStoragePostgres.Runs.Store, as: RunStore
 
+  def authority(_context, nil), do: nil
+
+  def authority(context, run_id) do
+    case FavnStoragePostgres.RunOwnership.Store.claim_run(%C.ClaimRun{
+           workspace_context: context,
+           command_id: "fixture-authority:" <> run_id,
+           run_id: run_id,
+           owner_id: "fixture-owner",
+           lease_duration_ms: 600_000
+         }) do
+      {:ok, ownership} -> ownership
+      {:error, %{kind: :not_found}} -> nil
+      error -> raise "fixture cannot acquire run authority: #{inspect(error)}"
+    end
+  end
+
   def create(workspace_id, run_ids, opts \\ []) do
     {:ok, platform} =
       FavnOrchestrator.Persistence.PlatformContext.new("run-fixture", "run-fixture", [

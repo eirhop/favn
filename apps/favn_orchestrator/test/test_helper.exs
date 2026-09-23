@@ -1,3 +1,6 @@
+Code.require_file("support/managed_run.ex", __DIR__)
+Code.require_file("support/unit_run_authority.ex", __DIR__)
+
 FavnTestSupport.Fixtures.compile_fixtures!([
   :basic_assets,
   :graph_assets,

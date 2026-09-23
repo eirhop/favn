@@ -117,6 +117,7 @@
     {"id": "API-063", "method": "PUT", "path": "/api/orchestrator/v1/actors/{actor_id}/roles", "access": "actor"},
     {"id": "API-064", "method": "PUT", "path": "/api/orchestrator/v1/actors/{actor_id}/password", "access": "actor"},
     {"id": "API-065", "method": "GET", "path": "/internal/runner-demand/{runner_pool}/{runner_release_id}", "access": "capacity"},
-    {"id": "API-066", "method": "GET", "path": "/internal/runner-demand/{runner_pool}/{runner_release_id}/metrics", "access": "capacity"}
+    {"id": "API-066", "method": "GET", "path": "/internal/runner-demand/{runner_pool}/{runner_release_id}/metrics", "access": "capacity"},
+    {"id": "API-067", "method": "POST", "path": "/api/orchestrator/v1/runs/{run_id}/resume-recovery", "access": "platform"}
   ]
 }

@@ -86,6 +86,7 @@ defmodule FavnView.RunDetailLive do
         # first open; this only keeps the refresh path from firing one early.
         mounted?: false,
         cancel_attempt: nil,
+        resume_attempt: nil,
         retry_attempt: nil,
         nav_items: AssetCataloguePage.nav_items(:runs)
       )
@@ -139,6 +140,7 @@ defmodule FavnView.RunDetailLive do
       compare_limit_reached?: false,
       compare_error: nil,
       cancel_attempt: nil,
+      resume_attempt: nil,
       retry_attempt: nil
     )
     |> reset_windows(keep_loaded: true)
@@ -302,6 +304,50 @@ defmodule FavnView.RunDetailLive do
   end
 
   def handle_event("step_window", _params, socket), do: {:noreply, socket}
+
+  def handle_event("resume_recovery", params, socket) do
+    case socket.assigns.run[:recovery] do
+      %{"operator_action" => "resume_recovery", "revision" => revision}
+      when is_integer(revision) ->
+        run_id = socket.assigns.run_id
+
+        attempt =
+          CommandAttempt.next(
+            socket.assigns.resume_attempt,
+            "run_resume_recovery",
+            {run_id, revision},
+            params
+          )
+
+        socket = assign(socket, :resume_attempt, attempt)
+
+        case resume_run_recovery(actor_context(socket), run_id, revision,
+               idempotency_key: attempt.key
+             ) do
+          :ok ->
+            {:noreply,
+             socket
+             |> CommandAttempt.acknowledge(attempt)
+             |> assign(:resume_attempt, nil)
+             |> put_flash(:info, "Recovery reconciliation scheduled")
+             |> refresh_run()}
+
+          {:error, reason} ->
+            {socket, attempt} = CommandAttempt.settle_failure(socket, attempt, reason)
+
+            {:noreply,
+             socket
+             |> assign(:resume_attempt, attempt)
+             |> put_flash(
+               :error,
+               "Recovery could not be resumed. Refresh and check its current status."
+             )}
+        end
+
+      _ ->
+        {:noreply, put_flash(socket, :error, "This recovery revision is no longer available")}
+    end
+  end
 
   def handle_event("cancel_run", params, socket) do
     case socket.assigns.run do
@@ -791,6 +837,7 @@ defmodule FavnView.RunDetailLive do
       status: LogsViewModel.status_label(header.status),
       status_tone: LogsViewModel.status_tone(header.status),
       cancellable?: header.cancellable?,
+      recovery: header.recovery,
       cancellation_status: header.cancellation && header.cancellation.status,
       cancel_run_id: if(header.cancellation, do: header.cancellation.run_id, else: header.run_id),
       cancel_label: if(header.cancellation, do: header.cancellation.label, else: "Cancel run"),
@@ -1050,6 +1097,14 @@ defmodule FavnView.RunDetailLive do
       :retry_operator_run_remaining_fun,
       &Orchestrator.retry_operator_run_remaining/3
     ).(context, run_id, opts)
+  end
+
+  defp resume_run_recovery(context, run_id, revision, opts) do
+    Application.get_env(
+      :favn_view,
+      :resume_operator_run_recovery_fun,
+      &Orchestrator.resume_operator_run_recovery/4
+    ).(context, run_id, revision, opts)
   end
 
   defp get_run_flow(context, run_id) do

@@ -1018,6 +1018,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
         authority.fencing_token
       )
 
+    FavnOrchestrator.TestSupport.UnitRunAuthority.start(run)
     {:ok, index} = Favn.Manifest.Index.build_from_version(f.version)
 
     FavnOrchestrator.RunServer.Execution.RunExecutionState.new(run, f.version,

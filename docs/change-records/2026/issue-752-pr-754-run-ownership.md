@@ -2,14 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix and lifecycle redesign |
 | Primary issue | [#752](https://github.com/eirhop/favn/issues/752) |
 | Pull request | [#754](https://github.com/eirhop/favn/pull/754) |
 | Related work | [#692](https://github.com/eirhop/favn/pull/692), [#722](https://github.com/eirhop/favn/pull/722), [#731](https://github.com/eirhop/favn/pull/731), [#748](https://github.com/eirhop/favn/issues/748), [#749](https://github.com/eirhop/favn/pull/749) |
 | Affected areas | Orchestrator run lifecycle, recovery, configuration and operator reads; PostgreSQL ownership, connection budgets and transactions; recovery operator workflow |
 | Approved plan commit | [8e601372897f5507e2d2262b80bdb9008f5b22f4](https://github.com/eirhop/favn/commit/8e601372897f5507e2d2262b80bdb9008f5b22f4) |
-| Last updated | 2026-09-22 |
+| Last updated | 2026-09-23 |
 
 ## One-minute summary
 
@@ -20,8 +20,8 @@ Give each run a small, independent lease keeper, bound the database work that
 can delay it, and make replacement an explicit handoff between generations.
 Keep the existing execution engine and its durable task identities; add bounded
 recovery attempts and an actionable attention state when safe progress remains
-impossible. This is a design-only change: implementation and production
-qualification are separate work against the reviewed baseline.
+impossible. Implementation was authorized after the design review and is being
+qualified against the preserved approved baseline.
 
 ## Impact
 
@@ -46,9 +46,9 @@ lost ownership, uncertain work, and recovery requiring intervention.
 - The user observed near-100% Orchestrator CPU during the incident. This is a
   plausible contributor, not verified causation. The initial missed renewal's
   scheduling, throttling and transaction timings were not captured.
-- This task authorizes architecture, a change record and independent Astra Max
-  review. No runtime changes, cloud mutations or recovery of customer runs are
-  part of this planning change.
+- The initial request authorized planning; the subsequent user instruction
+  explicitly authorized implementation and final Astra Max review. Cloud
+  mutations and recovery of customer runs remain outside this change.
 
 ### Evidence
 
@@ -684,12 +684,57 @@ authorized by this planning record alone.
 
 ## Implementation outcome
 
-Not started. This PR contains the plan and its review only. Runtime code,
-configuration defaults and production behavior remain unchanged.
+The implementation separates ownership renewal from execution callbacks, retains
+PostgreSQL fencing, and replaces PID-only recovery with a generation-aware
+lifecycle. The keeper uses conservative database-observed receipts; target
+maintenance and helper registration have independent deadlines. Start capacity is
+reserved before claiming, including a manager-owned 20-second pre-claim deadline.
+Coordinator activation happens after manager registration, so a slow transfer
+cannot block the manager. Each replacement has its own ten-second handoff
+deadline, even if the predecessor already exhausted its shutdown timer. Missing
+shutdown acknowledgement permits bounded diagnosis only. Shutdown counts
+preparing and draining generations. Combined-window maintenance resolves the
+original lock from the persisted task context, including the admission commit /
+reply gap; missing or damaged original authority stops execution.
+
+Recovery counters, backoff, claim purpose and attention revision are persistent.
+Resume is authorized and revision checked, stops the previous generation, and
+rechecks cancellation ownership for both parent and member before committing.
+CLI, service API and the existing run detail page expose the same operation.
+The old RunServer heartbeat and best-effort attention paths are removed.
+
+Implementation verification and final independent acceptance are still underway;
+the status remains `Implementing`. No production deployment is implied.
 
 ## Deviations from the approved plan
 
-None yet; implementation has not started.
+| Planned | Implemented | Reason | Reviewer verdict |
+| --- | --- | --- | --- |
+| Cleanup can perform narrowly authorized reconciliation reads | Each new cleanup read persists its authorizing generation on the runner task; claim/requeue and cancellation sweeps revalidate it. Explicit task cancellation remains effective. Existing nonterminal helper tasks are not silently adopted; they require attention and reconciliation. | An in-memory permit alone cannot survive runner assignment or distinguish a legitimate read from old queued work during cancellation. | Astra Max accepted the schema stamp and conservative refusal during interim review; refusal now routes to recoverable attention rather than terminal failure. |
+| Preserve existing administrative repair where compatible | Retire the temporary `repair_initial_registration.exs` script and its missing-marker procedure. Normal managed registration and matching-marker target recovery remain supported. | The script created run-owned mutations for a terminal run without a live lifecycle. Preserving it would need a separately authorized target-owned repair contract; adding an ownership bypass is unsafe. This is a pre-v1 breaking loss of the one-off missing-marker repair capability, not an equivalent reroute. | Astra Max assessed the existing target-recovery contract and accepted retirement as the narrow safe scope; final review remains required. |
+| Existing qualification harness | Normalize single/double TOML quotes in the builder policy check and run only the security probes with the validated non-root host UID/GID. | Buildx renders double quotes, and Linux bind-mounted evidence otherwise belonged to a different UID. Cache limits and container hardening remain unchanged; evidence stays private and host-readable/removable, with probe HOME/cache in private tmpfs. | Astra Max accepted both portability corrections; full harness qualification recorded below. |
+| Bounded preparation before keeper attachment | Manager enforces a 20-second initial claim deadline, then the keeper owns preparation responsiveness. | A database checkout or stalled pre-claim process otherwise held scarce preparation slots indefinitely. | Requested during final Astra Max review; regression added. |
+| Production additions estimated at 1,150–1,900; deletions 350–650 | Current production count +2,798/-904; tests and supporting docs +2,272/-516 (breakdown below). | Explicit target acquisition guardian, helper shutdown/registration, persisted cleanup authorization and resume barriers require more code than estimated. No second execution engine or generic framework was added. | Astra Max independently confirmed the earlier interim overrun; final variance is +898 additions/+254 deletions above the production upper estimates and awaits final acceptance. Approved estimates above are unchanged. |
+
+Counts compare the approved baseline with the implementation, exclude this record
+and the generated security catalog, and include deleted code. Each file is assigned
+to its dominant implementation slice: shared ownership-store work is counted in
+slice 4 even where it also supports slice 1. Counts are conservative raw diff lines,
+not a claim that every changed line adds new behavior.
+
+| Slice | Production added/deleted | Tests/docs added/deleted |
+| --- | --- | --- |
+| 1: renewal storage and transaction bounds | +54/-2 | +611/-0 |
+| 2: keeper, helpers and target maintenance | +744/-339 | +403/-94 |
+| 3: preparation and generation handoff | +690/-323 | +225/-80 |
+| 4: durable recovery and operator surface | +1,289/-129 | +321/-5 |
+| 5: qualification and canonical docs | +21/-111 | +712/-337 |
+| Total | +2,798/-904 | +2,272/-516 |
+
+The total exceeds the initial estimate because cleanup authorization must remain
+valid after dispatch, target acquisition needs a separate bounded guardian, and
+resumption needs a confirmed local shutdown barrier plus a final durable
+cancellation check. The additional tests exercise those failure boundaries.
 
 ## Decision log
 
@@ -706,19 +751,30 @@ None yet; implementation has not started.
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | RC17 fault/control probes | Two passed: ~3-second lock timeout recovered; ~32-second simulated callback delay exposed expiry and broken handoff | Prior diagnostic evidence; no proof of the proposed implementation |
-| Source/lock-order review | Current paths inspected; proposed paths require implementation tests | Static analysis |
+| Source/lock-order review | Astra Max inspected the final implementation against the approved baseline and required corrections described below | Static analysis; final verdict depends on qualification |
+| Reserved renewal pool and persistence qualification | 31 focused PostgreSQL tests passed before the final handoff corrections: fresh receipt/replay, broad-lock bypass, row NOWAIT, ordinary-pool starvation, all 64 concurrent renewals, recovery/resume/cancellation, restricted runtime role, populated RC17 migration and fresh-process recovery | Rechecked by the final suites below; two reserved renewal connections, four ordinary test connections, PostgreSQL 18 |
+| Target admission commit / reply races | 3 passed on PostgreSQL: independent renewal while the coordinator waits; expired and malformed original locks enter attention after fresh recovery with no new task or lock generation | Real durable admissions and locks; controlled delayed response |
 | Record links, Markdown and Mermaid | Ten local links resolve; whitespace check is clean; both diagrams rendered and were visually inspected locally and on GitHub at the approved planning commit. No diagram correction was required. | Documentation validation only |
 | Astra Max plan review | Approved after two rounds of corrections; no remaining findings | Independent design review, not runtime qualification |
 
 ### Not verified
 
-The proposed code does not exist yet. Its concurrency behavior, timeout policy,
-reserved-pool throughput, migrations, helper cleanup, attention/resume workflow
-and CPU-pressure tolerance are unverified. The first Azure stall remains
-unattributed; no cloud resources or customer runs were changed.
+Local verification is ongoing. The CPU-pressure regression currently exercises
+real run/runner-task persistence with controlled coordinator suspension and BEAM
+scheduler contention. It does not by itself prove Azure CPU allocation, arbitrary
+100% CPU starvation, or a production throughput SLO. Explicit container quota,
+whole-VM suspension, credential refresh and an RC17 throughput comparison require
+separate recorded qualification before those claims can be made. No cloud
+resources or customer runs were changed; the first Azure stall remains
+unattributed.
 
 ## Final review
 
-Implementation review is not applicable yet. The eventual final reviewer must
-compare the approved planning commit with code, tests, canonical documentation,
-actual complexity and every recorded deviation before this work becomes ready.
+Independent Astra Max implementation review is in progress against
+`8e601372897f5507e2d2262b80bdb9008f5b22f4`. Interim findings have prompted fixes for
+cleanup refusal classification, pre-claim deadlines, parent cancellation during
+resume, asynchronous coordinator activation and complete shutdown lifecycle
+counting, persisted combined-window target identity, and a replacement-owned
+handoff deadline after a predecessor timeout. The missing-marker repair retirement
+and harness portability corrections were reviewed explicitly. Final acceptance
+has not yet been granted.

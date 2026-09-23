@@ -47,6 +47,13 @@ defmodule FavnStoragePostgres.ErrorMapper do
     Error.new(:timeout, "database statement exceeded its time budget", retryable?: true)
   end
 
+  def map(%Postgrex.Error{postgres: %{code: :transaction_timeout}}) do
+    Error.new(:timeout, "database transaction exceeded its total time budget",
+      retryable?: true,
+      details: %{outcome: :unconfirmed, reconciliation: :original_command}
+    )
+  end
+
   def map(%Ecto.ConstraintError{constraint: constraint}) do
     Error.new(:constraint, "persistence constraint rejected the operation",
       details: %{constraint: constraint}

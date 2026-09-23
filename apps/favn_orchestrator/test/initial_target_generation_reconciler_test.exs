@@ -135,6 +135,13 @@ defmodule FavnOrchestrator.InitialTargetGenerationReconcilerTest do
     runtime = %PersistenceRuntime{backend: __MODULE__, options: [], stores: stores}
     start_supervised!({PersistenceRuntime, runtime})
 
+    FavnOrchestrator.TestSupport.UnitRunAuthority.start(%FavnOrchestrator.RunState{
+      id: "run-1",
+      workspace_id: "workspace-1",
+      storage_owner_id: "owner",
+      storage_fencing_token: 1
+    })
+
     Process.put(:test_pid, self())
 
     on_exit(fn ->

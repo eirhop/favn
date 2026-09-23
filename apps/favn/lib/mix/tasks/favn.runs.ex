@@ -10,6 +10,7 @@ defmodule Mix.Tasks.Favn.Runs do
       mix favn.runs list --status error --limit 20
       mix favn.runs show RUN_ID
       mix favn.runs cancel RUN_ID
+      mix favn.runs resume-recovery RUN_ID --revision REVISION
       mix favn.runs cancel RUN_ID --wait --wait-timeout-ms 30000
 
   `cancel` requests cancellation through the local orchestrator HTTP boundary.
@@ -36,10 +37,26 @@ defmodule Mix.Tasks.Favn.Runs do
   @impl Mix.Task
   def run(args) do
     case parse_args(args) do
-      {:ok, {:list, opts}} -> list_runs(opts)
-      {:ok, {:show, run_id, opts}} -> show_run(run_id, opts)
-      {:ok, {:cancel, run_id, opts}} -> cancel_run(run_id, opts)
-      {:error, message} -> Mix.raise(message)
+      {:ok, {:list, opts}} ->
+        list_runs(opts)
+
+      {:ok, {:show, run_id, opts}} ->
+        show_run(run_id, opts)
+
+      {:ok, {:cancel, run_id, opts}} ->
+        cancel_run(run_id, opts)
+
+      {:ok, {:resume_recovery, run_id, revision}} ->
+        case Favn.CLI.Runs.resume_recovery(run_id, revision) do
+          {:ok, _} ->
+            Mix.shell().info("Recovery resumed for #{run_id}; original tasks will be reconciled")
+
+          {:error, reason} ->
+            Mix.raise(error_message(reason))
+        end
+
+      {:error, message} ->
+        Mix.raise(message)
     end
   end
 
@@ -62,6 +79,13 @@ defmodule Mix.Tasks.Favn.Runs do
       {[], []} -> {:error, "missing RUN_ID; usage: mix favn.runs show RUN_ID"}
       {[], _many} -> {:error, "expected one RUN_ID; usage: mix favn.runs show RUN_ID"}
       {_invalid, _rest} -> {:error, "invalid option for mix favn.runs show"}
+    end
+  end
+
+  def parse_args(["resume-recovery", run_id, "--revision", revision]) do
+    case Integer.parse(revision) do
+      {value, ""} when value > 0 -> {:ok, {:resume_recovery, run_id, value}}
+      _ -> {:error, "revision must be a positive integer"}
     end
   end
 
@@ -201,5 +225,5 @@ defmodule Mix.Tasks.Favn.Runs do
         next: "check status with mix favn.runs show RUN_ID"
       )
 
-  defp usage, do: "mix favn.runs list|show|cancel"
+  defp usage, do: "mix favn.runs list|show|cancel|resume-recovery RUN_ID --revision REVISION"
 end

@@ -5,8 +5,7 @@ defmodule FavnOrchestrator.OperationCancellation do
   Acceptance is durable intent, not an acknowledgement that external work stopped.
   Existing dispatch/recovery workers reconcile bounded pages without admission.
   """
-  alias FavnOrchestrator.{OperationalEvents, Persistence, RunManager, RunOwnership, RunnerTasks}
-  alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.{OperationalEvents, Persistence, RunManager, RunnerTasks}
   alias FavnOrchestrator.Persistence.Commands.RequestRunCancellation
   alias FavnOrchestrator.Persistence.Queries.{GetRun, PageCancellingOperations}
   alias FavnOrchestrator.Persistence.Results.CancellationScope
@@ -78,7 +77,10 @@ defmodule FavnOrchestrator.OperationCancellation do
 
         Enum.each(
           work.task_ids,
-          &RunnerTasks.request_cancellation(context.workspace_id, &1, reason, wait_for_ack: false)
+          &RunnerTasks.request_cancellation(context.workspace_id, &1, reason,
+            wait_for_ack: false,
+            preserve_cleanup: true
+          )
         )
 
         Enum.each(work.run_ids, fn run_id ->
@@ -103,13 +105,8 @@ defmodule FavnOrchestrator.OperationCancellation do
   end
 
   defp recover_cancelled_run(context, run_id) do
-    with {:ok, ownership} <- RunOwnership.claim(context, run_id, RunOwnership.owner_id(run_id)),
-         {:ok, _run_id} <- RunManager.recover_claimed_run(context, ownership) do
-      :ok
-    else
-      {:error, %Error{kind: :conflict, retryable?: true}} -> :ok
-      {:error, {:run_plan_capacity_exhausted, _}} -> :ok
-      {:error, :run_not_recoverable} -> :ok
+    case RunManager.recover_cancellation(context, run_id) do
+      :ok -> :ok
       {:error, reason} -> report(context.workspace_id, run_id, reason)
     end
   end
