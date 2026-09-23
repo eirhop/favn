@@ -10,6 +10,7 @@
 | Affected areas | PostgreSQL run coordination; orchestrator registration and recovery continuations; run recovery diagnostics and detail view |
 | Approved plan commit | [9ebf481ef21edd600a0e1add6dcf6ef3309d363b](https://github.com/eirhop/favn/commit/9ebf481ef21edd600a0e1add6dcf6ef3309d363b) |
 | Approved amendment commit | [95a73af4](https://github.com/eirhop/favn/commit/95a73af4) |
+| Approved follow-up amendment commit | [89229b26](https://github.com/eirhop/favn/commit/89229b26c2b6319a5ee3f0d7883bc317d8cf5aed) |
 | Follow-up amendment | Approved by Astra Max on 2026-09-23; implementation and qualification outstanding |
 | Last updated | 2026-09-23 |
 
