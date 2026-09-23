@@ -5,10 +5,10 @@
 | Status | Plan reviewed |
 | Type | Bug fix |
 | Primary issue | None. On 2026-09-23 the maintainer explicitly requested this record without a GitHub issue. |
-| Pull request | Pending |
+| Pull request | [#760](https://github.com/eirhop/favn/pull/760) |
 | Related work | [#754](https://github.com/eirhop/favn/pull/754), [#752](https://github.com/eirhop/favn/issues/752), [#692](https://github.com/eirhop/favn/pull/692) |
 | Affected areas | PostgreSQL run coordination; orchestrator registration and recovery continuations; run recovery diagnostics and detail view |
-| Approved plan commit | Recorded in the immediate PR-number update after this reviewed planning commit |
+| Approved plan commit | [9ebf481ef21edd600a0e1add6dcf6ef3309d363b](https://github.com/eirhop/favn/commit/9ebf481ef21edd600a0e1add6dcf6ef3309d363b) |
 | Last updated | 2026-09-23 |
 
 ## One-minute summary
