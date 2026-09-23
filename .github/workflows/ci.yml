@@ -56,6 +56,9 @@ jobs:
       - name: Check test tag coverage
         run: elixir scripts/check_test_tag_tiers.exs
 
+      - name: Check for repository Python dependencies
+        run: elixir scripts/check_no_repo_python.exs
+
       - name: Test umbrella runner
         run: elixir scripts/umbrella_test_runner_test.exs
 
@@ -176,10 +179,16 @@ jobs:
           curl --fail --location --silent --show-error \
             https://extensions.duckdb.org/v1.5.5/linux_amd64/ducklake.duckdb_extension.gz \
             --output "$RUNNER_TEMP/ducklake.duckdb_extension.gz"
+          curl --fail --location --silent --show-error \
+            https://extensions.duckdb.org/v1.5.5/linux_amd64/postgres_scanner.duckdb_extension.gz \
+            --output "$RUNNER_TEMP/postgres_scanner.duckdb_extension.gz"
           echo "733ccf19fedcfd5e0bfaf85993219145181099cc411076cabf14933ea16ab452  $RUNNER_TEMP/ducklake.duckdb_extension.gz" \
+            | sha256sum --check
+          echo "e0f631a5535f165468bc8a20501f8bc1490adbc877d38fcdff2f8d05531e1e5b  $RUNNER_TEMP/postgres_scanner.duckdb_extension.gz" \
             | sha256sum --check
           mkdir -p "$HOME/.duckdb/extensions/v1.5.5/linux_amd64"
           gzip -dc "$RUNNER_TEMP/ducklake.duckdb_extension.gz" > "$HOME/.duckdb/extensions/v1.5.5/linux_amd64/ducklake.duckdb_extension"
+          gzip -dc "$RUNNER_TEMP/postgres_scanner.duckdb_extension.gz" > "$HOME/.duckdb/extensions/v1.5.5/linux_amd64/postgres_scanner.duckdb_extension"
 
       - name: Test native DuckDB bootstrap and semantic compiler
         env:
@@ -196,6 +205,179 @@ jobs:
           test/catalog_publication_test.exs
           test/runtime_catalog_test.exs
           test/rejected_commit_retry_test.exs
+
+      - name: Install retained DuckDB 1.5.2 Linux driver
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/duckdb/duckdb/releases/download/v1.5.2/libduckdb-linux-amd64.zip \
+            --output "$RUNNER_TEMP/libduckdb-linux-amd64-v1.5.2.zip"
+          echo "4711438f0fdb04f0441803409bec5430b763d4f2ac3482c1f97cfa6b5ecb4c15  $RUNNER_TEMP/libduckdb-linux-amd64-v1.5.2.zip" \
+            | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/duckdb-v1.5.2"
+          unzip -q "$RUNNER_TEMP/libduckdb-linux-amd64-v1.5.2.zip" libduckdb.so -d "$RUNNER_TEMP/duckdb-v1.5.2"
+
+      - name: Test retained Linux semantic profile
+        env:
+          DUCKDB_ADBC_DRIVER: ${{ runner.temp }}/duckdb-v1.5.2/libduckdb.so
+          FAVN_DUCKDB_ADBC_INTEGRATION: '1'
+        run: >-
+          mix do --app favn_duckdb_adbc cmd mix test --no-compile
+          test/semantic_compiler_test.exs
+          test/semantic_compiler_lifecycle_test.exs
+          test/semantic_artifact_integration_test.exs
+
+      - name: Build Linux semantic parity artifact
+        env:
+          DUCKDB_ADBC_DRIVER: ${{ runner.temp }}/duckdb/libduckdb.so
+        run: mix run --no-start scripts/semantic_artifact_parity.exs -- "$RUNNER_TEMP/semantic.json"
+
+      - name: Save Linux semantic parity artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: semantic-linux-amd64
+          path: ${{ runner.temp }}/semantic.json
+          if-no-files-found: error
+
+  macos-arm64:
+    name: Native macOS arm64
+    runs-on: macos-26
+    needs: changes
+    if: needs.changes.outputs.tests == 'true'
+    env:
+      MIX_ENV: test
+      FAVN_DATABASE_URL: ecto://favn_runtime:favn_runtime_test@127.0.0.1:55439/favn_test
+      FAVN_DATABASE_MIGRATOR_URL: ecto://postgres@127.0.0.1:55439/favn_test
+      FAVN_DATABASE_RUNTIME_ROLE: favn_runtime
+      FAVN_RUNTIME_INPUT_PIN_KEY: 0123456789abcdef0123456789abcdef
+      FAVN_RUNTIME_INPUT_PIN_KEY_VERSION: '1'
+      FAVN_DUCKDB_ADBC_INTEGRATION: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Assert native qualification host
+        run: |
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 26
+
+      - name: Setup Elixir and Erlang
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: '1.20.4'
+          otp-version: '29.0.6'
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex 2.5.1 --force
+          mix local.rebar rebar3 https://github.com/erlang/rebar3/releases/download/3.27.0/rebar3 --sha512 0d00494d849fdc521a55142278d1f6ba552954fbd65b80d40df8022f594f05d6c99ed1d731bc263691a04176e11d4c6e126c56ba20dca19c5e42d4ffab2e7e36 --force
+
+      - name: Start native PostgreSQL 18
+        run: |
+          brew install postgresql@18
+          echo "$(brew --prefix postgresql@18)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix postgresql@18)/bin/initdb" -D "$RUNNER_TEMP/favn-pg" -A trust -U postgres --encoding UTF8
+          "$(brew --prefix postgresql@18)/bin/pg_ctl" -D "$RUNNER_TEMP/favn-pg" -o '-h 127.0.0.1 -p 55439' -w start
+          "$(brew --prefix postgresql@18)/bin/createdb" -h 127.0.0.1 -p 55439 -U postgres favn_test
+          "$(brew --prefix postgresql@18)/bin/psql" -h 127.0.0.1 -p 55439 -U postgres -d favn_test -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE favn_runtime LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'favn_runtime_test'" \
+            -c 'CREATE SCHEMA favn_control AUTHORIZATION postgres' \
+            -c 'REVOKE CONNECT, CREATE, TEMPORARY ON DATABASE favn_test FROM PUBLIC' \
+            -c 'GRANT CONNECT ON DATABASE favn_test TO favn_runtime'
+
+      - name: Install pinned DuckDB ADBC driver
+        env:
+          DUCKDB_ADBC_DRIVER: ${{ runner.temp }}/duckdb/libduckdb.dylib
+        run: |
+          curl --fail --location --silent --show-error \
+            https://github.com/duckdb/duckdb/releases/download/v1.5.5/libduckdb-osx-universal.zip \
+            --output "$RUNNER_TEMP/libduckdb-osx-universal.zip"
+          echo "7b5b8915cc382d0708636fe6385c0cdad5a61c9ff8ba2638b3e2141640783155  $RUNNER_TEMP/libduckdb-osx-universal.zip" \
+            | shasum -a 256 --check
+          mkdir -p "$RUNNER_TEMP/duckdb"
+          unzip -q "$RUNNER_TEMP/libduckdb-osx-universal.zip" libduckdb.dylib -d "$RUNNER_TEMP/duckdb"
+          test "$(lipo -archs "$DUCKDB_ADBC_DRIVER")" = 'x86_64 arm64'
+          echo "DUCKDB_ADBC_DRIVER=$DUCKDB_ADBC_DRIVER" >> "$GITHUB_ENV"
+
+      - name: Install qualified DuckLake extension
+        run: |
+          curl --fail --location --silent --show-error \
+            https://extensions.duckdb.org/v1.5.5/osx_arm64/ducklake.duckdb_extension.gz \
+            --output "$RUNNER_TEMP/ducklake.duckdb_extension.gz"
+          curl --fail --location --silent --show-error \
+            https://extensions.duckdb.org/v1.5.5/osx_arm64/postgres_scanner.duckdb_extension.gz \
+            --output "$RUNNER_TEMP/postgres_scanner.duckdb_extension.gz"
+          echo "d89175054de53a830e9b2682655b640d29c9a74120f28a310fccc4bef981a0bd  $RUNNER_TEMP/ducklake.duckdb_extension.gz" \
+            | shasum -a 256 --check
+          echo "4fb5079e67b00e6643e6ee91545a355010004d1dad50b43f1c060de0cb789c8e  $RUNNER_TEMP/postgres_scanner.duckdb_extension.gz" \
+            | shasum -a 256 --check
+          mkdir -p "$HOME/.duckdb/extensions/v1.5.5/osx_arm64"
+          gzip -dc "$RUNNER_TEMP/ducklake.duckdb_extension.gz" > "$HOME/.duckdb/extensions/v1.5.5/osx_arm64/ducklake.duckdb_extension"
+          gzip -dc "$RUNNER_TEMP/postgres_scanner.duckdb_extension.gz" > "$HOME/.duckdb/extensions/v1.5.5/osx_arm64/postgres_scanner.duckdb_extension"
+
+      - name: Fetch and compile
+        run: |
+          mix deps.get
+          mix compile --warnings-as-errors
+          test -x "_build/test/lib/favn_duckdb_adbc/priv/semantic_worker"
+          mix favn.postgres.test_setup --runtime-role favn_runtime
+
+      - name: Test native semantic compilation and DuckLake
+        env:
+          FAVN_DATABASE_URL: ecto://postgres@127.0.0.1:55439/favn_test
+        run: >-
+          mix do --app favn_duckdb_adbc cmd mix test --no-compile
+          test/sql/adapter/duckdb_adbc_integration_test.exs
+          test/semantic_compiler_test.exs
+          test/semantic_compiler_lifecycle_test.exs
+          test/semantic_artifact_integration_test.exs
+          test/relationship_checks_test.exs
+          test/relationship_publication_test.exs
+          test/catalog_publication_test.exs
+          test/runtime_catalog_test.exs
+
+      - name: Test separate-node local lifecycle
+        run: >-
+          mix do --app favn_local cmd mix test --no-compile --only acceptance
+          test/acceptance/docker_free_local_lifecycle_test.exs
+
+      - name: Test macOS authoring path portability
+        run: >-
+          mix do --app favn_authoring cmd mix test --no-compile
+          test/multi_asset_portability_test.exs
+
+      - name: Build macOS semantic parity artifact
+        run: mix run --no-start scripts/semantic_artifact_parity.exs -- "$RUNNER_TEMP/semantic.json"
+
+      - name: Save macOS semantic parity artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: semantic-macos-arm64
+          path: ${{ runner.temp }}/semantic.json
+          if-no-files-found: error
+
+  semantic-parity:
+    name: Semantic artifact parity
+    runs-on: ubuntu-latest
+    needs: [fast-tests, macos-arm64]
+
+    steps:
+      - name: Fetch Linux artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: semantic-linux-amd64
+          path: linux
+
+      - name: Fetch macOS artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: semantic-macos-arm64
+          path: macos
+
+      - name: Compare exact artifact bytes and identity
+        run: |
+          cmp linux/semantic.json macos/semantic.json
+          sha256sum linux/semantic.json macos/semantic.json
 
   dialyzer:
     name: Dialyzer
@@ -383,7 +565,7 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
-    needs: [changes, quick-checks, fast-tests, dialyzer, acceptance-tests, slow-tests]
+    needs: [changes, quick-checks, fast-tests, macos-arm64, semantic-parity, dialyzer, acceptance-tests, slow-tests]
     if: always()
 
     steps:
@@ -393,6 +575,8 @@ jobs:
           TESTS_CHANGED: ${{ needs.changes.outputs.tests }}
           QUICK_RESULT: ${{ needs.quick-checks.result }}
           FAST_RESULT: ${{ needs.fast-tests.result }}
+          MACOS_RESULT: ${{ needs.macos-arm64.result }}
+          PARITY_RESULT: ${{ needs.semantic-parity.result }}
           DIALYZER_RESULT: ${{ needs.dialyzer.result }}
           ACCEPTANCE_RESULT: ${{ needs.acceptance-tests.result }}
           SLOW_RESULT: ${{ needs.slow-tests.result }}
@@ -407,10 +591,10 @@ jobs:
             exit 0
           fi
 
-          if [ "$QUICK_RESULT" = "success" ] && [ "$FAST_RESULT" = "success" ] && [ "$DIALYZER_RESULT" = "success" ] && [ "$ACCEPTANCE_RESULT" = "success" ] && [ "$SLOW_RESULT" = "success" ]; then
+          if [ "$QUICK_RESULT" = "success" ] && [ "$FAST_RESULT" = "success" ] && [ "$MACOS_RESULT" = "success" ] && [ "$PARITY_RESULT" = "success" ] && [ "$DIALYZER_RESULT" = "success" ] && [ "$ACCEPTANCE_RESULT" = "success" ] && [ "$SLOW_RESULT" = "success" ]; then
             echo "All CI test slices passed."
             exit 0
           fi
 
-          echo "CI test slice failed: quick=$QUICK_RESULT fast=$FAST_RESULT dialyzer=$DIALYZER_RESULT acceptance=$ACCEPTANCE_RESULT slow=$SLOW_RESULT"
+          echo "CI test slice failed: quick=$QUICK_RESULT fast=$FAST_RESULT macos=$MACOS_RESULT parity=$PARITY_RESULT dialyzer=$DIALYZER_RESULT acceptance=$ACCEPTANCE_RESULT slow=$SLOW_RESULT"
           exit 1

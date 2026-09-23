@@ -877,7 +877,12 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
 
   defp postgres_connection_string(database_url) do
     uri = URI.parse(database_url)
-    [username, password] = String.split(uri.userinfo, ":", parts: 2)
+
+    {username, password_fragment} =
+      case String.split(uri.userinfo, ":", parts: 2) do
+        [username, password] -> {username, [" password=", URI.decode(password)]}
+        [username] -> {username, []}
+      end
 
     [
       "host=",
@@ -888,8 +893,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
       String.trim_leading(uri.path, "/"),
       " user=",
       URI.decode(username),
-      " password=",
-      URI.decode(password)
+      password_fragment
     ]
     |> IO.iodata_to_binary()
   end

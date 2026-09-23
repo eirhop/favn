@@ -14,7 +14,13 @@ if [[ ! $review_by =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
   exit 1
 fi
 
-if [[ $(date -u -d "$review_by" +%F) != "$review_by" ]]; then
+if date -u -d "$review_by" +%F >/dev/null 2>&1; then
+  parsed_review_by=$(date -u -d "$review_by" +%F)
+else
+  parsed_review_by=$(date -u -j -f '%Y-%m-%d' "$review_by" +%F 2>/dev/null || true)
+fi
+
+if [[ $parsed_review_by != "$review_by" ]]; then
   echo "Invalid Grype exception review date: $review_by" >&2
   exit 1
 fi

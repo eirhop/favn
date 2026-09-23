@@ -5,7 +5,7 @@ defmodule FavnLocal.LocatorTest do
   alias FavnLocal.Distribution
   alias FavnLocal.Locator
 
-  @local_distribution_address {127, 0, 0, 2}
+  @local_distribution_address {127, 0, 0, 1}
 
   setup do
     root_dir =

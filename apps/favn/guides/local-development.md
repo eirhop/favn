@@ -6,6 +6,9 @@ using the consumer project's compiled code.
 
 The local runner uses a `source` identity with the actual host target. The
 Linux-only `prod` identity remains reserved for deployable customer images.
+Qualified native macOS 26 arm64 source development requires the Xcode Command Line Tools for
+compiling the DuckDB plugin and PostgreSQL 18 for control-plane state. The
+semantic build uses a packaged native worker; Python is not required.
 
 You provide:
 
@@ -43,6 +46,12 @@ export FAVN_DATABASE_MIGRATOR_URL='ecto://favn_migrator:migrator-secret@127.0.0.
 export FAVN_RUNTIME_INPUT_PIN_KEY="$(openssl rand -base64 32)"
 export DUCKDB_ADBC_DRIVER='/absolute/path/to/libduckdb.so'
 ```
+
+On macOS, set `DUCKDB_ADBC_DRIVER` to the installed `libduckdb.dylib` instead.
+Use DuckDB 1.5.5 for native semantic builds. The shared library is supplied by
+the developer; Favn never downloads it at startup. After upgrading from an older
+Favn checkout, stop the local stack before restarting so generated runner
+resolver state is rewritten to the portable `127.0.0.1` loopback mapping.
 
 PowerShell:
 

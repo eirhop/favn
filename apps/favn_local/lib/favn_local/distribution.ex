@@ -1,12 +1,12 @@
 defmodule FavnLocal.Distribution do
   @moduledoc false
 
-  @local_address {127, 0, 0, 2}
+  @local_address {127, 0, 0, 1}
   @local_host_alias "favn-local.test"
   @local_host_alias_chars ~c"favn-local.test"
   @resolver_config """
   {lookup, [file, native]}.
-  {host, {127, 0, 0, 2}, ["favn-local.test"]}.
+  {host, {127, 0, 0, 1}, ["favn-local.test"]}.
   """
 
   @doc false

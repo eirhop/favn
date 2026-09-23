@@ -1,7 +1,10 @@
 defmodule FavnDuckdbADBC.SemanticCompilerTest do
   use ExUnit.Case, async: false
 
+  alias Favn.Connection.Resolved
+  alias Favn.SQL.Adapter.DuckDB.ADBC
   alias FavnDuckdbADBC.SemanticCompiler
+  alias FavnDuckdbADBC.SemanticCompiler.Grammar
 
   @moduletag :adbc_integration
   @inputs [
@@ -12,16 +15,258 @@ defmodule FavnDuckdbADBC.SemanticCompilerTest do
   ]
 
   test "consumer macros preserve native join/filter plans and weighted ratios" do
-    driver =
-      Keyword.get(FavnDuckdbADBC.Runtime.driver_opts(), :driver) ||
-        System.fetch_env!("DUCKDB_ADBC_DRIVER")
+    resolved = %Resolved{
+      name: :analytics,
+      adapter: ADBC,
+      module: __MODULE__,
+      config: %{open: [database: ":memory:"]}
+    }
 
-    assert {"ok\n", 0} =
-             System.cmd("python3", [
-               "-I",
-               Path.join(__DIR__, "semantic_compiler_macro.py"),
-               driver
-             ])
+    driver = System.fetch_env!("DUCKDB_ADBC_DRIVER")
+
+    assert {:ok, conn} =
+             ADBC.connect(resolved, duckdb_adbc: [driver: driver, entrypoint: "duckdb_adbc_init"])
+
+    try do
+      for sql <- [
+            "CREATE SCHEMA metrics_v1",
+            "CREATE MACRO metrics_v1.sales_net_revenue(gross, discount) AS SUM(gross - discount)",
+            "CREATE MACRO metrics_v1.sales_units_sold(units) AS SUM(units)",
+            "CREATE MACRO metrics_v1.sales_average_unit_price(gross, discount, units) AS " <>
+              "metrics_v1.sales_net_revenue(gross, discount) / NULLIF(metrics_v1.sales_units_sold(units), 0)"
+          ] do
+        assert {:ok, _} = ADBC.execute(conn, sql, [])
+      end
+
+      sql = """
+      SELECT store.region,
+        metrics_v1.sales_net_revenue(sales.gross, sales.discount) AS revenue,
+        metrics_v1.sales_average_unit_price(sales.gross, sales.discount, sales.units) AS price
+      FROM (VALUES (1, 100, 10, 3, DATE '2026-01-03'),
+                   (1, 140, 20, 2, DATE '2026-01-04'),
+                   (1, 999, 0, 1, DATE '2025-12-31')) AS sales(store_id, gross, discount, units, sale_date)
+      JOIN (VALUES (1, 'North')) AS store(store_id, region) USING (store_id)
+      WHERE sales.sale_date >= DATE '2026-01-01' AND sales.sale_date < DATE '2026-02-01'
+      GROUP BY store.region
+      """
+
+      assert {:ok, %{rows: [%{"region" => "North", "revenue" => revenue, "price" => price}]}} =
+               ADBC.query(conn, sql, [])
+
+      assert to_string(revenue) in ["210", "210.00"]
+      assert to_string(price) in ["42", "42.0", "42.00"]
+
+      plan = explain(conn, sql)
+
+      assert plan =~ "HASH_JOIN"
+      assert plan =~ "HASH_GROUP_BY"
+      assert plan =~ "FILTER"
+      refute plan =~ "sales_net_revenue"
+      refute plan =~ "sales_average_unit_price"
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TABLE sales_physical(store_id INTEGER, gross DECIMAL(18,2), " <>
+                   "discount DECIMAL(18,2), units INTEGER, sale_date DATE, " <>
+                   "unused_note VARCHAR, unused_payload BLOB)",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "INSERT INTO sales_physical VALUES " <>
+                   "(1, 100, 10, 3, DATE '2026-01-03', 'unused', 'payload'), " <>
+                   "(1, 140, 20, 2, DATE '2026-01-04', 'unused', 'payload'), " <>
+                   "(1, 999, 0, 1, DATE '2025-12-31', 'unused', 'payload')",
+                 []
+               )
+
+      macro_sql =
+        "SELECT metrics_v1.sales_net_revenue(gross, discount) AS revenue, " <>
+          "metrics_v1.sales_average_unit_price(gross, discount, units) AS price " <>
+          "FROM sales_physical WHERE sale_date >= DATE '2026-01-01' " <>
+          "AND sale_date < DATE '2026-02-01'"
+
+      inline_sql =
+        macro_sql
+        |> String.replace(
+          "metrics_v1.sales_net_revenue(gross, discount)",
+          "SUM(gross - discount)"
+        )
+        |> String.replace(
+          "metrics_v1.sales_average_unit_price(gross, discount, units)",
+          "SUM(gross - discount) / NULLIF(SUM(units), 0)"
+        )
+
+      macro_plan = explain(conn, macro_sql)
+      inline_plan = explain(conn, inline_sql)
+
+      assert macro_plan == inline_plan
+      assert macro_plan =~ "SEQ_SCAN"
+      assert macro_plan =~ "Projections:"
+      assert macro_plan =~ "Filters:"
+      refute macro_plan =~ "unused_note"
+      refute macro_plan =~ "unused_payload"
+      refute macro_plan =~ "store_id"
+
+      assert {:ok, %{rows: [%{"revenue" => physical_revenue, "price" => physical_price}]}} =
+               ADBC.query(conn, macro_sql, [])
+
+      assert Decimal.equal?(physical_revenue, Decimal.new("210"))
+      assert physical_price == 42.0
+
+      assert {:ok,
+              %{
+                rows: [
+                  %{"normal" => normal, "reversed" => reversed, "zero_price" => zero_price}
+                ]
+              }} =
+               ADBC.query(
+                 conn,
+                 """
+                 SELECT
+                   metrics_v1.sales_net_revenue(gross, discount) AS normal,
+                   metrics_v1.sales_net_revenue(discount, gross) AS reversed,
+                   metrics_v1.sales_average_unit_price(gross, discount, 0) AS zero_price
+                 FROM sales_physical
+                 WHERE sale_date >= DATE '2026-01-01' AND sale_date < DATE '2026-02-01'
+                 """,
+                 []
+               )
+
+      assert Decimal.equal?(normal, Decimal.new("210"))
+      assert Decimal.equal?(reversed, Decimal.new("-210"))
+      assert is_nil(zero_price)
+
+      for sql <- [
+            "SELECT metrics_v1.sales_net_revenue(gross, discount) AS result FROM sales_physical WHERE FALSE",
+            "SELECT metrics_v1.sales_net_revenue(gross, discount) AS result FROM (VALUES (NULL::DECIMAL, 10::DECIMAL)) AS t(gross, discount)"
+          ] do
+        assert {:ok, %{rows: [%{"result" => nil}]}} = ADBC.query(conn, sql, [])
+      end
+
+      for {cast, expected} <- [
+            {"DECIMAL(18,2)", "DECIMAL(38,2)"},
+            {"DECIMAL(38,10)", "DECIMAL(38,10)"}
+          ] do
+        assert {:ok, %{rows: [%{"column_type" => ^expected}]}} =
+                 ADBC.query(conn, "DESCRIBE SELECT SUM(x) FROM (SELECT NULL::#{cast} AS x)", [])
+      end
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE MACRO metrics_v1.inventory_units(units) AS SUM(units)",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "CREATE TABLE inventory(entity VARCHAR, observed_date DATE, units INTEGER)",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 """
+                 INSERT INTO inventory VALUES
+                   ('B', DATE '2025-12-31', 999),
+                   ('A', DATE '2026-01-30', 10), ('A', DATE '2026-01-31', 12),
+                   ('B', DATE '2026-01-30', 20),
+                   ('A', DATE '2026-02-01', 14), ('A', DATE '2026-02-28', 16),
+                   ('C', DATE '2026-02-10', 7), ('A', DATE '2026-03-01', 900)
+                 """,
+                 []
+               )
+
+      assert observed_totals(conn, "DESC", "2026-02-01") == "2026-01:32"
+      assert observed_totals(conn, "ASC", "2026-02-01") == "2026-01:30"
+      assert observed_totals(conn, "DESC", "2026-03-01") == "2026-01:32|2026-02:23"
+      assert observed_totals(conn, "ASC", "2026-03-01") == "2026-01:30|2026-02:21"
+
+      assert {:ok, %{rows: [%{"total" => selected_total}]}} =
+               ADBC.query(
+                 conn,
+                 "SELECT metrics_v1.inventory_units(units) AS total FROM inventory WHERE observed_date = DATE '2026-01-31'",
+                 []
+               )
+
+      assert Decimal.equal?(selected_total, Decimal.new("12"))
+
+      assert {:ok, %{rows: [%{"total" => nil}]}} =
+               ADBC.query(
+                 conn,
+                 "SELECT metrics_v1.inventory_units(units) AS total FROM inventory WHERE observed_date = DATE '2026-02-02'",
+                 []
+               )
+
+      assert {:ok, _} =
+               ADBC.execute(
+                 conn,
+                 "INSERT INTO inventory VALUES ('A', DATE '2026-01-31', 50)",
+                 []
+               )
+
+      assert {:ok, %{rows: [%{"unique_grain" => false}]}} =
+               ADBC.query(
+                 conn,
+                 "SELECT count(*) = 0 AS unique_grain FROM " <>
+                   "(SELECT entity, observed_date FROM inventory " <>
+                   "GROUP BY entity, observed_date HAVING count(*) > 1)",
+                 []
+               )
+
+      assert {:ok, %{rows: [%{"ast" => ast}]}} =
+               ADBC.query(
+                 conn,
+                 "SELECT json_serialize_sql('SELECT SUM(1)') AS ast",
+                 []
+               )
+
+      assert {:ok, [0]} = Grammar.validate(Jason.decode!(ast), [], nil)
+
+      invalid =
+        Regex.replace(~r/"type_info"\s*:\s*null/, ast, ~s|"type_info":false|, global: false)
+
+      refute invalid == ast
+
+      assert {:error, :invalid_semantic_expression} =
+               Grammar.validate(Jason.decode!(invalid), [], nil)
+    after
+      ADBC.disconnect(conn, [])
+    end
+  end
+
+  defp explain(conn, sql) do
+    assert {:ok, result} = Adbc.Connection.query(conn.conn_ref, "EXPLAIN " <> sql)
+    result |> Adbc.Result.to_map() |> Map.fetch!("explain_value") |> hd()
+  end
+
+  defp observed_totals(conn, direction, until) when direction in ["ASC", "DESC"] do
+    sql = """
+    WITH selected AS (
+      SELECT entity, observed_date, units,
+        date_trunc('month', observed_date) AS bucket
+      FROM inventory
+      WHERE observed_date >= DATE '2026-01-01' AND observed_date < DATE '#{until}'
+      QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY entity, date_trunc('month', observed_date)
+        ORDER BY observed_date #{direction}
+      ) = 1
+    ), totals AS (
+      SELECT bucket, metrics_v1.inventory_units(units) AS total
+      FROM selected GROUP BY bucket
+    )
+    SELECT string_agg(strftime(bucket, '%Y-%m') || ':' || total::VARCHAR, '|' ORDER BY bucket) AS totals
+    FROM totals
+    """
+
+    assert {:ok, %{rows: [%{"totals" => totals}]}} = ADBC.query(conn, sql, [])
+    totals
   end
 
   test "validates aggregate expressions with explicit profile provenance" do
@@ -213,6 +458,11 @@ defmodule FavnDuckdbADBC.SemanticCompilerTest do
   test "bounds input before spawning and reports unavailable driver explicitly" do
     assert {:error, :invalid_semantic_input} =
              SemanticCompiler.validate(String.duplicate("x", 65_537), @inputs)
+
+    for opts <- [[{:allowed_aggregate_locations}], [{:allowed_aggregate_locations, [], :extra}]] do
+      assert {:error, :invalid_semantic_input} =
+               SemanticCompiler.validate(~s|SUM("gross")|, @inputs, opts)
+    end
 
     config = Application.get_env(:favn, :duckdb_adbc)
 
