@@ -1038,7 +1038,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
-  for mode <- [:renew, :expired, :malformed] do
+  for mode <- [:renew, :expired, :malformed, :missing_lock] do
     @tag committed_lifecycle: true
     @tag target_reply_race: true
     @tag target_reply_mode: mode
@@ -1095,6 +1095,44 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       assert watch.checkout_deadline == nil
 
       if mode == :renew do
+        claim = task.orchestration_context.materialization_claim
+
+        no_lock_contexts = [
+          %{kind: :sequential, materialization_claim: nil},
+          %{
+            kind: :sequential,
+            materialization_claim:
+              claim |> Map.put(:purpose, :ownership_only) |> Map.delete(:target_operation_lock)
+          },
+          %{
+            task.orchestration_context
+            | materialization_claim: %{claim | target_operation_lock: nil}
+          }
+        ]
+
+        assert {:error, :projection_checked} =
+                 Repo.transaction(fn ->
+                   for context <- no_lock_contexts do
+                     assert {:ok, encoded} = FavnOrchestrator.RunnerTaskContext.encode(context)
+
+                     SQL.query!(
+                       Repo,
+                       "UPDATE favn_control.runner_tasks SET orchestration_context=$3 WHERE workspace_id=$1 AND task_id=$2",
+                       [fixture.workspace_id, task_id, encoded]
+                     )
+
+                     assert {:ok, %{^task_id => :terminal}} =
+                              FavnStoragePostgres.RunOwnership.Store.maintain_targets(
+                                fixture.workspace_context,
+                                entry.ownership,
+                                [task_id],
+                                "no-lock-projection"
+                              )
+                   end
+
+                   Repo.rollback(:projection_checked)
+                 end)
+
         send(pid, :release_target_reply)
         assert [_, _, _] = await_runner_task_ids!(fixture.workspace_id, run.id, 3)
 
@@ -1117,18 +1155,38 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
             [fixture.workspace_id, lock.target_id]
           )
         else
-          malformed = %{
-            "format" => "task-data-v1",
-            "data" => [
-              "map",
+          %{rows: [[original_context]]} =
+            SQL.query!(
+              Repo,
+              "SELECT orchestration_context FROM favn_control.runner_tasks WHERE workspace_id=$1 AND task_id=$2",
+              [fixture.workspace_id, task_id]
+            )
+
+          malformed =
+            update_in(original_context, ["data"], fn ["map", entries] ->
               [
-                [
-                  ["atom", "materialization_claim"],
-                  ["map", [[["atom", "target_operation_lock"], 42]]]
-                ]
+                "map",
+                Enum.map(entries, fn
+                  [["atom", "materialization_claim"], ["map", fields]] ->
+                    fields =
+                      if mode == :missing_lock do
+                        Enum.reject(fields, fn [key, _] ->
+                          key == ["atom", "target_operation_lock"]
+                        end)
+                      else
+                        Enum.map(fields, fn
+                          [["atom", "target_operation_lock"] = key, _] -> [key, 42]
+                          field -> field
+                        end)
+                      end
+
+                    [["atom", "materialization_claim"], ["map", fields]]
+
+                  entry ->
+                    entry
+                end)
               ]
-            ]
-          }
+            end)
 
           SQL.query!(
             Repo,

@@ -273,15 +273,25 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
                    SELECT t.task_id, t.status,
                      t.orchestration_context->>'format',
                      claim.value IS NOT NULL,
-                     claim.value = 'null'::jsonb OR claim.value->>0 = 'map',
-                     jsonb_path_query_first(claim.value,
-                       'strict $[1][*] ? (@[0][0] == "atom" && @[0][1] == "target_operation_lock")[1]', '{}'::jsonb, true),
+                     claim.value = 'null'::jsonb OR (claim.value->>0 = 'map' AND (
+                       (projection.purpose = '["atom","ownership_only"]'::jsonb
+                         AND (projection.lock IS NULL OR projection.lock = 'null'::jsonb)) OR
+                       (projection.purpose = '["atom","materialization"]'::jsonb
+                         AND projection.lock IS NOT NULL))),
+                     projection.lock,
                      t.write_target_id
                    FROM favn_control.runner_tasks t
                    LEFT JOIN LATERAL (
                      SELECT jsonb_path_query_first(t.orchestration_context,
                        'strict $.data[1][*] ? (@[0][0] == "atom" && @[0][1] == "materialization_claim")[1]', '{}'::jsonb, true) AS value
                    ) claim ON TRUE
+                   LEFT JOIN LATERAL (
+                     SELECT
+                       jsonb_path_query_first(claim.value,
+                         'strict $[1][*] ? (@[0][0] == "atom" && @[0][1] == "purpose")[1]', '{}'::jsonb, true) AS purpose,
+                       jsonb_path_query_first(claim.value,
+                         'strict $[1][*] ? (@[0][0] == "atom" && @[0][1] == "target_operation_lock")[1]', '{}'::jsonb, true) AS lock
+                   ) projection ON TRUE
                    WHERE t.workspace_id=$1 AND t.run_id=$2 AND t.task_kind='asset_attempt'
                      AND (t.task_id=ANY($3::text[]) OR t.status NOT IN ('succeeded','failed','cancelled','unknown'))
                    ORDER BY t.task_id LIMIT 513
