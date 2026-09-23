@@ -305,6 +305,10 @@ defmodule Favn.AI do
     For the operator UI's full submitted-operation cancellation, automatic recovery
     ownership and uncertain outcomes, read the [Runtime Model](runtime-model.html#cancellation-and-retry).
     Local IEx/HTTP/CLI cancellation targets the supplied run only.
+    For saved control-plane recovery attention, inspect the revision and follow
+    [Retries And Replay](retries-and-replay.html#resume-control-plane-recovery);
+    `mix favn.runs resume-recovery RUN_ID --revision REVISION` reconciles original tasks.
+
     `mix favn.runs cancel RUN_ID` requests cancellation through the local
     orchestrator HTTP boundary; add `--wait` to poll the run until it is
     terminal. Run summaries use persisted pipeline identity or asset refs for

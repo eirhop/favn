@@ -111,7 +111,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_915_000_000, ReferenceRunnerTaskPackagesV2},
     {20_260_915_010_000, AddRetentionV2},
     {20_260_918_000_000, FavnStoragePostgres.Migrations.OwnDeploymentInspectionsV2},
-    {20_260_921_000_000, QualifyRunnerTargetClaimsV2}
+    {20_260_921_000_000, QualifyRunnerTargetClaimsV2},
+    {20_260_922_000_000, FavnStoragePostgres.Migrations.AddBoundedRunRecoveryV2}
   ]
   @required_tables ~w(
     retention_floors
@@ -237,6 +238,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_targets_claim_lineage_uidx
     runtime_input_pins_execution_package_hash_index
     runtime_input_pins_key_version_idx
+    run_ownerships_eligible_recovery_idx
     run_ownerships_recovery_idx
     runner_tasks_domain_identity_uidx
     runner_tasks_claim_idx
@@ -411,7 +413,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "manifest_activation_leases" =>
       ~w(workspace_id operation_id owner fencing_token expires_at inserted_at updated_at),
     "runner_tasks" =>
-      ~w(retiring workspace_id task_id domain_identity task_kind run_id deployment_operation_id operation_id asset_step_id runner_pool required_runner_release_id required_capability retry_class status enqueued_at deadline_at payload_version payload payload_hash orchestration_context orchestration_context_hash manifest_version_id manifest_content_hash write_claim_key write_claim_fence write_target_id write_operation_id write_lock_fence persistence_failure assigned_runner_instance_id assigned_runner_session_generation assignment_generation assigned_at assignment_expires_at cancellation_requested_at cancellation_acknowledged_at runtime_input_resolution_id runtime_input_resolution_status runtime_input_payload_fingerprint runtime_input_error runtime_inputs_resolved_at last_command_id result_version result error terminal_at inserted_at updated_at),
+      ~w(retiring workspace_id task_id domain_identity task_kind run_id deployment_operation_id operation_id asset_step_id runner_pool required_runner_release_id required_capability retry_class status enqueued_at deadline_at payload_version payload payload_hash orchestration_context orchestration_context_hash manifest_version_id manifest_content_hash write_claim_key write_claim_fence write_target_id write_operation_id write_lock_fence persistence_failure assigned_runner_instance_id assigned_runner_session_generation assignment_generation assigned_at assignment_expires_at cancellation_requested_at cancellation_acknowledged_at runtime_input_resolution_id runtime_input_resolution_status runtime_input_payload_fingerprint runtime_input_error runtime_inputs_resolved_at last_command_id result_version result error terminal_at inserted_at updated_at cleanup_fencing_token),
     "runner_task_commands" =>
       ~w(scope_id command_id operation request_hash result issued_at inserted_at),
     "runner_task_command_tasks" =>
@@ -448,7 +450,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "run_submissions" =>
       ~w(cancellation_owner_run_id workspace_id submission_id source idempotency_key request_hash authority deployment_id manifest_version_id target_kind target_id run_id intent status attempt claim_owner claim_generation claim_expires_at preparation outcome error failure_kind cancellation_requested_at cancellation_reason retry_root_id retry_of_submission_id retry_command_id superseded_by_submission_id enqueued_at available_at preparing_at admitting_at terminal_at inserted_at updated_at),
     "run_ownerships" =>
-      ~w(workspace_id run_id owner_id fencing_token claim_command_id last_renewal_id expires_at released_at updated_at),
+      ~w(recovery_disposition recovery_attempts claim_purpose next_recovery_at attention_revision last_renewed_at diagnosis_reason workspace_id run_id owner_id fencing_token claim_command_id last_renewal_id expires_at released_at updated_at),
     "run_execution_checkpoints" =>
       ~w(workspace_id run_id owner_id fencing_token checkpoint_version checkpoint_revision checkpoint_sequence stage attempt payload payload_hash updated_at),
     "run_plans" =>
@@ -483,7 +485,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "target_statuses" =>
       ~w(workspace_id deployment_id target_kind target_id status run_id event_id source_publication_id updated_at),
     "target_operation_locks" =>
-      ~w(workspace_id target_id operation_id operation_type fencing_token lease_owner lease_expires_at effect_state effect_task_id effect_assignment_generation effect_started_at effect_resolution version inserted_at updated_at),
+      ~w(last_renewal_id workspace_id target_id operation_id operation_type fencing_token lease_owner lease_expires_at effect_state effect_task_id effect_assignment_generation effect_started_at effect_resolution version inserted_at updated_at),
     "target_recovery_operations" =>
       ~w(workspace_id operation_id target_id recovery_kind desired_manifest_id source_manifest_id target_generation_id materialization_id plan_hash plan_version plan_payload state phase actor_id session_id reason idempotency_key expected_binding_version expected_physical_fingerprint evaluated_at recovery_token result_marker compatibility_result unknown_outcome terminal_error last_command_id version started_at completed_at inserted_at updated_at),
     "workspace_deployment_targets" =>
@@ -523,7 +525,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     workspaces_id_valid workspaces_slug_valid workspaces_display_name_valid workspaces_status_valid
     manifest_versions_id_valid manifest_versions_versions_valid
     manifest_versions_runner_releases_valid execution_packages_hash_valid
-    runner_tasks_manifest_pin_fk runner_tasks_persistence_failure_valid
+    runner_tasks_manifest_pin_fk runner_tasks_persistence_failure_valid runner_tasks_cleanup_authority_valid
     materialization_claims_effect_state_valid target_operation_locks_effect_state_valid
     runner_tasks_status_valid runner_tasks_kind_valid runner_tasks_retry_class_valid
     runner_tasks_identity_valid runner_tasks_assignment_valid runner_tasks_payload_valid
@@ -546,7 +548,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     run_submission_commands_values_valid
     run_events_values_valid run_targets_kind_valid runtime_input_pins_key_version_valid
     runtime_input_key_versions_pkey runtime_input_key_versions_key_version_valid
-    run_ownerships_fence_valid run_execution_checkpoints_values_valid schedule_activations_values_valid
+    run_ownerships_recovery_valid run_ownerships_fence_valid run_execution_checkpoints_values_valid schedule_activations_values_valid
     schedule_activation_commands_values_valid
     schedule_cursors_values_valid
     schedule_cursors_definition_bounded schedule_cursors_claim_shape_v2
@@ -629,7 +631,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "7fa0d28caae6dbf2905134c3e49dc784a46ff123ebe824d8a8df6d13fa56763d"
+  @expected_definition_fingerprint "66ae87606aafc81b7a720a0164127012cbe9671be0f8f4660b539ac88308c6ae"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

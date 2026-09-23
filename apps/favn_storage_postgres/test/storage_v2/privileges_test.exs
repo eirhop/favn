@@ -150,6 +150,51 @@ defmodule FavnStoragePostgres.StorageV2.PrivilegesTest do
     end
   end
 
+  test "reserved renewal connections work with the restricted runtime credentials", context do
+    alias FavnOrchestrator.Persistence.Commands, as: C
+    alias FavnStoragePostgres.RunOwnership.Store
+    id = "renew-privilege-" <> random_id()
+    workspace = FavnStoragePostgres.TestSupport.RunFixture.create(id, [id])
+
+    assert {:ok, owner} =
+             Store.claim_run(%C.ClaimRun{
+               workspace_context: workspace,
+               command_id: id,
+               run_id: id,
+               owner_id: "runtime-owner",
+               lease_duration_ms: 120_000
+             })
+
+    uri = URI.parse(context.url)
+    runtime_url = URI.to_string(%{uri | userinfo: context.role <> ":" <> @password})
+    {:ok, options} = Config.repo_options(url: runtime_url, ssl_mode: :disable, pool_size: 2)
+    start_supervised!({FavnStoragePostgres.RunLeaseRepo, options})
+
+    assert %{rows: [[role]]} =
+             SQL.query!(FavnStoragePostgres.RunLeaseRepo, "SELECT current_user", [])
+
+    assert role == context.role
+
+    assert {:ok, renewed} =
+             Store.renew_run(%C.RenewRunOwnership{
+               workspace_context: workspace,
+               renewal_id: "renew:" <> id,
+               run_id: id,
+               owner_id: owner.owner_id,
+               fencing_token: owner.fencing_token,
+               lease_duration_ms: 120_000
+             })
+
+    assert DateTime.compare(renewed.expires_at, owner.expires_at) == :gt
+
+    assert {:error, %Postgrex.Error{postgres: %{code: :insufficient_privilege}}} =
+             SQL.query(
+               FavnStoragePostgres.RunLeaseRepo,
+               "DELETE FROM favn_control.schema_migrations WHERE false",
+               []
+             )
+  end
+
   defp connection_options(url, role) do
     uri = URI.parse(url)
 

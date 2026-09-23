@@ -9,7 +9,7 @@ defmodule FavnOrchestrator.RunServer.RecoveryAttention do
   @repeat_seconds 60
 
   @doc false
-  @spec record(RunState.t(), term()) :: :ok
+  @spec record(RunState.t(), term()) :: :saved | :already_saved | {:error, term()}
   def record(run, reason) do
     context = SystemContext.workspace(run.workspace_id, :run_recovery)
 
@@ -29,11 +29,15 @@ defmodule FavnOrchestrator.RunServer.RecoveryAttention do
       recent? =
         is_binary(last_at) and last_at > DateTime.to_iso8601(DateTime.add(now, -@repeat_seconds))
 
-      unless previous["fingerprint"] == fingerprint and recent? do
+      if previous["fingerprint"] == fingerprint and
+           previous["revision"] == run.storage_fencing_token and recent? do
+        :already_saved
+      else
         attention = %{
           "first_seen_at" => previous["first_seen_at"] || DateTime.to_iso8601(now),
           "first_reason" => previous["first_reason"] || diagnostic,
           "phase" => phase(reason),
+          "revision" => run.storage_fencing_token,
           "last_reason" => diagnostic,
           "reports" => Map.get(previous, "reports", 0) + 1,
           "fingerprint" => fingerprint,
@@ -51,16 +55,44 @@ defmodule FavnOrchestrator.RunServer.RecoveryAttention do
 
         result = Persistence.persist_run_step(annotated, :run_recovery_required, attention)
         emit(run, diagnostic, result)
+
+        case result do
+          :ok ->
+            :saved
+
+          {:error, :fenced} ->
+            result
+
+          {:error, %{kind: :fenced}} ->
+            result
+
+          _ ->
+            require_diagnosis(run, "attention_persistence_failed")
+            result
+        end
       end
     else
       true ->
-        :ok
+        {:error, :run_already_terminal}
 
       {:error, persistence_error} ->
+        require_diagnosis(run, "attention_snapshot_unavailable")
         emit(run, JsonSafe.error(reason), {:error, persistence_error})
+        {:error, persistence_error}
     end
+  end
 
-    :ok
+  @doc false
+  def require_diagnosis(run, reason_code) do
+    FavnOrchestrator.Persistence.stores().run_ownership.require_diagnosis(
+      %FavnOrchestrator.Persistence.Commands.RequireRunDiagnosis{
+        workspace_context: SystemContext.workspace(run.workspace_id, :run_recovery),
+        run_id: run.id,
+        owner_id: run.storage_owner_id,
+        fencing_token: run.storage_fencing_token,
+        reason_code: reason_code
+      }
+    )
   end
 
   defp phase(%{details: details}),
@@ -68,6 +100,7 @@ defmodule FavnOrchestrator.RunServer.RecoveryAttention do
 
   defp phase({operation, _}), do: to_string(operation)
   defp phase({operation, _, _}), do: to_string(operation)
+  defp phase(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp phase(_), do: "recovery"
   defp original_reason(%{details: details} = reason), do: details[:original_error] || reason
   defp original_reason(reason), do: reason

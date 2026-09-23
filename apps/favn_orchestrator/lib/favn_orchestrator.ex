@@ -135,6 +135,7 @@ defmodule FavnOrchestrator do
                list_operator_manifests: 1,
                get_operator_manifest: 2,
                cancel_operator_run: 3,
+               resume_operator_run_recovery: 4,
                retry_operator_run_remaining: 3,
                get_run_detail: 2,
                get_operator_run_flow: 2,
@@ -1688,6 +1689,96 @@ defmodule FavnOrchestrator do
         {:error, reason}
     end
   end
+
+  @doc """
+  Resumes a run's saved recovery attention after stopping its local workers.
+
+  Requires workspace operator authority and the displayed attention revision.
+  The stop barrier is bounded to ten seconds; storage errors preserve attention.
+  Resumption schedules reconciliation of original tasks, never a blind write retry.
+  """
+  @spec resume_run_recovery(WorkspaceContext.t(), String.t(), pos_integer(), keyword()) ::
+          :ok | {:error, term()}
+  def resume_run_recovery(context, run_id, revision, opts \\ [])
+
+  def resume_run_recovery(%WorkspaceContext{} = context, run_id, revision, opts)
+      when is_binary(run_id) and is_integer(revision) and revision > 0 and is_list(opts) do
+    if WorkspaceContext.valid?(context) and
+         Enum.any?(
+           context.roles,
+           &(&1 in [:workspace_admin, :customer_operator, :platform_operator])
+         ) do
+      key = {context.workspace_id, run_id}
+
+      with {:ok, token} <- GenServer.call(RunManager, {:reserve_resume, key}, 1_000) do
+        try do
+          command = %FavnOrchestrator.Persistence.Commands.ResumeRunRecovery{
+            workspace_context: context,
+            run_id: run_id,
+            expected_revision: revision,
+            command_id: Keyword.get(opts, :command_id, "resume-recovery:#{run_id}:#{revision}"),
+            idempotency: Keyword.get(opts, :idempotency)
+          }
+
+          store = FavnOrchestrator.Persistence.stores().run_ownership
+
+          case store.check_resume(command) do
+            {:ok, :already_resumed} ->
+              :ok
+
+            {:ok, :ready} ->
+              with {:ok, ^token} <-
+                     GenServer.call(RunManager, {:stop_for_resume, key, token}, 11_000),
+                   do: store.resume_recovery(command)
+
+            error ->
+              error
+          end
+        after
+          GenServer.call(RunManager, {:finish_resume, key, token}, 1_000)
+        end
+      end
+    else
+      {:error, :forbidden}
+    end
+  catch
+    :exit, _ -> {:error, :local_stop_unconfirmed}
+  end
+
+  def resume_run_recovery(_, _, _, _), do: {:error, :invalid}
+
+  @doc "Resumes the displayed recovery revision through the authenticated operator audit boundary."
+  @spec resume_operator_run_recovery(operator_actor_context(), run_id(), pos_integer(), keyword()) ::
+          :ok | {:error, term()}
+  def resume_operator_run_recovery(%OperatorContext{} = operator_context, run_id, revision, opts)
+      when is_binary(run_id) and is_integer(revision) and revision > 0 and is_list(opts) do
+    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
+         {:ok, intent} <-
+           begin_operator_command(
+             context,
+             operator_context,
+             actor,
+             "run.resume_recovery",
+             "run",
+             run_id,
+             %{run_id: run_id, revision: revision},
+             opts
+           ),
+         result <- resume_run_recovery(context, run_id, revision, idempotency: intent.idempotency) do
+      finish_operator_result(
+        context,
+        operator_context,
+        actor,
+        intent,
+        "run",
+        run_id,
+        result,
+        fn :ok -> {run_id, %{run_id: run_id, revision: revision}, :ok} end
+      )
+    end
+  end
+
+  def resume_operator_run_recovery(_, _, _, _), do: {:error, :unauthenticated}
 
   @doc """
   Requests cancellation of the selected run's full submitted operation.

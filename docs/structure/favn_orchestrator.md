@@ -50,7 +50,8 @@ No `RunServer` callback waits on a runner task. After a successful asset step
 whose claim pins an uninitialized persisted generation, the step outcome and
 claim completion are persisted first, then the initial-generation reconciler
 runs in a worker under `RunPostStepSupervisor` while the run process keeps
-handling renewals, sibling results, and cancellation. The node settles when the
+handling sibling results and cancellation. Independent renewal is described in
+[run ownership and recovery](../architecture/run-ownership-and-recovery.md). The node settles when the
 worker replies; a pending worker counts as in-flight stage work exactly like a
 runner await, and every terminal transition terminates pending workers. A write
 rejected by the run-ownership fence stops the process with `run_ownership_lost`
@@ -68,8 +69,8 @@ a request to cancel them.
 The existing RunServer timer owns these retries. Each pending operation has a
 30-second budget from its first rejection, preserving command identity, fencing,
 and the original dispatch deadline. Each new stage receives a new admission
-budget. Successful replay adopts acquired ownership before requesting the fresh
-run-ownership gate needed for further dispatch. Cancellation cleans only known
+budget. Successful replay adopts acquired ownership; each subsequent new task admission
+requests fresh permission. Saving completed results does not require new dispatch permission. Cancellation cleans only known
 unsubmitted ownership; a possibly committed enqueue is reconciled from its saved
 task identity. Completed bookkeeping remains pending under cancellation until it
 finishes or its budget expires. Exhausted bookkeeping fails the run with its
@@ -77,7 +78,7 @@ original cause and operation while preserving the successful asset result.
 
 These continuations are process-owned. Crash or ownership-loss recovery remains
 fail-closed for incomplete settlement; it never blindly replays completed asset
-writes. The run server renews run ownership and paused target-operation locks;
+writes. `RunLeaseKeeper` renews run authority and `RunTargetMaintenance` maintains target locks;
 recovered terminal tasks settle without renewing their execution locks, while
 their durable unresolved-write holds remain intact. Admission leases and permits
 retain their original finite lifetimes. Structured

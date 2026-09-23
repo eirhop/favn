@@ -16,6 +16,8 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @max_auth_session_ttl_seconds 2_592_000
 
   @type t :: %__MODULE__{
+          run_lease_duration_ms: 120_000..600_000,
+          max_active_runs: 1..512,
           workspace_ids: [String.t()],
           api_server: keyword(),
           scheduler: keyword(),
@@ -31,7 +33,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
         }
   @type error :: {:invalid_runtime_config, {atom(), term()}}
 
-  defstruct manifest_inspection_concurrency: 32,
+  defstruct run_lease_duration_ms: 120_000,
+            max_active_runs: 64,
+            manifest_inspection_concurrency: 32,
             workspace_ids: [],
             api_server: [],
             scheduler: [],
@@ -107,6 +111,9 @@ defmodule FavnOrchestrator.RuntimeConfig do
           FavnOrchestrator.RunnerPools.default()
         ),
       log_redaction_policy: Application.get_env(:favn_orchestrator, :log_redaction_policy),
+      run_lease_duration_ms:
+        Application.get_env(:favn_orchestrator, :run_lease_duration_ms, 120_000),
+      max_active_runs: Application.get_env(:favn_orchestrator, :max_active_runs, 64),
       instance_id: Application.get_env(:favn_orchestrator, :instance_id, "local"),
       http_server: Application.get_env(:favn_orchestrator, :http_server, %{}),
       shutdown_drain_timeout_ms:
@@ -136,6 +143,8 @@ defmodule FavnOrchestrator.RuntimeConfig do
   end
 
   def normalize(attrs) when is_list(attrs) do
+    run_lease_duration_ms = Keyword.get(attrs, :run_lease_duration_ms, 120_000)
+    max_active_runs = Keyword.get(attrs, :max_active_runs, 64)
     workspace_ids = Keyword.get(attrs, :workspace_ids, [])
     api_server = Keyword.get(attrs, :api_server, [])
     scheduler = Keyword.get(attrs, :scheduler, [])
@@ -150,7 +159,8 @@ defmodule FavnOrchestrator.RuntimeConfig do
     auth_session_ttl_seconds =
       Keyword.get(attrs, :auth_session_ttl_seconds, @default_auth_session_ttl_seconds)
 
-    with :ok <- validate_inspection_concurrency(inspection_concurrency),
+    with :ok <- validate_run_lease_policy(run_lease_duration_ms, max_active_runs),
+         :ok <- validate_inspection_concurrency(inspection_concurrency),
          :ok <- validate_workspace_ids(workspace_ids),
          {:ok, api_server} <- validate_keyword(:api_server, api_server),
          {:ok, scheduler} <- validate_keyword(:scheduler, scheduler),
@@ -163,6 +173,8 @@ defmodule FavnOrchestrator.RuntimeConfig do
          :ok <- validate_auth_session_ttl(auth_session_ttl_seconds) do
       {:ok,
        %__MODULE__{
+         run_lease_duration_ms: run_lease_duration_ms,
+         max_active_runs: max_active_runs,
          workspace_ids: workspace_ids,
          api_server: api_server,
          scheduler: scheduler,
@@ -283,6 +295,14 @@ defmodule FavnOrchestrator.RuntimeConfig do
 
   defp validate_workspace_ids(_value),
     do: {:error, {:invalid_runtime_config, {:workspace_ids, :invalid}}}
+
+  defp validate_run_lease_policy(lease, active)
+       when is_integer(lease) and lease in 120_000..600_000 and is_integer(active) and
+              active in 1..512,
+       do: :ok
+
+  defp validate_run_lease_policy(_, _),
+    do: {:error, {:invalid_runtime_config, {:run_lease_policy, :out_of_bounds}}}
 
   defp validate_instance_id(instance_id)
        when is_binary(instance_id) and byte_size(instance_id) in 1..160,

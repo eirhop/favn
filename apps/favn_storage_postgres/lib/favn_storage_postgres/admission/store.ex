@@ -23,6 +23,7 @@ defmodule FavnStoragePostgres.Admission.Store do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Outbox.Writer, as: OutboxWriter
   alias FavnStoragePostgres.Repo
+  alias FavnStoragePostgres.RunTransaction
   alias FavnStoragePostgres.Schemas.AdmissionWaiter
   alias FavnStoragePostgres.Schemas.CapacityScope
   alias FavnStoragePostgres.Schemas.ExecutionLease
@@ -996,7 +997,7 @@ defmodule FavnStoragePostgres.Admission.Store do
   end
 
   defp transaction(fun) do
-    case Repo.transaction(fun) do
+    case RunTransaction.transaction(fun) do
       {:ok, result} -> {:ok, result}
       {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, ErrorMapper.map(reason)}

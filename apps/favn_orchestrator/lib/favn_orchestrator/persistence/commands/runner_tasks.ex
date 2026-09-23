@@ -5,7 +5,16 @@ defmodule FavnOrchestrator.Persistence.Commands.AdmitRunnerTask do
   outside persistence. A waiting result commits only its capacity waiter.
   """
   @enforce_keys [:intent, :enqueue, :transition]
-  defstruct @enforce_keys ++ [:capacity, :circuits, :claim, :claim_context, :target_lock]
+  defstruct @enforce_keys ++
+              [
+                :capacity,
+                :circuits,
+                :claim,
+                :claim_context,
+                :target_lock,
+                :acquisition_observer,
+                reconcile_only?: false
+              ]
 
   @type t :: %__MODULE__{
           intent: FavnOrchestrator.RunServer.Execution.AdmissionIntent.t(),
@@ -15,7 +24,10 @@ defmodule FavnOrchestrator.Persistence.Commands.AdmitRunnerTask do
           circuits: FavnOrchestrator.Persistence.Commands.AcquireResourceCircuits.t() | nil,
           claim: FavnOrchestrator.Persistence.Commands.ClaimMaterialization.t() | nil,
           claim_context: map() | nil,
-          target_lock: FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks.t() | nil
+          target_lock:
+            FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks.t() | nil,
+          acquisition_observer: {pid(), reference()} | nil,
+          reconcile_only?: boolean()
         }
 end
 
@@ -46,6 +58,7 @@ defmodule FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask do
                 :write_operation_id,
                 :write_lock_fence,
                 :run_id,
+                :run_authority,
                 :operation_id,
                 :deployment_operation_id,
                 :asset_step_id,
@@ -185,7 +198,7 @@ end
 defmodule FavnOrchestrator.Persistence.Commands.RequestRunnerTaskCancellation do
   @moduledoc "Durably requests cancellation of one runner task."
   @enforce_keys [:workspace_context, :command_id, :task_id, :reason, :issued_at, :occurred_at]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [preserve_cleanup?: false]
   @type t :: %__MODULE__{}
 end
 
@@ -235,7 +248,7 @@ defmodule FavnOrchestrator.Persistence.Commands.RetryRunnerTask do
     :issued_at,
     :occurred_at
   ]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [:run_authority]
   @type t :: %__MODULE__{}
 end
 

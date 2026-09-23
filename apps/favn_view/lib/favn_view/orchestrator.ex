@@ -63,6 +63,7 @@ defmodule FavnView.Orchestrator do
     attach_operator_actor: 3,
     cancel_operator_rebuild: 4,
     cancel_operator_run: 3,
+    resume_operator_run_recovery: 4,
     change_operator_password: 3,
     create_operator_actor: 5,
     disable_schedule: 3,

@@ -26,7 +26,14 @@ defmodule FavnOrchestrator.RunManager.RecoveryMonitorTest do
       %{
         state
         | run_pids: %{key => replacement},
-          monitors: %{old_monitor => key, new_monitor => key},
+          lifecycles: %{
+            :old => entry(key, old, :stopping),
+            :new => entry(key, replacement, :running)
+          },
+          process_monitors: %{
+            old_monitor => {:old, :coordinator},
+            new_monitor => {:new, :coordinator}
+          },
           plan_capacity: capacity
       }
     end)
@@ -50,11 +57,23 @@ defmodule FavnOrchestrator.RunManager.RecoveryMonitorTest do
     assert {:ok, %{allocated_bytes: 0}} = RunManager.plan_capacity_diagnostics()
   end
 
+  defp entry(key, coordinator, phase),
+    do: %{
+      key: key,
+      coordinator: coordinator,
+      phase: phase,
+      ownership: nil,
+      pids: MapSet.new([coordinator]),
+      waiting: [],
+      keeper: nil,
+      maintenance_ready?: false
+    }
+
   defp await_monitor_count!(expected, attempts \\ 100)
   defp await_monitor_count!(_expected, 0), do: flunk("monitor notification was not processed")
 
   defp await_monitor_count!(expected, attempts) do
-    if map_size(:sys.get_state(RunManager).monitors) == expected do
+    if map_size(:sys.get_state(RunManager).process_monitors) == expected do
       :ok
     else
       Process.sleep(5)

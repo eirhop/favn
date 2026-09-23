@@ -8,13 +8,11 @@ defmodule FavnOrchestrator.RunRecovery do
   alias FavnOrchestrator.OperationalEvents
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.Persistence.SystemContext
-  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunManager
-  alias FavnOrchestrator.RunOwnership
-  alias FavnOrchestrator.RuntimeConfig
+  alias FavnOrchestrator.Persistence
 
   @default_interval_ms 5_000
-  @default_batch_size 100
+  @default_batch_size 64
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -75,25 +73,10 @@ defmodule FavnOrchestrator.RunRecovery do
 
   defp recover_workspace(workspace_id, batch_size) do
     context = SystemContext.workspace(workspace_id, :run_recovery)
-    owner_id = recovery_owner_id(workspace_id)
 
-    case RunOwnership.claim_recovery_batch(context, owner_id,
-           batch_id: recovery_batch_id(workspace_id),
-           limit: batch_size
-         ) do
-      {:ok, ownerships} ->
-        Enum.each(ownerships, &recover_claimed(context, &1))
-
-      {:error, reason} ->
-        emit_failure(nil, {:recovery_claim_failed, workspace_id, reason})
-    end
-  end
-
-  defp recover_claimed(%WorkspaceContext{} = context, ownership) do
-    case RunManager.recover_claimed_run(context, ownership) do
-      {:ok, _run_id} -> :ok
-      {:error, {:run_plan_capacity_exhausted, _details}} -> :ok
-      {:error, reason} -> emit_failure(ownership.run_id, {:run_recovery_failed, reason})
+    case Persistence.stores().run_ownership.recovery_candidates(context, min(batch_size, 64)) do
+      {:ok, ids} -> Enum.each(ids, &RunManager.recover_candidate(context, &1))
+      {:error, reason} -> emit_failure(nil, {:recovery_candidates_failed, workspace_id, reason})
     end
   end
 
@@ -121,21 +104,6 @@ defmodule FavnOrchestrator.RunRecovery do
       {:error, reason} ->
         {:error, reason}
     end
-  end
-
-  defp recovery_owner_id(workspace_id) do
-    instance = RuntimeConfig.instance_id()
-    "#{String.slice(instance, 0, 96)}:run-recovery:#{short_hash(workspace_id)}"
-  end
-
-  defp recovery_batch_id(workspace_id) do
-    "recovery:#{short_hash({workspace_id, System.monotonic_time(:millisecond)})}"
-  end
-
-  defp short_hash(value) do
-    :crypto.hash(:sha256, :erlang.term_to_binary(value))
-    |> Base.url_encode64(padding: false)
-    |> binary_part(0, 24)
   end
 
   defp emit_failure(run_id, errors) do

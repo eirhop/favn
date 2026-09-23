@@ -20,6 +20,16 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     alias FavnOrchestrator.Persistence.Queries.GetRunnerTask
     alias FavnOrchestrator.Persistence.Results.RunCommitted
 
+    def claim_run(command) do
+      send(
+        Application.fetch_env!(:favn_orchestrator, :run_manager_cancellation_test_pid),
+        {:cleanup_claim, command}
+      )
+
+      receive do: (:release ->
+                     {:error, FavnOrchestrator.Persistence.Error.new(:conflict, "test barrier")})
+    end
+
     def request_cancellation(%RequestRunCancellation{} = command) do
       send(Process.get(:run_manager_cancellation_test_pid), {:request_cancellation, command})
       {:ok, Process.get(:run_manager_cancellation_committed)}
@@ -203,89 +213,33 @@ defmodule FavnOrchestrator.RunManager.CancellationTest do
     assert_receive {:runner_task_cancellation_requested, _command, %{status: :cancelled}}
   end
 
-  test "inactive cancellation terminalizes a durably queued runner task", %{context: context} do
-    task = durable_task(:queued)
-    {:ok, task_agent} = Agent.start_link(fn -> %{task: task} end)
-    configure_runner_task_test(task_agent)
+  for status <- [:queued, :running] do
+    test "inactive cancellation reserves cleanup before reconciling a #{status} task", %{
+      context: context
+    } do
+      start_supervised!(
+        {DynamicSupervisor, name: FavnOrchestrator.RunSupervisor, strategy: :one_for_one}
+      )
 
-    current =
-      run(:running)
-      |> Map.put(:event_seq, 2)
-      |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
+      task = durable_task(unquote(status))
+      {:ok, task_agent} = Agent.start_link(fn -> %{task: task} end)
+      configure_runner_task_test(task_agent)
 
-    put_replayed_commit(run(:pending))
-    Process.put(:run_manager_cancellation_current_run, current)
+      current =
+        run(:running)
+        |> Map.put(:event_seq, 2)
+        |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
 
-    assert :ok = RunManager.cancel_run(context, current.id, %{actor_id: "operator"})
-    assert_receive {:runner_task_cancellation_requested, _command, %{status: :cancelled}}
-    assert_receive {:run_transition_committed, command}
-    assert command.run.status == :cancelled
-  end
+      put_replayed_commit(run(:pending))
+      Process.put(:run_manager_cancellation_current_run, current)
+      assert :ok = RunManager.cancel_run(context, current.id, %{actor_id: "operator"})
 
-  test "inactive cancellation waits for a running durable task acknowledgement", %{
-    context: context
-  } do
-    start_runner_registry()
-    {:ok, task_agent} = Agent.start_link(fn -> %{task: durable_task(:running)} end)
-    configure_runner_task_test(task_agent)
-    owner = self()
+      assert_receive {:cleanup_claim, %{purpose: :cleanup, run_id: "run-replayed-cancellation"}},
+                     1_000
 
-    runner =
-      spawn_link(fn ->
-        receive do
-          {:favn_runner_task, %Favn.Contracts.RunnerTask.Cancellation{} = cancellation} ->
-            ack = %Favn.Contracts.RunnerTask.CancellationAck{
-              workspace_id: cancellation.workspace_id,
-              task_id: cancellation.task_id,
-              runner_instance_id: cancellation.runner_instance_id,
-              runner_session_generation: cancellation.runner_session_generation,
-              assignment_generation: cancellation.assignment_generation,
-              command_id: cancellation.command_id,
-              status: :observed,
-              issued_at: cancellation.requested_at,
-              acknowledged_at: DateTime.utc_now()
-            }
-
-            send(owner, {:runner_acknowledgement, RunnerTasks.acknowledge_cancellation(ack)})
-        end
-      end)
-
-    registration = %Favn.Contracts.RunnerTask.Registration{
-      runner_instance_id: "runner-inactive",
-      boot_id: "boot-inactive",
-      beam_node: Atom.to_string(node()),
-      runner_pool: "default",
-      required_runner_release_id: FavnTestSupport.runner_release_id(),
-      lifecycle_mode: :elastic,
-      supported_task_kinds: [:asset_attempt],
-      capabilities: ["asset_execution"]
-    }
-
-    assert {:ok, registration_ack} = RunnerRegistry.register(registration, runner)
-
-    Agent.update(task_agent, fn state ->
-      task = %{
-        state.task
-        | assigned_runner_session_generation: registration_ack.runner_session_generation
-      }
-
-      %{state | task: task}
-    end)
-
-    task = Agent.get(task_agent, & &1.task)
-
-    current =
-      run(:running)
-      |> Map.put(:event_seq, 2)
-      |> put_in([Access.key(:metadata), :active_runner_task_ids], [task.task_id])
-
-    put_replayed_commit(run(:pending))
-    Process.put(:run_manager_cancellation_current_run, current)
-
-    assert :ok = RunManager.cancel_run(context, current.id, %{actor_id: "operator"})
-    assert_receive {:runner_acknowledgement, {:ok, _ack}}
-    assert_receive {:run_transition_committed, command}
-    assert command.run.status == :cancelled
+      refute_received {:run_transition_committed, _}
+      assert map_size(:sys.get_state(RunManager).lifecycles) == 1
+    end
   end
 
   test "background cancellation sends intent without waiting for runner acknowledgement" do

@@ -24,6 +24,8 @@ defmodule FavnStoragePostgres.BackendSupervisor do
         [
           {Repo, config.repo_options},
           Supervisor.child_spec({SchemaGate, repo: Repo}, restart: :temporary),
+          {FavnStoragePostgres.RunLeaseRepo,
+           Keyword.merge(config.repo_options, pool_size: 2, timeout: 2_000)},
           {ManifestCache, []},
           {Sequencer, []},
           {Worker, []},

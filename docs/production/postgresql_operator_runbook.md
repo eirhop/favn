@@ -87,13 +87,14 @@ node's environment list is stale.
 Choose the pool before adding replicas:
 
 ```text
-(orchestrator replica count × pool_size)
+(orchestrator replica count × (pool_size + 2 renewal connections + 1 notification connection))
 + migration connections
 + monitoring and administrator headroom
 <= PostgreSQL connection budget
 ```
 
-The default pool is 15 connections per node. Keep at least 20% of the server limit
+The default ordinary pool is 15 connections per node, plus two reserved renewal
+connections and the notification listener. Keep at least 20% of the server limit
 free for failover, migrations, monitoring, and incident response. PgBouncer may
 protect connection count, but it cannot replace database capacity. This pool is
 unrelated to DuckLake metadata connection or write-concurrency budgets.
@@ -630,3 +631,27 @@ managed-output reset and rebuild commands before adoption. No live environment
 reset is performed by the migration or qualification tests. Downgrade requires
 a separately compatible environment or another coordinated reset; an old binary
 cannot read new-format tasks.
+
+
+## Resume a run that needs recovery attention
+
+Inspect the run's attention reason, revision, attempts and last confirmed renewal.
+Resolve the cause and check any unresolved external write before resuming. Resume
+reconciles original tasks; it does not authorize blindly repeating unknown writes.
+
+For a running local development stack:
+
+```bash
+mix favn.runs show RUN_ID
+mix favn.runs resume-recovery RUN_ID --revision REVISION
+```
+
+The workspace-authorized HTTP operation is
+`POST /api/orchestrator/v1/runs/RUN_ID/resume-recovery`, with JSON `{"expected_revision": REVISION}` and
+the normal authentication, workspace and idempotency headers. A conflict means the
+attention revision changed or cancellation already owns the run. Refresh the run;
+do not force status or fencing fields with SQL. A transport failure is uncertain:
+reconcile or repeat the same operation identity, not a new external write.
+
+See [run ownership and recovery](../architecture/run-ownership-and-recovery.md)
+for the lease, admission, watchdog and recovery budgets.

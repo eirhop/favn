@@ -1542,7 +1542,20 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                  ),
                  1024
                )
+               , jsonb_build_object(
+                 'disposition', ownership.recovery_disposition,
+                 'attempts', ownership.recovery_attempts,
+                 'revision', ownership.attention_revision,
+                 'last_confirmed_renewal', ownership.last_renewed_at,
+                 'next_recovery_at', ownership.next_recovery_at,
+                 'reason', left(selected_run.snapshot #>> '{metadata,recovery_attention,phase}', 256),
+                 'operator_action', CASE WHEN ownership.recovery_disposition='attention'
+                   AND selected_run.cancellation_requested_at IS NULL
+                   AND selected_run.status IN ('pending','running') THEN 'resume_recovery' END
+               )
         FROM favn_control.runs AS selected_run
+        JOIN favn_control.run_ownerships ownership ON ownership.workspace_id=selected_run.workspace_id
+          AND ownership.run_id=selected_run.run_id
         LEFT JOIN LATERAL (
           SELECT candidate_target.target_id,
                  concat_ws(':', candidate_target.target_module, candidate_target.target_name) AS target_label
@@ -1589,9 +1602,16 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
           window_end_at,
           error_type,
           error_kind,
-          error_message
+          error_message,
+          recovery
         ]
       ] ->
+        recovery =
+          if recovery["operator_action"] == "resume_recovery" and
+               FavnStoragePostgres.CancellationOwnership.cancelled?(workspace_id, run_id),
+             do: Map.put(recovery, "operator_action", nil),
+             else: recovery
+
         {:ok,
          %RunViewHeader{
            run_id: loaded_run_id,
@@ -1612,6 +1632,7 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
            window_end_at: window_end_at,
            error_code: error_type || error_kind,
            error_message: error_message,
+           recovery: recovery,
            counts: @no_asset_counts
          }}
 

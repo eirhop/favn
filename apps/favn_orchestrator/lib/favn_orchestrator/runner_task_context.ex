@@ -61,6 +61,23 @@ defmodule FavnOrchestrator.RunnerTaskContext do
   end
 
   @doc false
+  @spec decode_target_lock(term()) :: {:ok, map() | nil} | {:error, atom()}
+  def decode_target_lock(data) do
+    with {:ok, lock} <-
+           PersistenceData.decode(
+             %{"format" => "task-data-v1", "data" => data},
+             8_192,
+             nil,
+             @atoms
+           ),
+         true <- valid_lock?(lock) do
+      {:ok, lock}
+    else
+      _ -> {:error, :invalid_target_lock_reference}
+    end
+  end
+
+  @doc false
   @spec decode_admission_intent(map(), Version.t(), Favn.Contracts.RunnerWork.t()) ::
           {:ok, map()} | {:error, atom()}
   def decode_admission_intent(envelope, version, work) do

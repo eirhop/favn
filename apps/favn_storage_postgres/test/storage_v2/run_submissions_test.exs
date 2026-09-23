@@ -2273,6 +2273,8 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
       payload_hash: hash,
       orchestration_context: context,
       run_id: run_id,
+      run_authority:
+        FavnStoragePostgres.TestSupport.RunFixture.authority(fixture.workspace_context, run_id),
       operation_id: nil,
       asset_step_id: nil,
       required_capability: "relation_inspection",
@@ -2565,14 +2567,15 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
 
     case state do
       :preparing ->
-        assert_receive {:preparation_started, %{run_id: run_id}} when run_id == queued.run_id
+        assert_receive {:preparation_started, %{run_id: run_id}} when run_id == queued.run_id,
+                       1_000
 
       :admitting ->
-        assert_receive :admission_started
+        assert_receive :admission_started, 1_000
     end
 
     Process.exit(worker, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}, 1_000
 
     assert {:ok, interrupted} =
              Store.get(%GetRunSubmission{

@@ -311,3 +311,20 @@ whether a command was duplicated; it does not prove asset success.
 Read [Runtime Inputs For SQL Assets](sql-runtime-inputs.html) for resolver
 authoring and `Favn.Pipeline`, `Favn.Asset`, and `Favn.SQLAsset` for placement of
 the retry declarations.
+
+
+## Resume control-plane recovery
+
+A run may retain completed tasks while its coordinator needs recovery attention.
+Inspect the run before resuming. After addressing the cause, an operator can resume
+that exact attention revision in the running local development stack:
+
+```bash
+mix favn.runs show RUN_ID
+mix favn.runs resume-recovery RUN_ID --revision REVISION
+```
+
+Resume first stops prior local execution and then reconciles the original durable
+tasks. It does not repeat a write whose outcome is unknown. A stale revision or a
+run already owned by cancellation is rejected. Repeating a successful resume with
+the same identity leaves its newer execution untouched.

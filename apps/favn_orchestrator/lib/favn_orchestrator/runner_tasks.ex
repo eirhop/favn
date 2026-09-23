@@ -74,9 +74,12 @@ defmodule FavnOrchestrator.RunnerTasks do
 
   @doc false
   def retry_safe(%FavnOrchestrator.Persistence.WorkspaceContext{} = context, task) do
-    with {:ok, retried} <-
+    with {:ok, authority} <-
+           FavnOrchestrator.RunHelper.permit_new_work(task.run_id, task.task_kind),
+         {:ok, retried} <-
            store().retry(%C.RetryRunnerTask{
              workspace_context: context,
+             run_authority: authority,
              command_id:
                "retry:#{task.task_id}:#{task.assignment_generation}:#{task.result_version}",
              task_id: task.task_id,
@@ -336,6 +339,7 @@ defmodule FavnOrchestrator.RunnerTasks do
              command_id: "cancel:#{task_id}:#{System.unique_integer([:positive, :monotonic])}",
              task_id: task_id,
              reason: reason,
+             preserve_cleanup?: Keyword.get(opts, :preserve_cleanup, false),
              issued_at: now,
              occurred_at: now
            }) do
@@ -597,7 +601,7 @@ defmodule FavnOrchestrator.RunnerTasks do
          reason,
          now
        )
-       when status in [:assigned, :preparing, :running, :cancelling] do
+       when status == :cancelling do
     case runner_session(runner_id) do
       {:ok, %{session_generation: ^session_generation, agent_pid: agent_pid}} ->
         message = %Favn.Contracts.RunnerTask.Cancellation{

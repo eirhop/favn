@@ -311,3 +311,12 @@ will sign in again; PostgreSQL application state is unaffected.
 
 The consolidated operator procedures, including distribution-cookie and database
 credential handling, are in [`secret_rotation.md`](secret_rotation.md).
+
+
+### Run ownership limits
+
+`FAVN_RUN_LEASE_DURATION_MS` defaults to `120000` and accepts `120000`–`600000`.
+`FAVN_MAX_ACTIVE_RUNS` defaults to `64` and accepts `1`–`512`. Values outside those
+ranges fail configuration validation. These limits govern the orchestrator's run
+lifecycle; they do not change runner-task, materialization or cancellation deadlines.
+See [run ownership and recovery](../architecture/run-ownership-and-recovery.md).

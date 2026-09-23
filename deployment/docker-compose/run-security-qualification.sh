@@ -55,6 +55,19 @@ if [ -n "$(git -C "$repository_root" status --porcelain --untracked-files=normal
   source_state=dirty_diagnostic
 fi
 
+# Keep redacted evidence private and host-owned on Linux bind mounts.
+probe_uid=$(id -u)
+probe_gid=$(id -g)
+for probe_id in "$probe_uid" "$probe_gid"; do
+  case "$probe_id" in
+    ""|0|*[!0-9]*)
+      echo "security qualification requires a non-root numeric host UID and GID" >&2
+      exit 1
+      ;;
+  esac
+done
+export FAVN_SECURITY_PROBE_USER="$probe_uid:$probe_gid"
+
 short_revision=$(printf '%s' "$source_revision" | cut -c 1-12)
 run_suffix="$(date -u +%Y%m%d%H%M%S)-$$"
 export FAVN_COMPOSE_PROJECT_NAME="favn-security-$short_revision-$run_suffix"
@@ -198,6 +211,7 @@ SQL
 docker version >/dev/null
 rm -rf "$results_dir"
 mkdir -p "$results_dir/topology" "$secrets_dir"
+chmod 0700 "$results_dir"
 chmod 0755 "$secrets_dir"
 umask 077
 secrets_mount_source=$secrets_dir

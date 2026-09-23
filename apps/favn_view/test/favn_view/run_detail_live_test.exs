@@ -16,6 +16,7 @@ defmodule FavnView.RunDetailLiveTest do
   setup do
     keys = [
       :retry_operator_run_remaining_fun,
+      :resume_operator_run_recovery_fun,
       :operator_run_flow_fun,
       :operator_run_events_fun,
       :operator_run_windows_fun,
@@ -54,6 +55,69 @@ defmodule FavnView.RunDetailLiveTest do
     assert Enum.map(mounted.assigns.run.assets, & &1.asset_ref) == ["crm.orders", "crm.total"]
     assert MapSet.equal?(mounted.assigns.run_event_subscriptions, MapSet.new(["run-one"]))
     assert is_reference(mounted.assigns.fallback_poll_ref)
+  end
+
+  test "attention displays the reason and ties browser resumption to the displayed revision" do
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      detail = flow(run_id, :running)
+
+      recovery = %{
+        "disposition" => "attention",
+        "attempts" => 3,
+        "revision" => 7,
+        "reason" => "original_target_lease_lost",
+        "last_confirmed_renewal" => nil,
+        "operator_action" => "resume_recovery"
+      }
+
+      {:ok, %{kind: :run, detail: %{detail | header: %{detail.header | recovery: recovery}}}}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "attention-run"}, %{}, connected_socket())
+
+    html =
+      render_component(
+        &RunDetailLive.render/1,
+        Map.put(mounted.assigns, :operator_workspaces, [])
+      )
+
+    assert html =~ "original_target_lease_lost"
+    assert html =~ "Resume recovery"
+    assert html =~ ~s(data-command-resource="attention-run:7")
+    assert html =~ ~s(phx-disable-with="Resuming...")
+  end
+
+  test "resume preserves the displayed revision and command identity after an uncertain reply" do
+    caller = self()
+
+    Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+      detail = flow(run_id, :running)
+
+      recovery = %{
+        "disposition" => "attention",
+        "revision" => 7,
+        "operator_action" => "resume_recovery"
+      }
+
+      {:ok, %{kind: :run, detail: %{detail | header: %{detail.header | recovery: recovery}}}}
+    end)
+
+    Application.put_env(:favn_view, :resume_operator_run_recovery_fun, fn
+      :operator_context, "attention-run", revision, opts ->
+        send(caller, {:resume_requested, revision, opts[:idempotency_key]})
+        {:error, FavnOrchestrator.Persistence.Error.new(:timeout, "reply lost")}
+    end)
+
+    assert {:ok, mounted} =
+             RunDetailLive.mount(%{"run_id" => "attention-run"}, %{}, connected_socket())
+
+    params = %{"idempotency_key" => "run_resume_recovery:browser:regression", "revision" => "999"}
+    assert {:noreply, uncertain} = RunDetailLive.handle_event("resume_recovery", params, mounted)
+    assert_receive {:resume_requested, 7, key}
+    assert uncertain.assigns.resume_attempt.key == key
+    assert {:noreply, _} = RunDetailLive.handle_event("resume_recovery", %{}, uncertain)
+    assert_receive {:resume_requested, 7, ^key}
   end
 
   test "a completed selected child offers cancellation of the full backfill" do

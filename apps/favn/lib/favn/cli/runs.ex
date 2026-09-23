@@ -91,6 +91,20 @@ defmodule Favn.CLI.Runs do
     end
   end
 
+  @doc "Resumes saved recovery attention at the displayed revision; original tasks are reconciled."
+  @spec resume_recovery(String.t(), pos_integer(), keyword()) :: {:ok, map()} | {:error, term()}
+  def resume_recovery(run_id, revision, opts \\ []) do
+    with {:ok, base_url, credentials, session_context} <- session(opts) do
+      OrchestratorClient.resume_run_recovery(
+        base_url,
+        credentials.service_token,
+        run_id,
+        revision,
+        session_context
+      )
+    end
+  end
+
   defp session(opts), do: Context.resolve(opts)
 
   defp filters(opts, allowed) do

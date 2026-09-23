@@ -22,6 +22,16 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     alias FavnOrchestrator.Persistence.Selectors.ActorById
     alias FavnOrchestrator.Persistence.Selectors.SessionByTokenHash
 
+    def check_resume(command) do
+      send(self(), {:checked_resume, command})
+      Process.get(:resume_check_result, {:ok, :ready})
+    end
+
+    def resume_recovery(command) do
+      send(self(), {:resumed_recovery, command})
+      :ok
+    end
+
     def page_run_summaries(query) do
       case Process.get(:runs_router_list_error) do
         nil ->
@@ -371,6 +381,75 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     assert get_in(Jason.decode!(response.resp_body), ["error", "code"]) == "unauthenticated"
   end
 
+  test "resume validates the revision and audits successful reconciliation" do
+    start_supervised!(FavnOrchestrator.RunManager)
+    response = resume_request(7)
+    assert response.status == 200
+    assert get_in(Jason.decode!(response.resp_body), ["data", "resumed"]) == true
+    assert_received {:resumed_recovery, %{expected_revision: 7, run_id: "recovering-run"}}
+    assert_received {:complete_operator_command, %{outcome: "accepted"}}
+    assert resume_request(0).status == 422
+    assert resume_request("7").status == 422
+  end
+
+  test "reader cannot resume recovery using the service operator's authority" do
+    actor = put_actor("workspace-a", "viewer", [:customer_reader])
+
+    response =
+      :post
+      |> conn("/recovering-run/resume-recovery", "")
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> put_req_header("x-favn-workspace-id", "workspace-a")
+      |> put_req_header("x-favn-actor-id", actor.id)
+      |> put_req_header("x-favn-session-token", actor.token)
+      |> Map.put(:body_params, %{"expected_revision" => 7})
+      |> RunsRouter.call(RunsRouter.init([]))
+
+    assert response.status == 403
+    refute_received {:checked_resume, _}
+  end
+
+  test "stale recovery revision returns conflict without executing resume" do
+    start_supervised!(FavnOrchestrator.RunManager)
+
+    Process.put(
+      :resume_check_result,
+      {:error, FavnOrchestrator.Persistence.Error.new(:conflict, "stale revision")}
+    )
+
+    assert resume_request(6).status == 409
+    refute_received {:resumed_recovery, _}
+  end
+
+  test "a replayed recovery resume does not request another mutation" do
+    start_supervised!(FavnOrchestrator.RunManager)
+    Process.put(:resume_check_result, {:ok, :already_resumed})
+    healthy = spawn(fn -> receive do: (:stop -> :ok) end)
+    on_exit(fn -> send(healthy, :stop) end)
+    key = {"workspace-a", "recovering-run"}
+
+    :sys.replace_state(FavnOrchestrator.RunManager, fn state ->
+      %{
+        state
+        | run_pids: %{key => healthy},
+          lifecycles: %{
+            healthy => %{
+              key: key,
+              phase: :running,
+              pids: MapSet.new([healthy]),
+              coordinator: healthy,
+              ownership: nil
+            }
+          }
+      }
+    end)
+
+    assert resume_request(7).status == 200
+    assert Process.alive?(healthy)
+    assert :sys.get_state(FavnOrchestrator.RunManager).lifecycles[healthy].phase == :running
+    refute_received {:resumed_recovery, _}
+  end
+
   test "cancelling a successful run preserves and reports its terminal result" do
     response = cancel_request("successful-run")
 
@@ -448,6 +527,16 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
     |> put_req_header("idempotency-key", "runs-router-service-submit")
     |> put_headers(headers)
     |> Map.put(:body_params, %{})
+    |> RunsRouter.call(RunsRouter.init([]))
+  end
+
+  defp resume_request(revision) do
+    :post
+    |> conn("/recovering-run/resume-recovery", "")
+    |> put_req_header("authorization", "Bearer #{@token}")
+    |> put_req_header("x-favn-workspace-id", "workspace-a")
+    |> put_req_header("idempotency-key", "resume-recovery-#{revision}")
+    |> Map.put(:body_params, %{"expected_revision" => revision})
     |> RunsRouter.call(RunsRouter.init([]))
   end
 

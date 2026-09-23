@@ -15,11 +15,9 @@ defmodule FavnOrchestrator.RunOwnership do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RuntimeConfig
 
-  @default_lease_duration_ms 30_000
-
   @doc "Returns the default ownership lease duration."
   @spec default_lease_duration_ms() :: pos_integer()
-  def default_lease_duration_ms, do: @default_lease_duration_ms
+  def default_lease_duration_ms, do: RuntimeConfig.current().run_lease_duration_ms
 
   @doc "Builds a node-and-process-specific owner identity."
   @spec owner_id(String.t()) :: String.t()
@@ -34,7 +32,7 @@ defmodule FavnOrchestrator.RunOwnership do
           {:ok, Ownership.t()} | {:error, term()}
   def claim(%WorkspaceContext{} = context, run_id, owner_id, opts \\ [])
       when is_binary(run_id) and is_binary(owner_id) and is_list(opts) do
-    lease_duration_ms = Keyword.get(opts, :lease_duration_ms, @default_lease_duration_ms)
+    lease_duration_ms = Keyword.get(opts, :lease_duration_ms, default_lease_duration_ms())
 
     Persistence.stores().run_ownership.claim_run(%ClaimRun{
       workspace_context: context,
@@ -42,7 +40,8 @@ defmodule FavnOrchestrator.RunOwnership do
         Keyword.get_lazy(opts, :command_id, fn -> command_id("claim", run_id, owner_id) end),
       run_id: run_id,
       owner_id: owner_id,
-      lease_duration_ms: lease_duration_ms
+      lease_duration_ms: lease_duration_ms,
+      purpose: Keyword.get(opts, :purpose, :execution)
     })
   end
 
@@ -50,7 +49,7 @@ defmodule FavnOrchestrator.RunOwnership do
   @spec renew(WorkspaceContext.t(), Ownership.t(), keyword()) ::
           {:ok, Ownership.t()} | {:error, term()}
   def renew(%WorkspaceContext{} = context, %Ownership{} = ownership, opts \\ []) do
-    lease_duration_ms = Keyword.get(opts, :lease_duration_ms, @default_lease_duration_ms)
+    lease_duration_ms = Keyword.get(opts, :lease_duration_ms, default_lease_duration_ms())
 
     renewal_id =
       Keyword.get_lazy(opts, :renewal_id, fn ->
@@ -90,9 +89,9 @@ defmodule FavnOrchestrator.RunOwnership do
           command_id("recovery", context.workspace_id, owner_id)
         end),
       owner_id: owner_id,
-      lease_duration_ms: Keyword.get(opts, :lease_duration_ms, @default_lease_duration_ms),
+      lease_duration_ms: Keyword.get(opts, :lease_duration_ms, default_lease_duration_ms()),
       unowned_grace_period_ms:
-        Keyword.get(opts, :unowned_grace_period_ms, @default_lease_duration_ms),
+        Keyword.get(opts, :unowned_grace_period_ms, default_lease_duration_ms()),
       limit: Keyword.get(opts, :limit, 100)
     })
   end

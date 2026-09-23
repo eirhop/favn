@@ -744,6 +744,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     assert {:ok, active} = Manifests.active_runtime(context.workspace_context)
     assert active.manifest_version_id == context.version.manifest_version_id
 
+    assert :ok = await_manifest_dispatcher_idle()
     :atomics.put(version_gate, 1, 0)
     rejected_id = operation_id <> "-oversized"
     assert upload_archive(context, rejected_id, archive_sha256, archive_body).status == 202
@@ -2018,8 +2019,8 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
   defp await_manifest_dispatcher_idle(0), do: flunk("manifest deployment dispatcher stayed busy")
 
   defp await_manifest_dispatcher_idle(remaining) do
-    case :sys.get_state(ManifestDeploymentDispatcher) do
-      %{active: active, reconciliation: nil} when map_size(active) == 0 ->
+    case {:sys.get_state(ManifestDeploymentDispatcher), :sys.get_state(ManifestMemorySlot)} do
+      {%{active: active, reconciliation: nil}, nil} when map_size(active) == 0 ->
         :ok
 
       _state ->

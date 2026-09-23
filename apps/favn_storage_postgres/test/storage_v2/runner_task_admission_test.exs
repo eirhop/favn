@@ -250,7 +250,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTaskAdmissionTest do
 
     SQL.query!(
       Repo,
-      "UPDATE favn_control.run_ownerships SET expires_at='2000-01-01' WHERE workspace_id=$1",
+      "UPDATE favn_control.run_ownerships SET expires_at='2000-01-01', next_recovery_at='2000-01-01' WHERE workspace_id=$1",
       [f.run.workspace_id]
     )
 

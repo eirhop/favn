@@ -49,7 +49,18 @@ defmodule FavnStoragePostgres.RunnerTasks.Admission do
          :ok <- validate(command, encoded_intent) do
       event_hash = event_json |> Jason.decode!() |> CanonicalJSON.hash() |> elem(1)
 
-      case Repo.transaction(fn -> admit!(command, encoded_intent, event_hash) end) do
+      case FavnStoragePostgres.RunTransaction.transaction(
+             fn ->
+               if command.acquisition_observer do
+                 {observer, reference} = command.acquisition_observer
+                 send(observer, {:acquisition_checked_out, reference})
+               end
+
+               admit!(command, encoded_intent, event_hash)
+             end,
+             timeout: 20_000,
+             queue: false
+           ) do
         {:error, {:not_admitted, result}} -> {:ok, result}
         result -> result
       end
@@ -58,7 +69,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Admission do
       {:error, reason} -> {:error, invalid(reason)}
     end
   rescue
-    error -> {:error, ErrorMapper.map(error)}
+    error ->
+      {:error, ErrorMapper.map(error)}
   end
 
   defp admit!(command, encoded_intent, event_hash) do
@@ -70,8 +82,29 @@ defmodule FavnStoragePostgres.RunnerTasks.Admission do
     # Existing accepted work is evidence even after the deadline or later events.
     # Do not call enqueue (whose receipt expires), acquire, or overwrite the run.
     case Repo.get_by(RunnerTask, workspace_id: workspace, task_id: task.task_id) do
-      nil -> acquire!(command, encoded_intent)
-      saved -> replay!(command, saved, event_hash)
+      nil ->
+        if command.reconcile_only?,
+          do:
+            Repo.rollback(
+              Error.new(:conflict, "run admission paused before submission", retryable?: true)
+            )
+
+        %{rows: rows} =
+          SQL.query!(
+            Repo,
+            """
+            SELECT 1 FROM favn_control.run_ownerships
+            WHERE workspace_id=$1 AND run_id=$2 AND claim_purpose='execution'
+              AND recovery_disposition='automatic'
+            """,
+            [workspace, task.run_id]
+          )
+
+        if rows == [], do: Repo.rollback(Error.new(:fenced, "run cannot admit execution"))
+        acquire!(command, encoded_intent)
+
+      saved ->
+        replay!(command, saved, event_hash)
     end
   end
 
