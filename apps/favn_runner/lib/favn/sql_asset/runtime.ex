@@ -58,8 +58,7 @@ defmodule Favn.SQLAsset.Runtime do
           ExecutionPackage.t(),
           Version.t(),
           RunnerWork.t(),
-          Context.t(),
-          :execution | :input_resolution
+          Context.t()
         ) ::
           {:ok, map()} | {:error, Error.t()} | {:error, Error.t(), map()}
   def run_manifest(
@@ -142,6 +141,16 @@ defmodule Favn.SQLAsset.Runtime do
           %{optional(module()) => RelationRef.t()},
           RunnerWork.t(),
           Context.t()
+        ) ::
+          {:ok, Definition.t(), Context.t(), keyword()} | {:error, Error.t()}
+  @spec prepare_manifest_execution(
+          Asset.t(),
+          ExecutionPackage.t(),
+          Version.t() | ManifestHandle.t(),
+          %{optional(module()) => RelationRef.t()},
+          RunnerWork.t(),
+          Context.t(),
+          :execution | :input_resolution
         ) ::
           {:ok, Definition.t(), Context.t(), keyword()} | {:error, Error.t()}
   def prepare_manifest_execution(

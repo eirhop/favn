@@ -675,10 +675,10 @@ are measured together rather than assigning the same lines twice.
 
 | Slice | Production added | Production deleted | Supporting added | Supporting deleted |
 | --- | ---: | ---: | ---: | ---: |
-| 1: typed read task and runner execution | 208 | 44 | 204 | 11 |
-| 2 + 3: manual validation, receipts, atomic acceptance | 1,635 | 363 | 1,030 | 88 |
-| 4: errors and canonical guidance | 69 | 3 | 85 | 0 |
-| Total at review | 1,912 | 410 | 1,319 | 99 |
+| 1: typed read task and runner execution | 216 | 43 | 203 | 12 |
+| 2 + 3: manual validation, receipts, atomic acceptance | 1,636 | 364 | 1,217 | 89 |
+| 4: errors and canonical guidance | 69 | 3 | 97 | 6 |
+| Total at review | 1,921 | 410 | 1,517 | 107 |
 
 Slices 2+3 exceed the combined +600 estimate substantially. The largest additions
 are storage validation/evidence enforcement (about 400 lines), existing-store
@@ -689,7 +689,10 @@ scope. Production deletions exceed the estimate because the old recovery worker
 and caller-side lock handling were removed. Slice 4 removes fewer lines because
 the generic error paths remain necessary for unrelated rebuild errors; two narrow
 safe error variants were added. Supporting code below the slice 4 estimate reflects
-small text changes rather than a new UI flow.
+small text changes rather than a new UI flow. Supporting additions exceed the amended total by 117 lines: the
+independent-connection deadline race, native PostgreSQL/runner integration,
+post-expiry retry, and fresh-input drift regressions increased slices 2+3 beyond
+the estimate. These exercise required invariants rather than optional features.
 
 ## Verification evidence
 
@@ -702,7 +705,11 @@ small text changes rather than a new UI flow.
 | Orchestrator/API focused checks | 30 tests pass; includes fresh task IDs and stale409 on changed input before start, remote accepted-plan replay, stable saved conflict, lost reply, safe upgrade guidance and unavailable closure | Application tests with persistence doubles |
 | PostgreSQL task ownership and receipts | 12 focused tests pass, including native integration, same-release unsupported runner, terminal read failure, manual retry/replay, renewed-owner expiry guard, and independent-connection lock wait beyond deadline with parent/lock rollback | Real disposable PostgreSQL 18 database |
 | Full fast suite, first pass | Exposed stale schema fingerprint, predecessor fixture, retention/error compatibility, View fixture and two obsolete contract assertions; corrected in this change | Final reruns recorded below; this first run was not green |
-| Compile | Development compile with warnings as errors passed | Local compilation |
+| Fast owning layers | Core 541, Runner 287, Orchestrator 963, View 843 passed; storage full run had 575/576 passing, followed by a passing focused retirement regression after restoring its existing error text; all 12 dedicated validation tests pass | Local full run plus correction reruns; final CI tracked separately |
+| CI at `19b668e1` | Umbrella fast, acceptance, slow, Dialyzer, quick checks, macOS native, HTTP security, and image workflows passed; Linux native integration failed 1/103 with a DuckDB short-file read | No causal link established to this change; final qualification remains pending |
+| Compile | Final development compile with warnings as errors passed | Local compilation |
+| Dialyzer | Zero errors, zero skipped and zero unnecessary filters | Final implementation, local static analysis |
+| Static documentation checks | Formatter, test-tag guard and diff whitespace pass; relative links resolve in all four changed documents | Local checks |
 | Record diagrams | Original and amended diagrams rendered before implementation; final semantics unchanged | Documentation rendering; no new diagram syntax |
 
 ### Not verified
@@ -721,4 +728,7 @@ Astra xhigh independently compared implementation with the approved baseline and
 manual-retry amendment. Its findings covered stale ownership, acceptance after lock
 waits, exact saved outcomes, historical evaluation times, legacy upgrade settlement,
 and fixed capability guidance. These findings have been addressed; the final
-recheck will include the completed verification and complexity accounting.
+recheck includes verification and complexity accounting. A final misplaced type
+specification was corrected: the preparation-purpose argument belongs on
+`prepare_manifest_execution/7`, not `run_manifest/5`. Final approval remains pending
+Linux native requalification after the recorded database I/O failure.

@@ -5,7 +5,6 @@ defmodule FavnRunner.RunnerAgentTest do
 
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask
-  alias Favn.Contracts.RunnerResult
   alias FavnRunner.Lifecycle
   alias FavnRunner.RunnerAgent
   alias FavnRunner.TaskExecutor
