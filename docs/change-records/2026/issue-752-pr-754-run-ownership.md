@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix and lifecycle redesign |
 | Primary issue | [#752](https://github.com/eirhop/favn/issues/752) |
 | Pull request | [#754](https://github.com/eirhop/favn/pull/754) |
@@ -711,30 +711,34 @@ the status remains `Implementing`. No production deployment is implied.
 | Planned | Implemented | Reason | Reviewer verdict |
 | --- | --- | --- | --- |
 | Cleanup can perform narrowly authorized reconciliation reads | Each new cleanup read persists its authorizing generation on the runner task; claim/requeue and cancellation sweeps revalidate it. Explicit task cancellation remains effective. Existing nonterminal helper tasks are not silently adopted; they require attention and reconciliation. | An in-memory permit alone cannot survive runner assignment or distinguish a legitimate read from old queued work during cancellation. | Astra Max accepted the schema stamp and conservative refusal during interim review; refusal now routes to recoverable attention rather than terminal failure. |
-| Preserve existing administrative repair where compatible | Retire the temporary `repair_initial_registration.exs` script and its missing-marker procedure. Normal managed registration and matching-marker target recovery remain supported. | The script created run-owned mutations for a terminal run without a live lifecycle. Preserving it would need a separately authorized target-owned repair contract; adding an ownership bypass is unsafe. This is a pre-v1 breaking loss of the one-off missing-marker repair capability, not an equivalent reroute. | Astra Max assessed the existing target-recovery contract and accepted retirement as the narrow safe scope; final review remains required. |
+| Preserve existing administrative repair where compatible | Retire the temporary `repair_initial_registration.exs` script and its missing-marker procedure. Normal managed registration and matching-marker target recovery remain supported. | The script created run-owned mutations for a terminal run without a live lifecycle. Preserving it would need a separately authorized target-owned repair contract; adding an ownership bypass is unsafe. This is a pre-v1 breaking loss of the one-off missing-marker repair capability, not an equivalent reroute. | Astra Max assessed the existing target-recovery contract and accepted retirement as the narrow safe scope in the final review. |
 | Existing qualification harness | Normalize single/double TOML quotes in the builder policy check and run only the security probes with the validated non-root host UID/GID. | Buildx renders double quotes, and Linux bind-mounted evidence otherwise belonged to a different UID. Cache limits and container hardening remain unchanged; evidence stays private and host-readable/removable, with probe HOME/cache in private tmpfs. | Astra Max accepted both portability corrections; full harness qualification recorded below. |
 | Bounded preparation before keeper attachment | Manager enforces a 20-second initial claim deadline, then the keeper owns preparation responsiveness. | A database checkout or stalled pre-claim process otherwise held scarce preparation slots indefinitely. | Requested during final Astra Max review; regression added. |
-| Production additions estimated at 1,150–1,900; deletions 350–650 | Current production count +2,798/-904; tests and supporting docs +2,272/-516 (breakdown below). | Explicit target acquisition guardian, helper shutdown/registration, persisted cleanup authorization and resume barriers require more code than estimated. No second execution engine or generic framework was added. | Astra Max independently confirmed the earlier interim overrun; final variance is +898 additions/+254 deletions above the production upper estimates and awaits final acceptance. Approved estimates above are unchanged. |
+| Production additions estimated at 1,150–1,900; deletions 350–650 | Final production count +2,791/-903; tests, qualification harness and supporting docs +2,376/-536 (breakdown below). | Explicit target acquisition guardian, helper shutdown/registration, persisted cleanup authorization and resume barriers require more code than estimated. No second execution engine or generic framework was added. | Astra Max independently confirmed and accepted the final variance of +891 additions/+253 deletions above the production upper estimates, together with the supporting-code variance below. Approved estimates above are unchanged. |
 
-Counts compare the approved baseline with the implementation, exclude this record
-and the generated security catalog, and include deleted code. Each file is assigned
+Counts use the PR diff against main `c1b4d7f2`, excluding the imported #753 work,
+this record and the generated security catalog, and include deleted code. The
+approved design baseline remains `8e601372`; it has not been rewritten. Each file is assigned
 to its dominant implementation slice: shared ownership-store work is counted in
 slice 4 even where it also supports slice 1. Counts are conservative raw diff lines,
 not a claim that every changed line adds new behavior.
 
 | Slice | Production added/deleted | Tests/docs added/deleted |
 | --- | --- | --- |
-| 1: renewal storage and transaction bounds | +54/-2 | +611/-0 |
+| 1: renewal storage and transaction bounds | +58/-2 | +611/-0 |
 | 2: keeper, helpers and target maintenance | +744/-339 | +403/-94 |
 | 3: preparation and generation handoff | +690/-323 | +225/-80 |
-| 4: durable recovery and operator surface | +1,289/-129 | +321/-5 |
-| 5: qualification and canonical docs | +21/-111 | +712/-337 |
-| Total | +2,798/-904 | +2,272/-516 |
+| 4: durable recovery and operator surface | +1,299/-129 | +324/-5 |
+| 5: qualification and canonical docs | +0/-110 | +813/-357 |
+| Total | +2,791/-903 | +2,376/-536 |
 
 The total exceeds the initial estimate because cleanup authorization must remain
 valid after dispatch, target acquisition needs a separate bounded guardian, and
 resumption needs a confirmed local shutdown barrier plus a final durable
-cancellation check. The additional tests exercise those failure boundaries.
+cancellation check. The additional tests exercise those failure boundaries. Supporting additions
+exceed their 2,190-line upper estimate by 186 lines and deletions exceed 370 by
+166 lines, driven by committed race/failure coverage, private portable security
+qualification and removal of the obsolete repair procedure and warning filters.
 
 ## Decision log
 
@@ -748,33 +752,61 @@ cancellation check. The additional tests exercise those failure boundaries.
 
 ## Verification evidence
 
+Local qualification used PostgreSQL 18 on disposable databases, the documented
+runtime-input test key, and the local bootstrap role only for schema-owning store
+tests. Lease tests used two reserved renewal connections and four ordinary
+connections. Local acceptance used a separate restricted runtime role and
+bootstrap-owned migrator connection. No normal workspace database was used.
+
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| RC17 fault/control probes | Two passed: ~3-second lock timeout recovered; ~32-second simulated callback delay exposed expiry and broken handoff | Prior diagnostic evidence; no proof of the proposed implementation |
-| Source/lock-order review | Astra Max inspected the final implementation against the approved baseline and required corrections described below | Static analysis; final verdict depends on qualification |
-| Reserved renewal pool and persistence qualification | 31 focused PostgreSQL tests passed before the final handoff corrections: fresh receipt/replay, broad-lock bypass, row NOWAIT, ordinary-pool starvation, all 64 concurrent renewals, recovery/resume/cancellation, restricted runtime role, populated RC17 migration and fresh-process recovery | Rechecked by the final suites below; two reserved renewal connections, four ordinary test connections, PostgreSQL 18 |
-| Target admission commit / reply races | 3 passed on PostgreSQL: independent renewal while the coordinator waits; expired and malformed original locks enter attention after fresh recovery with no new task or lock generation | Real durable admissions and locks; controlled delayed response |
-| Record links, Markdown and Mermaid | Ten local links resolve; whitespace check is clean; both diagrams rendered and were visually inspected locally and on GitHub at the approved planning commit. No diagram correction was required. | Documentation validation only |
-| Astra Max plan review | Approved after two rounds of corrections; no remaining findings | Independent design review, not runtime qualification |
+| RC17 fault/control probes | A ~3-second lock timeout recovered; a ~32-second callback delay exposed expiry and broken handoff | Diagnosis only; original production CPU trigger is unproven |
+| Durable lifecycle qualification | 44 committed PostgreSQL lifecycle tests passed together on `fe45b25a`, including both merged-main SQL rollback/rejected-commit cases and the final projection correction | Real admissions, tasks, fences, recovery and SQL worker rollback; includes uncertain-write preservation, sibling draining and cancellation |
+| CPU pressure | Three concurrent runs kept the same generation and >20-second headroom through a 32-second coordinator suspension with one BEAM scheduler and competing CPU workers; durable results settled once | Controlled scheduler/callback pressure with real persisted tasks; not three external SQL writers or an Azure quota benchmark |
+| Target admission commit/reply races | 4 passed: independent renewal while reply is held; expiry, malformed and missing original lock enter attention after fresh recovery with no new task or lock generation | Real durable combined-window admissions and target locks; fresh maintenance starts with empty watches; the final suite also checks valid nil and ownership-only no-lock forms |
+| Renewal/storage/migration qualification | 31 passed again on `b9a58fc`: fresh receipt replay, broad-lock bypass, row NOWAIT, ordinary-pool starvation, all 64 concurrent renewals, total transaction timeout, recovery pacing/resume/cancellation, restricted-role renewal, populated RC17 migration and fresh-process recovery | Real PostgreSQL; migration downgrade is explicitly rejected |
+| Handoff/operator boundaries | 28 post-step tests, 63 run-detail tests and 39 CLI tests passed; the real replacement-owned 10-second deadline is exercised after an earlier shutdown timeout | Includes frozen revision/idempotency after uncertain browser replies; complete manager/API suite covered by fast CI |
+| Broad fast suite | 3,933 tests passed in [CI on b9a58fc](https://github.com/eirhop/favn/actions/runs/35826758622/job/107070118920) | All umbrella owning layers; later corrections change type declarations, test/build fixtures and bounded target projection validation; the projection correction is covered by subsequent focused and full committed lifecycle qualification |
+| Acceptance | All 5 acceptance/browser-tier tests passed with the corrected synthetic owner fixture | Local source reload, runner replacement/drain and View browser tier; actual restricted runtime credentials |
+| Query performance | The 10,000-sibling transition regression passed with the same number of queries as the single-run case | Fixed ceiling is 13, including one new outer `SET LOCAL transaction_timeout`; index-plan assertion remains |
+| Static checks | Formatting, compilation with warnings as errors, Credo, both Sobelow scans and Dialyzer passed on `fe45b25a`; Dialyzer reports zero errors, skips and unused filters; test-tag guard passed | Final source types include both validated policy fields; test-only PLT includes ExUnit; obsolete callback warning filters were removed |
+| Full HTTP/browser security | 379/379 assertions passed on clean `b9a58fc`; a second clean run passed 379/379 on `cc9424e3`, confirming private host-owned evidence can be cleaned and recreated | Host-owned private evidence, authenticated browser/API surface, proxy/network isolation and hardening; GitHub HTTP security and control-plane image workflows also passed on b9a58fc |
+| Docs and baseline | Approved plan, operational design, verification plan and risks are byte-for-byte preserved; local links checked and whitespace clean; approved diagrams were previously rendered and inspected | Documentation validation; public guide `.html` links are HexDocs targets |
+
+The first CI run identified a formatting gap, missing policy type fields, the
+synthetic acceptance fixture's missing authority, the one-query transaction
+budget increase, and obsolete ExUnit filters after adding its PLT dependency. Each was corrected and rechecked in its owning layer. The PR
+checks report the final-head CI result; earlier failed runs are not counted as
+passing qualification.
 
 ### Not verified
 
-Local verification is ongoing. The CPU-pressure regression currently exercises
+The CPU-pressure regression exercises
 real run/runner-task persistence with controlled coordinator suspension and BEAM
 scheduler contention. It does not by itself prove Azure CPU allocation, arbitrary
 100% CPU starvation, or a production throughput SLO. Explicit container quota,
-whole-VM suspension, credential refresh and an RC17 throughput comparison require
-separate recorded qualification before those claims can be made. No cloud
+whole-VM suspension, credential refresh, an RC17 throughput comparison and Azure
+qualification remain explicit release/deployment gates. They require separate
+recorded qualification before release/deployment or those claims can be made. No cloud
 resources or customer runs were changed; the first Azure stall remains
 unattributed.
 
 ## Final review
 
-Independent Astra Max implementation review is in progress against
-`8e601372897f5507e2d2262b80bdb9008f5b22f4`. Interim findings have prompted fixes for
-cleanup refusal classification, pre-claim deadlines, parent cancellation during
-resume, asynchronous coordinator activation and complete shutdown lifecycle
-counting, persisted combined-window target identity, and a replacement-owned
-handoff deadline after a predecessor timeout. The missing-marker repair retirement
-and harness portability corrections were reviewed explicitly. Final acceptance
-has not yet been granted.
+Independent Astra Max final implementation review **approved** source `fe45b25a`
+on 2026-09-23 against the preserved approved baseline
+`8e601372897f5507e2d2262b80bdb9008f5b22f4` and this completed record, with no
+remaining implementation findings. The reviewer independently checked the final
+44-test lifecycle result, static results, both clean security qualifications,
+local links, exact complexity counts and preserved baseline.
+
+Findings were addressed for cleanup refusal classification, pre-claim deadlines,
+parent cancellation during resume, asynchronous coordinator activation, complete
+shutdown lifecycle counting, persisted combined-window target identity,
+a replacement-owned handoff deadline after a predecessor timeout, and the
+missing-versus-nil target-lock distinction. The reviewer accepted the production
+and supporting-code overruns, missing-marker repair retirement and harness
+portability deviations.
+
+Final-head CI remains required. Approval of this implementation is not deployment
+qualification: the operational release/deployment gates listed above remain open.
