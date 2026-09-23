@@ -378,6 +378,13 @@ defmodule FavnOrchestrator.API.RebuildsRouterTest do
   end
 
   test "maps storage outcomes to stable HTTP semantics" do
+    assert {422, "rebuild_planning_failed", _, %{operation_id: "rebuild-758"}} =
+             RebuildsRouter.error_response(
+               Error.new(:invalid, "Retry manually",
+                 details: %{reason_code: "rebuild_planning_failed", operation_id: "rebuild-758"}
+               )
+             )
+
     assert {404, "not_found", _message, %{}} =
              RebuildsRouter.error_response(Error.new(:not_found, "missing"))
 

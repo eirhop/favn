@@ -78,16 +78,7 @@ defmodule FavnRunner.TaskExecutor do
 
   defp init_asset(assignment, work, owner) do
     if RunnerWork.runtime_input_resolution_only?(work) do
-      {:ok,
-       %{
-         assignment: assignment,
-         work: work,
-         owner: owner,
-         task_mode: :asset,
-         worker: nil,
-         monitor: nil,
-         result_sent?: false
-       }, {:continue, :complete_runtime_input_resolution}}
+      {:stop, :legacy_rebuild_planning_requires_new_plan}
     else
       with {:ok, asset_ref} <- ManifestResolver.resolve_target_ref(work),
            {:ok, manifest, asset, relations} <-
@@ -116,13 +107,6 @@ defmodule FavnRunner.TaskExecutor do
         _other -> {:stop, :invalid_task_executor_options}
       end
     end
-  end
-
-  @impl true
-  def handle_continue(:complete_runtime_input_resolution, state) do
-    result = runtime_input_resolution_result(state.work)
-    send(state.owner, {:runner_task_finished, self(), result})
-    {:stop, :normal, %{state | result_sent?: true}}
   end
 
   @impl true
@@ -336,18 +320,6 @@ defmodule FavnRunner.TaskExecutor do
     }
   end
 
-  defp runtime_input_resolution_result(work) do
-    %RunnerResult{
-      run_id: work.run_id,
-      manifest_version_id: work.manifest_version_id,
-      manifest_content_hash: work.manifest_content_hash,
-      required_runner_release_id: work.required_runner_release_id,
-      status: :ok,
-      asset_results: [],
-      metadata: RunnerWork.lifecycle_metadata(work)
-    }
-  end
-
   defp guarded_operation(%Assignment{} = assignment, payload) do
     Lifecycle.with_admission(fn -> execute_operation(assignment, payload) end)
   rescue
@@ -359,6 +331,24 @@ defmodule FavnRunner.TaskExecutor do
   catch
     kind, reason ->
       operation_error(assignment.task_kind, {kind, reason})
+  end
+
+  defp execute_operation(
+         %Assignment{task_kind: :runtime_input_resolution} = assignment,
+         %Favn.Contracts.RuntimeInputResolutionRequest{work: work} = request
+       ) do
+    with_operation_version(assignment, work, fn _version ->
+      with :ok <- Favn.Contracts.RuntimeInputResolutionRequest.validate(request),
+           {:ok, %Favn.RuntimeInput.Resolution{} = resolution} <-
+             FavnRunner.resolve_runtime_inputs(work) do
+        operation_result(
+          :runtime_input_resolution,
+          {:ok, Favn.Contracts.RuntimeInputExpectation.from_resolution(resolution)}
+        )
+      else
+        error -> operation_error(:runtime_input_resolution, error)
+      end
+    end)
   end
 
   defp execute_operation(
@@ -518,7 +508,13 @@ defmodule FavnRunner.TaskExecutor do
   end
 
   defp safe_operation?(kind),
-    do: kind in [:relation_inspection, :generation_capabilities, :generation_marker_read]
+    do:
+      kind in [
+        :runtime_input_resolution,
+        :relation_inspection,
+        :generation_capabilities,
+        :generation_marker_read
+      ]
 
   defp operation_result(
          kind,
@@ -536,6 +532,17 @@ defmodule FavnRunner.TaskExecutor do
     do: %Result{outcome: :succeeded, retry_class: :terminal, result: result}
 
   defp operation_result(kind, {:error, reason}), do: operation_error(kind, reason)
+
+  defp operation_error(:runtime_input_resolution, _reason) do
+    error =
+      RunnerError.normalize(:resolution_result_unavailable,
+        phase: :runner_task_execution,
+        retryable?: false,
+        outcome: :safe_failure
+      )
+
+    classified_result(:runtime_input_resolution, error)
+  end
 
   defp operation_error(kind, reason)
        when kind in [:relation_inspection, :generation_capabilities, :generation_marker_read] do

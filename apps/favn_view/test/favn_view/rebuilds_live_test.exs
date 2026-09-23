@@ -149,6 +149,35 @@ defmodule FavnView.RebuildsLiveTest do
     assert_redirect(view, "/rebuilds/rebuild-browser-plan")
   end
 
+  test "planning failure shows its operation id and manual retry guidance", %{conn: conn} do
+    {conn, _} = authenticated_conn(conn)
+
+    Application.put_env(:favn_view, :page_operator_rebuilds_fun, fn _, _ ->
+      {:ok, %{items: [], next_cursor: nil, has_more?: false, limit: 100}}
+    end)
+
+    Application.put_env(:favn_view, :plan_operator_rebuild_fun, fn _, _, _, _ ->
+      {:error,
+       %{
+         kind: :invalid,
+         details: %{reason_code: "rebuild_planning_failed", operation_id: "rebuild-758"},
+         message: "secret-resolver-message"
+       }}
+    end)
+
+    assert {:ok, view, _} = live(conn, ~p"/rebuilds")
+
+    html =
+      view
+      |> form("form[phx-submit=plan_rebuild]",
+        rebuild: %{target_id: "asset:orders", reason: "schema changed"}
+      )
+      |> render_submit()
+
+    assert html =~ "Rebuild input checks failed for rebuild-758. Retry manually."
+    refute html =~ "secret-resolver-message"
+  end
+
   test "manual workflow plans first and starts only the reviewed plan" do
     test_pid = self()
 

@@ -23,6 +23,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.CancellationOwnership
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Registry.DeploymentOwnership
+  alias FavnStoragePostgres.Rebuilds.Validation, as: RebuildValidation
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
   alias FavnStoragePostgres.RunnerTasks.WriteOwnership
@@ -568,12 +569,22 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   @doc false
-  def cancel_operation_in_transaction(workspace_id, operation_id, occurred_at, command_id)
+  def cancel_operation_in_transaction(
+        workspace_id,
+        operation_id,
+        occurred_at,
+        command_id,
+        context \\ nil
+      )
       when is_binary(workspace_id) and is_binary(operation_id) and
              is_struct(occurred_at, DateTime) and is_binary(command_id) do
     command = %{command_id: command_id, occurred_at: occurred_at}
 
+    scope =
+      if context, do: dynamic([task], task.orchestration_context == ^context), else: dynamic(true)
+
     from(task in RunnerTask,
+      where: ^scope,
       where:
         task.workspace_id == ^workspace_id and task.operation_id == ^operation_id and
           task.status not in ^@terminal_statuses,
@@ -585,6 +596,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     |> Enum.each(&WriteOwnership.lock_target!(workspace_id, &1))
 
     from(task in RunnerTask,
+      where: ^scope,
       where:
         task.workspace_id == ^workspace_id and task.operation_id == ^operation_id and
           task.status not in ^@terminal_statuses,
@@ -610,6 +622,19 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end)
 
     :ok
+  end
+
+  @doc false
+  def cancel_validation_in_transaction(workspace, operation, token, now) do
+    {:ok, context} = FavnOrchestrator.RunnerTaskContext.encode(token)
+
+    cancel_operation_in_transaction(
+      workspace,
+      operation,
+      now,
+      "close-validation:" <> token.attempt_id,
+      context
+    )
   end
 
   @impl true
@@ -690,6 +715,24 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
           true ->
             command
+        end
+
+      command =
+        if task.task_kind == "runtime_input_resolution" or
+             (task.task_kind in ~w(generation_capabilities generation_marker_read relation_inspection) and
+                not is_nil(RebuildValidation.token(task))) do
+          %{
+            command
+            | disposition: :failed,
+              reason:
+                RunnerError.new(
+                  outcome: :safe_failure,
+                  retryable?: false,
+                  type: "resolution_result_unavailable"
+                )
+          }
+        else
+          command
         end
 
       if command.disposition == :requeue and not proven_safe_to_requeue?(task) do
@@ -1447,8 +1490,10 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         nil
 
       candidate ->
-        DeploymentOwnership.lock!(candidate.workspace_id, candidate.deployment_operation_id)
-        Repo.one(lock(query, "FOR UPDATE"))
+        if RebuildValidation.candidate_live?(candidate) do
+          DeploymentOwnership.lock!(candidate.workspace_id, candidate.deployment_operation_id)
+          Repo.one(lock(query, "FOR UPDATE"))
+        end
     end
   end
 
@@ -2466,6 +2511,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp idempotent_transact(command, operation, fun) do
     transact(fn ->
+      RebuildValidation.lock_command!(command)
       lock_deployment_command!(command)
       scope_id = command_scope(command)
 
@@ -3367,7 +3413,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         CancellationOwnership.try_lock!(candidate.workspace_id, candidate.run_id)
 
     task =
-      if cancellation_locked? and deployment_candidate_live?(candidate, command.occurred_at) do
+      if cancellation_locked? and RebuildValidation.candidate_live?(candidate) and
+           deployment_candidate_live?(candidate, command.occurred_at) do
         Repo.one(
           from(t in RunnerTask,
             where:
@@ -3575,6 +3622,13 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       )
   end
 
+  defp payload_matches_pin?(
+         %Favn.Contracts.RuntimeInputResolutionRequest{work: work},
+         version,
+         release
+       ),
+       do: payload_matches_pin?(work, version, release)
+
   defp payload_matches_pin?(%{activation: activation}, version, release),
     do: payload_matches_pin?(activation, version, release)
 
@@ -3604,6 +3658,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
        do: id == version.manifest_version_id and hash == version.content_hash
 
   defp payload_matches_pin?(_payload, _version, _release), do: false
+
+  defp authorized_payload?(%Favn.Contracts.RuntimeInputResolutionRequest{work: work}, version),
+    do: authorized_payload?(work, version)
 
   defp authorized_payload?(%Favn.Contracts.RunnerWork{} = work, version) do
     refs =
@@ -3647,6 +3704,24 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     end
   end
 
+  defp write_link_matches?(command, %Favn.Contracts.RuntimeInputResolutionRequest{work: work}) do
+    command.task_kind == :runtime_input_resolution and
+      command.operation_id == work.rebuild_operation_id and
+      command.deadline_at == work.deadline_at and
+      is_binary(command.operation_id) and
+      Enum.all?(
+        [
+          :run_id,
+          :write_claim_key,
+          :write_claim_fence,
+          :write_target_id,
+          :write_operation_id,
+          :write_lock_fence
+        ],
+        &is_nil(Map.get(command, &1))
+      )
+  end
+
   defp write_link_matches?(
          command,
          %Favn.Contracts.RunnerWork{target_operation: operation, logical_target_id: target} = work
@@ -3654,7 +3729,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
        when not is_nil(operation),
        do:
          if(Favn.Contracts.RunnerWork.runtime_input_resolution_only?(work),
-           do: is_nil(command.write_target_id) and is_nil(command.write_claim_key),
+           do: false,
            else:
              command.write_target_id == target and is_binary(command.write_claim_key) and
                is_integer(command.write_claim_fence)

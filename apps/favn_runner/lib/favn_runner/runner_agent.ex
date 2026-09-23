@@ -39,6 +39,7 @@ defmodule FavnRunner.RunnerAgent do
   @supported_task_kinds Favn.Contracts.RunnerTask.task_kinds()
   @capabilities [
     "asset_execution",
+    "runtime_input_resolution",
     "relation_inspection",
     "generation_capabilities",
     "generation_marker_read",
@@ -871,6 +872,7 @@ defmodule FavnRunner.RunnerAgent do
         outcome: :safe_failure
       )
 
+    error = resolution_failure(assignment.task_kind, error)
     {outcome, retry_class} = RunnerTask.classify_failure(assignment.task_kind, error)
 
     protocol_result = %RunnerTask.Result{
@@ -1216,6 +1218,7 @@ defmodule FavnRunner.RunnerAgent do
             outcome: :unknown
           )
 
+        error = resolution_failure(rejected.task_kind, error)
         {outcome, retry_class} = RunnerTask.classify_failure(rejected.task_kind, error)
 
         fallback = %{
@@ -1346,8 +1349,9 @@ defmodule FavnRunner.RunnerAgent do
   end
 
   defp coerce_result_classification(%RunnerTask.Result{error: %RunnerError{} = error} = message) do
+    error = resolution_failure(message.task_kind, error)
     {outcome, retry_class} = RunnerTask.classify_failure(message.task_kind, error)
-    %{message | outcome: outcome, retry_class: retry_class}
+    %{message | outcome: outcome, retry_class: retry_class, error: error}
   end
 
   defp coerce_result_classification(%RunnerTask.Result{} = message), do: message
@@ -1372,6 +1376,7 @@ defmodule FavnRunner.RunnerAgent do
 
   defp protocol_result(assignment, %RunnerResult{error: error} = result) do
     error = error || RunnerError.new(outcome: :unknown, retryable?: false)
+    error = resolution_failure(assignment.task_kind, error)
     {outcome, retry_class} = RunnerTask.classify_failure(assignment.task_kind, error)
     result_message(assignment, result, outcome, retry_class, error)
   end
@@ -1930,6 +1935,13 @@ defmodule FavnRunner.RunnerAgent do
     }
   end
 
+  defp lease_lost_protocol_result(
+         %RunnerTask.Assignment{task_kind: :runtime_input_resolution} = assignment
+       ) do
+    error = resolution_failure(:runtime_input_resolution, nil)
+    result_message(assignment, nil, :failed, :terminal, error)
+  end
+
   defp lease_lost_protocol_result(%RunnerTask.Assignment{task_kind: :asset_attempt} = assignment) do
     result = lease_lost_runner_result(assignment.payload)
     lease_lost_result(assignment, result)
@@ -1954,6 +1966,14 @@ defmodule FavnRunner.RunnerAgent do
       )
 
     result_message(assignment, nil, outcome, retry_class, error)
+  end
+
+  defp executor_stopped_protocol_result(
+         %RunnerTask.Assignment{task_kind: :runtime_input_resolution} = assignment,
+         _reason
+       ) do
+    error = resolution_failure(:runtime_input_resolution, nil)
+    result_message(assignment, nil, :failed, :terminal, error)
   end
 
   defp executor_stopped_protocol_result(%RunnerTask.Assignment{} = assignment, reason) do
@@ -2152,4 +2172,16 @@ defmodule FavnRunner.RunnerAgent do
 
   defp random_id(prefix),
     do: prefix <> "_" <> Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+
+  defp resolution_failure(:runtime_input_resolution, _error),
+    do:
+      RunnerError.new(
+        type: "resolution_result_unavailable",
+        phase: :runner_task_execution,
+        message: "Input checks could not complete; retry the rebuild request manually",
+        retryable?: false,
+        outcome: :safe_failure
+      )
+
+  defp resolution_failure(_kind, error), do: error
 end

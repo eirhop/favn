@@ -63,13 +63,14 @@ defmodule FavnStoragePostgres.TestSupport.TaskManifest do
     version
   end
 
-  def sql_work(fixture, name \\ :write_test) do
+  def sql_work(fixture, name \\ :write_test, resolver \\ nil) do
     ref = {__MODULE__.SQL, name}
     relation = Favn.RelationRef.new!(connection: :default, name: Atom.to_string(name))
     sql = "SELECT 1 AS value"
 
     {:ok, package} =
       Manifest.ExecutionPackage.new(ref, %Manifest.SQLExecution{
+        runtime_inputs: if(resolver, do: Favn.RuntimeInputResolver.Ref.new!(resolver)),
         sql: sql,
         template: Favn.SQL.Template.compile!(sql, file: "write_test.sql", line: 1)
       })

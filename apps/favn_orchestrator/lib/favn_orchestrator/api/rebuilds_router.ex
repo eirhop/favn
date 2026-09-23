@@ -353,6 +353,18 @@ defmodule FavnOrchestrator.API.RebuildsRouter do
     {409, code, error.message, %{}}
   end
 
+  def error_response(%Error{
+        kind: :invalid,
+        details: %{reason_code: code, operation_id: id},
+        message: message
+      })
+      when code in [
+             "rebuild_planning_failed",
+             "rebuild_validation_failed",
+             "rebuild_input_resolution_unsupported"
+           ],
+      do: {422, code, message, %{operation_id: id}}
+
   def error_response(%Error{kind: :invalid}),
     do: {422, "validation_failed", "Invalid rebuild request", %{}}
 

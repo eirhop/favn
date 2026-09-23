@@ -30,8 +30,19 @@ defmodule FavnOrchestrator.RebuildsTest do
   end
 
   defmodule InlinePlanningWorker do
-    def ensure_and_await(context, operation),
-      do: FavnOrchestrator.Rebuilds.resume_planning(context, operation)
+    def ensure_and_await(context, operation, opts \\ []),
+      do:
+        Keyword.get(opts, :resume, &FavnOrchestrator.Rebuilds.resume_planning/2).(
+          context,
+          operation
+        )
+
+    def await_existing(_context, operation),
+      do:
+        Process.get(
+          :rebuild_await_result,
+          {:error, FavnOrchestrator.Rebuild.Validation.failure(operation.operation_id, :plan)}
+        )
   end
 
   defmodule Store do
@@ -96,6 +107,7 @@ defmodule FavnOrchestrator.RebuildsTest do
         window_count: 0,
         actions: [],
         state: :planning,
+        validation: %{command.validation | fencing_token: 1},
         phase: :planning,
         cleanup_state: :not_started,
         cancel_requested: false,
@@ -138,6 +150,7 @@ defmodule FavnOrchestrator.RebuildsTest do
           window_count: length(command.items),
           actions: command.actions,
           state: :planned,
+          validation: %{command.validation | status: "accepted"},
           phase: :planned,
           version: planning.version + 1
       }
@@ -168,6 +181,25 @@ defmodule FavnOrchestrator.RebuildsTest do
          has_more?: false,
          next_cursor: nil
        }}
+    end
+
+    def begin_validation(command) do
+      operation = Process.get({:rebuild_operation, command.validation.operation_id})
+
+      if operation.state == %{start: :planned, retry: :failed}[command.validation.purpose] do
+        updated = %{
+          operation
+          | validation: %{
+              command.validation
+              | fencing_token: operation.validation.fencing_token + 1
+            }
+        }
+
+        Process.put({:rebuild_operation, operation.operation_id}, updated)
+        {:ok, updated}
+      else
+        {:error, Error.new(:conflict, "validation not allowed")}
+      end
     end
 
     def start_operation(command) do
@@ -213,7 +245,7 @@ defmodule FavnOrchestrator.RebuildsTest do
 
       Resolution.new(
         resolver: FavnOrchestrator.RebuildsTest.Inputs,
-        params: %{run_id: work.run_id},
+        params: %{run_id: work.run_id, revision: Process.get(:rebuild_input_revision, 1)},
         input_identity: work.run_id
       )
     end
@@ -488,7 +520,7 @@ defmodule FavnOrchestrator.RebuildsTest do
     assert plan.plan_id == "rebuild-persisted-relation"
   end
 
-  test "resumes a durable planning continuation after the original process stops", fixture do
+  test "repeating an interrupted plan does not resume its work", fixture do
     {:ok, context} =
       WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
 
@@ -514,15 +546,97 @@ defmodule FavnOrchestrator.RebuildsTest do
       %{Process.get(:rebuild_runtime) | manifest_version_id: "newer-active-manifest"}
     )
 
-    assert {:ok, plan} =
+    assert {:error, %Error{kind: :invalid, details: %{reason_code: "rebuild_planning_failed"}}} =
              Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
                operation_id: "rebuild-planning-recovery"
              )
 
-    assert plan.plan_id == "rebuild-planning-recovery"
-    assert_received {:runner_task_enqueued, _task}
-    assert_received {:create_rebuild_plan, _command}
-    assert %{state: :planned} = Process.get({:rebuild_operation, "rebuild-planning-recovery"})
+    refute_received {:runner_task_enqueued, _task}
+    refute_received {:create_rebuild_plan, _command}
+  end
+
+  test "accepted planning replay without a local worker returns a Plan", fixture do
+    {:ok, context} = WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+    id = "remote-plan"
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: id
+             )
+
+    operation = Process.get({:rebuild_operation, id})
+    Process.put({:rebuild_operation, id}, %{operation | state: :planning})
+    Process.put(:rebuild_await_result, {:ok, %{operation | idempotency_replay?: true}})
+
+    assert {:ok, %FavnOrchestrator.Rebuild.Plan{} = replay} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: id
+             )
+
+    assert replay.plan_hash == plan.plan_hash
+    assert replay.idempotency_replay?
+  end
+
+  test "failed planning replay preserves the saved conflict", fixture do
+    {:ok, context} = WorkspaceContext.new("workspace-rebuild", "operator", [:customer_operator])
+    id = "failed-plan-replay"
+
+    assert {:ok, _} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: id
+             )
+
+    operation = Process.get({:rebuild_operation, id})
+
+    error =
+      Error.new(:conflict, "Rebuild checks are no longer current. Retry manually.",
+        details: %{reason_code: "rebuild_plan_stale", operation_id: id}
+      )
+
+    validation = %{
+      operation.validation
+      | status: "failed",
+        failure: FavnOrchestrator.Rebuild.Validation.encode_error(error)
+    }
+
+    Process.put({:rebuild_operation, id}, %{operation | state: :failed, validation: validation})
+
+    assert {:error, ^error} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: id
+             )
+  end
+
+  test "start resolves fresh inputs and rejects changed output before acceptance", fixture do
+    {:ok, context} = WorkspaceContext.new("workspace-rebuild", "admin", [:workspace_admin])
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "input-drift"
+             )
+
+    input_tasks = fn ->
+      for {{FavnOrchestrator.TestRunnerTaskStore, id}, %{task_kind: :runtime_input_resolution}} <-
+            Process.get(),
+          do: id
+    end
+
+    planned_ids = input_tasks.()
+    assert length(planned_ids) == 2
+    previous = Process.get({:rebuild_operation, plan.plan_id}).validation.attempt_id
+    Process.put(:rebuild_input_revision, 2)
+
+    assert {:error,
+            %Error{kind: :conflict, details: %{reason_code: "rebuild_plan_stale"}} = error} =
+             Rebuilds.start(context, plan.plan_id, plan.plan_hash)
+
+    assert {409, "rebuild_plan_stale", _, _} =
+             FavnOrchestrator.API.RebuildsRouter.error_response(error)
+
+    current = Process.get({:rebuild_operation, plan.plan_id})
+    assert current.state == :planned
+    assert current.validation.attempt_id != previous
+    assert length(input_tasks.() -- planned_ids) == 2
   end
 
   test "starts when an unaffected upstream binding is still uninitialized", fixture do
@@ -535,7 +649,7 @@ defmodule FavnOrchestrator.RebuildsTest do
              )
 
     assert {:ok, %{state: :queued}} = Rebuilds.start(context, plan.plan_id, plan.plan_hash)
-    assert_received {:acquire_rebuild_locks, _command}
+    refute_received {:acquire_rebuild_locks, _command}
   end
 
   test "rejects approval when a pinned target binding changes", fixture do

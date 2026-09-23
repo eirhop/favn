@@ -126,6 +126,10 @@ defmodule FavnOrchestrator.RebuildDispatcher do
   defp dispatch_workspace(workspace_id, state) do
     context = SystemContext.workspace(workspace_id, :rebuild_dispatcher)
 
+    rebuild_store().expire_validations(
+      %FavnOrchestrator.Persistence.Queries.ExpireRebuildValidations{workspace_context: context}
+    )
+
     case rebuild_store().claim_operation(%ClaimRebuildOperation{
            workspace_context: context,
            command_id: command_id("claim-operation", workspace_id <> ":" <> unique_identity()),
@@ -137,9 +141,6 @@ defmodule FavnOrchestrator.RebuildDispatcher do
          }) do
       {:ok, nil} ->
         :ok
-
-      {:ok, %RebuildOperation{state: :planning} = operation} ->
-        ensure_planning_worker(context, operation, state)
 
       {:ok, operation} ->
         with {:ok, locks} <- ensure_target_locks(context, operation, state),
@@ -174,24 +175,6 @@ defmodule FavnOrchestrator.RebuildDispatcher do
 
       {:error, reason} ->
         emit_error(workspace_id, nil, :claim, reason)
-    end
-  end
-
-  defp ensure_planning_worker(context, operation, state) do
-    case RebuildPlanningWorker.ensure(context, operation,
-           owner_id: state.owner_id,
-           lease_duration_ms: state.lease_ms
-         ) do
-      {:ok, _pid} ->
-        :ok
-
-      {:error, reason} ->
-        emit_error(
-          context.workspace_id,
-          operation.operation_id,
-          :planning_recovery_start,
-          reason
-        )
     end
   end
 

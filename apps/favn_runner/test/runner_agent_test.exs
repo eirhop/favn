@@ -5,7 +5,6 @@ defmodule FavnRunner.RunnerAgentTest do
 
   alias Favn.Contracts.RunnerError
   alias Favn.Contracts.RunnerTask
-  alias Favn.Contracts.RunnerResult
   alias FavnRunner.Lifecycle
   alias FavnRunner.RunnerAgent
   alias FavnRunner.TaskExecutor
@@ -2010,7 +2009,7 @@ defmodule FavnRunner.RunnerAgentTest do
     refute_receive {:executor_cancelled, _reason}
   end
 
-  test "runtime-input-only asset tasks finish without starting customer execution" do
+  test "legacy runtime-input-only asset tasks require a new rebuild plan" do
     assignment = assignment("runner-runtime-input-resolution")
 
     work = %{
@@ -2023,15 +2022,12 @@ defmodule FavnRunner.RunnerAgentTest do
 
     assignment = %{assignment | payload: work}
 
-    assert {:ok, executor} =
+    Process.flag(:trap_exit, true)
+
+    assert {:error, :legacy_rebuild_planning_requires_new_plan} =
              TaskExecutor.start_link(assignment: assignment, payload: work, owner: self())
 
-    assert_receive {:runner_task_finished, ^executor,
-                    %RunnerResult{
-                      run_id: "run_runtime_input_resolution",
-                      status: :ok,
-                      asset_results: []
-                    }}
+    refute_receive {:runner_task_finished, _, _}
   end
 
   test "cancellation racing a terminal executor is rejected without crashing the runner" do

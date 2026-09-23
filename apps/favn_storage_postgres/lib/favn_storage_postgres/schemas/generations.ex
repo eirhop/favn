@@ -96,6 +96,7 @@ defmodule FavnStoragePostgres.Schemas.RebuildOperation do
     field(:dispatched_at, :utc_datetime_usec)
     field(:result_marker, :map)
     field(:unknown_outcome, :map)
+    field(:validation_request, :map)
     field(:validation_result, :map)
     field(:terminal_error, :map)
     field(:cleanup_state, :string)

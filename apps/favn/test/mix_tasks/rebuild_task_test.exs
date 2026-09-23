@@ -33,6 +33,14 @@ defmodule Mix.Tasks.Favn.RebuildTest do
 
   test "formats safe structured rebuild errors" do
     assert Rebuild.error_message(%{
+             operation: :plan_rebuild,
+             reason:
+               {:http_error, 422,
+                %{error_code: "rebuild_planning_failed", operation_id: "rebuild-758"}}
+           }) ==
+             "rebuild input checks failed for rebuild-758; retry manually"
+
+    assert Rebuild.error_message(%{
              operation: :start_rebuild,
              reason: {:http_error, 409, %{error_code: "rebuild_plan_stale"}}
            }) == "rebuild plan is stale; create and review a new plan"
@@ -43,6 +51,16 @@ defmodule Mix.Tasks.Favn.RebuildTest do
            }) ==
              "rebuild plan failed: HTTP 500 [internal_error] the Favn service failed. " <>
                "Next: check rebuild status and retry only after confirming the current state"
+  end
+
+  test "unsupported rebuild inputs explain the required release upgrade" do
+    message =
+      Mix.Tasks.Favn.Rebuild.error_message(%{
+        operation: :plan,
+        reason: {:http_error, 422, %{error_code: "rebuild_input_resolution_unsupported"}}
+      })
+
+    assert message =~ "activate an upgraded release and create a new plan"
   end
 
   test "prints terminal item counts as completed rebuild progress" do
