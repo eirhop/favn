@@ -11,6 +11,11 @@
 | Approved plan commit | `bb56fb31f2c1defa53dda43209209406299447bb` |
 | Last updated | 2026-09-23 |
 
+The original approved baseline is preserved below. The
+[manual-retry amendment](#manual-retry-amendment-2026-09-23) changes only pre-write
+validation recovery and its budget; where they differ, the approved amendment
+takes precedence. Implementation has not started.
+
 ## One-minute summary
 
 Rebuild planning asks a runner to resolve input files under a future run that has
@@ -87,7 +92,7 @@ rebuild cancellation, and child-task identity problems unresolved. Planning and
 materialization currently derive task identity from the same future run, node,
 and attempt. The replacement must distinguish the two purposes explicitly.
 
-## Approved plan
+## Approved plan (original baseline)
 
 Astra approved this baseline on 2026-09-23 after reviewing and rechecking the
 issue, primary source, diagnostic probes, and corrections below.
@@ -443,16 +448,197 @@ budget first.
 | Findings addressed and rechecked | Same-operation validation attempts, additive versions 15/17/2, terminal non-retryable read failure, and retry deadlines independent of initial approval expiry were added. Astra rechecked all four corrections and accepted the revised scope and budget. |
 | Verdict | Plan approved; no remaining blocking findings. This approves the plan only, not implementation correctness or deployment readiness. |
 
+## Manual-retry amendment (2026-09-23)
+
+The operator confirmed: "For rebuilds it is ok to manually retry since it is
+manual work and not scheduled work." Apply this to the checks before initial
+planning, start, and retry are accepted. An interrupted check attempt stops and
+requires a fresh explicit request. Do not build the baseline's automatic
+resumption of these attempts.
+
+The scope is pre-write validation. Once start/retry has committed `queued`, the
+existing rebuild execution, activation reconciliation, held-write protection,
+and checkpoint recovery remain in force. Changing those would be a separate
+design decision involving possibly completed table writes.
+
+### Smaller lifecycle
+
+Keep the dedicated operation-owned resolution task, expectation-only result,
+fresh checks for each purpose, bounded attempt record, lease/fence, cancellation,
+and atomic acceptance from the baseline. These prevent changed inputs, duplicate
+requests, or an expired worker from starting a rebuild. Manual retry cannot
+replace those protections.
+
+Remove successor validation workers, reconstruction of an approved request after
+restart, reuse of partial checks across worker incarnations, and background
+continuation of start/retry validation. Use the existing supervised planning
+worker for one live attempt, with a unique owner per worker incarnation. A
+client disconnect does not kill this worker; loss of its process or ownership
+does end the attempt. Do not introduce a new supervisor or scheduler.
+
+Beginning an authorized request atomically records the bounded attempt and its
+initial dispatcher owner/fence/lease before any read is dispatched. The worker
+renews that exact lease with the existing renewal contract; it cannot reacquire
+an expired lease or claim an interrupted attempt. Keep one active attempt per
+operation. Admission and final acceptance retain parent-first transactional
+checks for workspace, state, purpose, attempt, immutable request identity,
+deadline, live owner/fence, cancellation, and required successful task evidence.
+For start/retry, acquire the sorted target locks inside the PostgreSQL acceptance
+transaction, after verifying the parent/attempt fence, using a narrow internal
+lock-store helper. Locks, successful acceptance, attempt closure, command receipt,
+and operation-lease handoff commit or roll back together. Ordinary execution
+dispatch begins only after `queued` commits. Preserve existing held-write guards
+and use a consistent parent-first lock order.
+
+All capability, marker, relation, and input checks are namespaced by the fresh
+attempt. Successful results can be consumed and redelivered during that same
+live attempt. They are never adopted by a replacement validation worker or a
+fresh attempt. Future run ID, exact windows, and evaluation time still come from
+the original immutable resolver context, not the new attempt time.
+
+An identical command replay may observe/join its still-live attempt or return
+its saved outcome; it cannot launch a replacement worker or reset the deadline.
+Conflicting requests return busy. After an interrupted attempt has settled, a
+deliberate retry uses a fresh request identity and fresh checks. Direct facade
+calls without a supplied idempotency key receive an identity at their command
+boundary. Existing successful command receipts remain authoritative: after a
+lost reply, inspect/replay the original command before deciding that it failed.
+
+### Interruption and cleanup
+
+Keep the baseline's fixed five-minute budget. Initial start is also capped by
+plan expiry; safe retry of an already-started rebuild is not. A worker failure,
+lease expiry, absolute deadline, or lost started resolution result closes the
+attempt. Report `rebuild_validation_interrupted` through the baseline's safe
+planning/validation error envelope, with the operation ID and manual action.
+No automatic resolver retry or validation resumption follows.
+
+Closing an attempt requests cancellation of its read tasks only. It must not
+cancel historical execution tasks or replace their outcome evidence during a
+retry check. Storage admission/result checks enforce the live attempt and lease
+even before a cleanup sweep runs, so a briefly surviving old worker cannot
+enqueue, accept success, save a plan, or start work. Late diagnostic settlement
+and cancellation acknowledgements remain allowed under assignment fencing.
+
+The existing dispatcher performs bounded expiration cleanup for active validation
+attempts, including attempts on `planned` and eligible `failed` operations. Use
+an indexed lookup against the bounded validation field/deadline and existing
+lease columns. This sweep atomically verifies expiry and closes/cancels the
+attempt; it never claims that attempt to resume its checks. It also catches a
+crash after saving intent but before worker startup. The generic operation claim
+path must exclude active validations and must stop routing `planning` to a
+successor worker. Ordinary accepted execution and cleanup claiming remain as
+before once the validation guard permits them.
+
+Known local worker death may trigger the same idempotent closure immediately;
+after a process/node crash, lease expiry provides the durable fallback. Do not
+depend on `terminate/2` or registry contents for correctness. If storage is
+temporarily unavailable, success stays fenced by the expired lease, and cleanup
+converges when storage returns. A fresh attempt waits until old task assignments
+are settled. It does not extend the old deadline or erase retained evidence.
+The baseline's read-only terminal-failure classification, cancellation settlement,
+capacity release, and normal retention continue to apply.
+
+| Interrupted phase | Durable result | Operator action |
+| --- | --- | --- |
+| Initial planning | `failed`, with a safe planning error; no approved plan | Request a new plan with a fresh request identity, then review it |
+| Start validation | Original plan remains `planned`, with a separate validation failure | Start the same exact plan/hash again if unexpired; otherwise create and review a new plan |
+| Retry validation | Original operation remains `failed`; execution/unknown-outcome evidence is preserved | Request retry again, subject to the existing safe-retry checks |
+| Reply lost after acceptance committed | Saved plan or `queued`/later operation and command receipt remain authoritative | Fetch/replay the original result; do not create another attempt or duplicate writes |
+
+Cancellation of the whole rebuild remains an explicit separate operation. A
+validation interruption must not call an operation-wide cancellation path that
+destroys a reviewed plan or changes prior execution/cleanup eligibility.
+
+Attempt closure must lock the parent and verify that the exact attempt is still
+unaccepted. An unavailable response from start/retry is not proof that acceptance
+failed: if `queued` committed, a stale worker or expiration sweep must preserve
+its execution locks and evidence. If storage cannot confirm the outcome, retain
+that evidence until the saved command result can be read. Remove the current
+caller-side acquisition and unconditional lock-release-on-start-error path;
+atomic acceptance needs no separate pre-acceptance lock cleanup or durable lock
+reference list. Validation closure cancels only its read tasks and never releases
+accepted execution or historical held-write locks. An expired validation worker
+cannot acquire or renew target locks.
+
+### Verification and documentation delta
+
+Retain the baseline's ownership reproduction, real runner/PostgreSQL path,
+unchanged-table proof, input/context checks, capability/cold-codec checks,
+cancellation races, unknown-write regression, and safe public errors.
+
+Replace the automatic-resumption tests with these focused cases:
+
+- Kill the validation worker before enqueue, during checks, after a persisted
+  result, and before acceptance. Restart/expiry performs cleanup only: no new
+  checks, plan finalization, or accepted start/retry occurs automatically.
+- Race expiry, cancellation, stale finalization, and fresh explicit retry over
+  independent PostgreSQL connections. Old work cannot succeed; new reads use a
+  fresh attempt and wait for prior assignments to settle.
+- Replay a live, interrupted, and committed command. Only the same live worker
+  can continue an attempt; saved receipts never create a second rebuild.
+- Fail start/retry checks without changing the plan or earlier execution
+  evidence; retry remains eligible after original approval expiry when allowed.
+- Interrupt after `queued` commits and verify the existing execution recovery
+  and unknown-write safeguards still apply. Commit acceptance, lose its reply,
+  and make storage unavailable; neither the caller nor expiration cleanup may
+  release the accepted rebuild's locks or replay its writes.
+
+During implementation, document manual retry in the canonical rebuild/operator
+guides and narrow the pre-write restart promises in
+[Elastic Runners](../../architecture/elastic-runners.md). The original baseline
+diagrams still describe ownership and successful acceptance; their stale-owner
+branches remain valid. No new diagram is needed for the phase/outcome table.
+Migration uses the validation field and an expiration lookup rather than a
+recovery lookup that selects work to resume. Additive versions 15/17/2 and the
+baseline rollout/rollback requirements are unchanged.
+
+### Revised complexity budget
+
+The original budget above is retained for comparison. This amendment replaces
+slice 2 and the total; the other slices keep their original ranges. Counts use
+the same inclusion rules and are estimates, not a target to fill.
+
+| Slice | Outcome | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | Typed read task and runner execution | 150-250 | 30-70 | 200-350 | 15-40 |
+| 2 | Single live validation attempt, fresh checks, expiration/cancellation and manual retry | 250-420 | 100-170 | 360-550 | 40-90 |
+| 3 | Atomic plan/start/retry acceptance and stale-worker rejection | 100-180 | 30-65 | 170-280 | 10-35 |
+| 4 | Actionable errors and canonical guidance | 50-100 | 15-35 | 120-220 | 5-25 |
+| Total | Manual validation retry | 550-950 | 175-340 | 850-1400 | 70-190 |
+
+This reduces estimated production additions by about one fifth. Most of the
+remaining work is the dedicated cross-app task contract and durable ownership,
+not automatic recovery. Removing the attempt record or fencing would hide real
+concurrency problems rather than simplify them safely.
+
+### Amendment review
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Astra (`gpt-6-astra`), xhigh; independent agent `astra_plan_review_758` |
+| Finding and simplification | A lost start acknowledgement must not release accepted execution locks. Acquire locks inside the acceptance transaction and remove caller-side acquisition/release, avoiding a separate cleanup lifecycle. |
+| Recheck | Astra rechecked atomic acquisition, exact-attempt closure, receipt handling, expiration-only cleanup, manual retry, and the revised complexity budget. |
+| Verdict | Manual-retry amendment approved; no remaining blocking findings. The approximately 20 percent reduction is credible; most remaining work is required task/ownership contracts. |
+
+Approval covers this amended plan only. Implementation and runtime qualification
+have not begun.
+
 ## Implementation outcome
 
 Implementation has not started. This request prepares and reviews the plan only.
-The draft PR holds the reviewed baseline; status stays `Plan reviewed` until
-the implementation stage is requested.
+The draft PR holds the original reviewed baseline and the manual-retry amendment.
+Both are independently approved; implementation remains separate work.
 
 ## Deviations from the approved plan
 
-None so far. Implementation has not started; preserve the approved baseline when
-recording subsequent implementation decisions and deviations.
+| Planned | Amended | Reason | Reviewer verdict |
+| --- | --- | --- | --- |
+| Resume pre-write validation after worker/node restart | Close interrupted checks and require a fresh manual request; retain expiration/cancellation cleanup | Operator explicitly accepts manual retry for rebuilds; removes successor validation/recovery machinery | Approved by Astra xhigh |
+| Acquire start locks before acceptance and release on rejection | Acquire locks in the acceptance transaction; remove caller-side release | Fewer cleanup paths and no accidental release after a committed start loses its reply | Approved by Astra xhigh |
+
+Implementation has not started. The original approved plan and budget above
+remain preserved for comparison with this amendment and eventual implementation.
 
 ## Verification evidence
 
