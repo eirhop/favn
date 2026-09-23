@@ -59,7 +59,25 @@ Check `coverage_support` before interpreting an empty coverage result.
 The data change, immutable contract snapshot, receipt and current metadata
 commit in the same SQL transaction. A metadata or failed-check error rolls back
 the data change. A no-op creates no receipt. Existing write admission still
-applies; transaction conflicts fail explicitly without blind write retries.
+applies.
+
+For ordinary managed DuckLake materialization, Favn retries a commit only when
+the native adapter proves that DuckLake rejected the entire transaction and
+rollback cleanup is confirmed. It makes at most four total attempts, each on a
+fresh session, under one deadline. Delays are 50, 100 and 200 milliseconds plus
+up to the same amount of jitter. Data, staging, checks and runtime metadata are
+rebuilt together; only the successful attempt publishes results. Exhaustion is
+a known rolled-back failure and does not enable another node retry.
+
+Eligibility requires a matching pinned publication and one generated persistent
+write destination in a native DuckLake catalog. Additional input catalogs are
+allowed. Query and check SQL must be read-only and must not invoke external side
+effects; this is a trusted authoring contract, not a SQL parser guarantee.
+Session setup must remain idempotent. Raw SQL callbacks, standalone SQL client
+calls, generation candidates and activation do not participate. A lost commit
+acknowledgement, timeout during a write or uncertain rollback remains unknown
+and stops retries. Deploying this behavior does not repair historical unknown
+runner tasks.
 First introduction of a target or contract uses a shared schema revision guard
 because DuckLake has no unique constraints. Different first-time publications
 can therefore conflict; established publications use their target revision.

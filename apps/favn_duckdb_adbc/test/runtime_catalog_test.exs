@@ -132,6 +132,29 @@ defmodule FavnDuckdbADBC.RuntimeCatalogTest do
   end
 
   for backend <- [:duckdb, :ducklake] do
+    test "#{backend}: retry qualification uses native destination type and excludes candidates" do
+      with_session(unquote(backend), fn session ->
+        expected = unquote(if backend == :ducklake, do: :supported, else: :unsupported)
+        session = %{session | required_catalogs: ["mart", "read_only_input"]}
+
+        assert {:ok, ^expected} =
+                 Favn.SQL.RuntimeCatalog.qualify_materialization_retry(
+                   session,
+                   publication(),
+                   relation(),
+                   []
+                 )
+
+        assert {:ok, :unsupported} =
+                 Favn.SQL.RuntimeCatalog.qualify_materialization_retry(
+                   session,
+                   %{publication() | candidate: true},
+                   relation(),
+                   []
+                 )
+      end)
+    end
+
     test "#{backend}: lost commit acknowledgement stays unknown despite a committed receipt" do
       with_session(unquote(backend), fn s ->
         fault = %{s | conn: %{s.conn | client: LostAckClient}}

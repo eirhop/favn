@@ -11,6 +11,20 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.RuntimeCatalog do
   def resolve(session, relation, opts), do: __MODULE__.Target.resolve(session, relation, opts)
 
   @impl true
+  def qualify_materialization_retry(session, %Publication{candidate: false}, relation, opts) do
+    case query(
+           session,
+           "SELECT type FROM duckdb_databases() WHERE database_name = ?",
+           [relation.catalog],
+           opts
+         ) do
+      {:ok, [%{"type" => "ducklake"}]} -> {:ok, :supported}
+      {:ok, _} -> {:ok, :unsupported}
+      {:error, _} = error -> error
+    end
+  end
+
+  @impl true
   def prepare(session, publication, relation, opts) do
     with {:ok, relation} <- resolve(session, relation, opts),
          false <- String.downcase(relation.schema || "") == @schema,

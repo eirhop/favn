@@ -20,6 +20,41 @@ defmodule Favn.SQL.RuntimeCatalog do
     with {:ok, backend} <- backend(session), do: backend.resolve(session, relation, opts)
   end
 
+  @callback qualify_materialization_retry(
+              Session.t(),
+              Publication.t(),
+              Favn.RelationRef.t(),
+              keyword()
+            ) ::
+              {:ok, :supported | :unsupported} | {:error, Error.t()}
+  @optional_callbacks qualify_materialization_retry: 4
+
+  @doc "Checks native support for replay of a rejected ordinary managed transaction. Missing support fails closed."
+  @spec qualify_materialization_retry(
+          Session.t(),
+          Publication.t() | nil,
+          Favn.RelationRef.t(),
+          keyword()
+        ) ::
+          {:ok, :supported | :unsupported} | {:error, Error.t()}
+  def qualify_materialization_retry(
+        session,
+        %Publication{candidate: false} = publication,
+        relation,
+        opts
+      ) do
+    with {:ok, backend} <- backend(session) do
+      if function_exported?(backend, :qualify_materialization_retry, 4),
+        do:
+          normalize_qualification(
+            backend.qualify_materialization_retry(session, publication, relation, opts)
+          ),
+        else: {:ok, :unsupported}
+    end
+  end
+
+  def qualify_materialization_retry(_, _, _, _), do: {:ok, :unsupported}
+
   @callback prepare(Session.t(), Publication.t(), Favn.RelationRef.t(), keyword()) ::
               {:ok, map()} | {:error, term()}
   @callback record(Session.t(), map(), map(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -44,6 +79,20 @@ defmodule Favn.SQL.RuntimeCatalog do
   def record(session, prepared, output, opts) do
     with {:ok, backend} <- backend(session), do: backend.record(session, prepared, output, opts)
   end
+
+  defp normalize_qualification({:ok, support}) when support in [:supported, :unsupported],
+    do: {:ok, support}
+
+  defp normalize_qualification({:error, %Error{}} = error), do: error
+
+  defp normalize_qualification(_),
+    do:
+      {:error,
+       %Error{
+         type: :execution_error,
+         message: "Invalid materialization retry qualification",
+         retryable?: false
+       }}
 
   defp backend(%Session{adapter: adapter}) do
     if function_exported?(adapter, :runtime_catalog_backend, 0),

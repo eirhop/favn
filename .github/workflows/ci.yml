@@ -195,6 +195,7 @@ jobs:
           test/relationship_publication_test.exs
           test/catalog_publication_test.exs
           test/runtime_catalog_test.exs
+          test/rejected_commit_retry_test.exs
 
   dialyzer:
     name: Dialyzer

@@ -3,6 +3,7 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
   alias Favn.SQL.{Capabilities, Result}
 
   def connect(resolved, _) do
+    Process.put({__MODULE__, :transaction_outcome}, resolved.config[:transaction_outcome])
     options = resolved.config.database_url |> Ecto.Repo.Supervisor.parse_url()
     {:ok, pid} = Postgrex.start_link(Keyword.put(options, :ssl, false))
     {:ok, {pid, resolved.config.observer}}
@@ -65,12 +66,31 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
 
         send(observer, {:confirmed_sql_rollback, error})
 
+        error =
+          if Process.get({__MODULE__, :transaction_outcome}) == :rejected_commit do
+            %Favn.SQL.Error{
+              type: :transaction_conflict,
+              operation: :transaction,
+              message: "native rejected commit",
+              retryable?: false,
+              details: %{
+                transaction_stage: :commit,
+                transaction_outcome: :rolled_back,
+                transaction_retry_attempts: 4,
+                transaction_retry_stop: "attempt_limit"
+              }
+            }
+          else
+            error
+          end
+
         {:error,
          %{
            error
            | details:
                Map.merge(error.details, %{
-                 transaction_stage: :body,
+                 transaction_stage:
+                   if(error.type == :transaction_conflict, do: :commit, else: :body),
                  transaction_outcome: :rolled_back
                })
          }}

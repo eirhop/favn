@@ -188,48 +188,15 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC.Catalog do
     end
   end
 
+  alias Favn.SQL.Adapter.DuckDB.ADBC.Rejection
+
   # Only native errors proven to reject this transaction are conflicts. An
   # arbitrary commit/rollback failure remains an unknown outcome.
   defp classify_conflict({:error, %Error{} = reason} = result) do
-    if rejected_conflict?(reason), do: error(:catalog_conflict), else: result
+    if Rejection.rejected_conflict?(reason), do: error(:catalog_conflict), else: result
   end
 
   defp classify_conflict(result), do: result
-
-  defp rejected_conflict?(%{
-         details: %{
-           transaction_stage: :rollback,
-           rollback_reason: rollback,
-           original_error: original
-         }
-       })
-       when is_binary(rollback) do
-    String.contains?(
-      rollback,
-      "TransactionContext Error: cannot rollback - no transaction is active"
-    ) and
-      rejected_conflict?(original)
-  end
-
-  defp rejected_conflict?(%{
-         type: :execution_error,
-         message: message,
-         details: %{classification: Adbc.Error, transaction_stage: stage}
-       }) do
-    (stage == :body and
-       (message == "TransactionContext Error: Conflict on update!" or
-          String.starts_with?(
-            message,
-            "TransactionContext Error: Catalog write-write conflict on create with "
-          ))) or
-      (stage == :commit and
-         String.starts_with?(
-           message,
-           "TransactionContext Error: Failed to commit: Failed to commit DuckLake transaction.\nTransaction conflict - "
-         ))
-  end
-
-  defp rejected_conflict?(_), do: false
 
   @impl true
   def reconcile(session, request, deadline) do

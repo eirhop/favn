@@ -10,6 +10,22 @@ defmodule Favn.Contracts.RunnerTaskPersistenceTest do
   alias Favn.Manifest.Schedule
   alias Favn.Window.{Anchor, Policy, Selection}
 
+  test "rejected transaction diagnostics survive the closed result codec" do
+    details = %{
+      type: :transaction_conflict,
+      transaction_outcome: :rolled_back,
+      transaction_stage: "commit",
+      transaction_retry_attempts: 4,
+      transaction_retry_stop: "attempt_limit",
+      session_phase: :completed,
+      asset_retryable?: false,
+      prior_rejection: %{type: :transaction_conflict, message: "rejected"}
+    }
+
+    assert {:ok, encoded} = Data.encode(details, 1_048_576)
+    assert {:ok, ^details} = Data.decode(encoded, 1_048_576)
+  end
+
   test "all task kinds preserve exact supported values and hash identity" do
     version = Fixture.version()
 

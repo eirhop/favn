@@ -70,6 +70,15 @@ defmodule Favn.SQL.Client do
 
   @type operation_result :: {:ok, term()} | {:error, term()}
 
+  @doc "Runs one managed callback in an exclusive session under one acquisition and execution deadline."
+  @spec with_session(atom(), keyword(), (term() -> term())) :: term()
+  def with_session(connection, opts, fun) do
+    opts = Keyword.put(opts, :deadline, Deadline.from_opts(opts, default_operation_timeout_ms()))
+    # Scoped sessions are never idle: native children must belong to this scope,
+    # not a previous checkout owner. Keep their creation gate separate as well.
+    Favn.SQL.SessionScope.run(connection, Keyword.put(opts, :managed_session_scope, true), fun)
+  end
+
   @spec connect(atom(), keyword()) :: {:ok, Session.t()} | {:error, term()}
   def connect(connection, opts \\ [])
 
@@ -117,6 +126,11 @@ defmodule Favn.SQL.Client do
   def disconnect(%Session{pool_checkout: %Checkout{} = checkout} = session) do
     case checkout_owner_error(session, :disconnect) do
       nil ->
+        if match?({_, _}, Process.get(Favn.SQL.SessionScope)) do
+          # Dispose in the deadline owner before the pool removes its cleanup monitor.
+          session.adapter.disconnect(session.conn, [])
+        end
+
         disconnect_pooled_session(session)
 
       %Error{} = error ->
@@ -753,13 +767,26 @@ defmodule Favn.SQL.Client do
     end
   end
 
+  defp acquisition_timeout(opts) do
+    case Keyword.get(opts, :deadline) do
+      %Deadline{} = deadline ->
+        min(
+          Keyword.get(opts, :checkout_timeout_ms) || 30_000,
+          max(Deadline.remaining_ms(deadline), 1)
+        )
+
+      _ ->
+        Keyword.get(opts, :checkout_timeout_ms)
+    end
+  end
+
   defp checkout_or_create_session(key, resolved, concurrency_policies, adapter_opts) do
     max_creating_per_key = checkout_max_creating_per_key(concurrency_policies, adapter_opts)
 
     case SessionPool.checkout_or_create(
            key,
            max_creating_per_key: max_creating_per_key,
-           checkout_timeout_ms: Keyword.get(adapter_opts, :checkout_timeout_ms),
+           checkout_timeout_ms: acquisition_timeout(adapter_opts),
            connection: resolved.name,
            required_catalogs: normalized_required_catalogs(adapter_opts)
          ) do
@@ -834,7 +861,8 @@ defmodule Favn.SQL.Client do
             {:ok, session}
           end
         end,
-        phase: :session_bootstrap
+        phase: :session_bootstrap,
+        deadline: Keyword.get(adapter_opts, :deadline)
       )
     after
       SessionPool.creation_finished(key)
@@ -1177,10 +1205,15 @@ defmodule Favn.SQL.Client do
     deadline = Deadline.from_opts(opts, default_operation_timeout_ms())
 
     result =
-      if transaction_context?(session) do
-        run_inline_in_transaction(session, operation, deadline, fun)
-      else
-        run_with_deadline(session, operation, deadline, fun)
+      cond do
+        match?({_, _}, Process.get(Favn.SQL.SessionScope)) ->
+          run_inline_in_transaction(session, operation, deadline, fun)
+
+        transaction_context?(session) ->
+          run_inline_in_transaction(session, operation, deadline, fun)
+
+        true ->
+          run_with_deadline(session, operation, deadline, fun)
       end
 
     case result do
@@ -1274,6 +1307,7 @@ defmodule Favn.SQL.Client do
   defp start_nested_deadline_watchdog(%Session{} = session, operation, %Deadline{} = deadline) do
     owner = self()
     ref = make_ref()
+    scope = Process.get(Favn.SQL.SessionScope)
 
     {watchdog, monitor} =
       spawn_monitor(fn ->
@@ -1295,7 +1329,10 @@ defmodule Favn.SQL.Client do
               operation_metadata(session, operation, deadline)
             )
 
-            Process.exit(owner, {@nested_timeout_exit_tag, error})
+            case scope do
+              {guard, scope_ref} -> send(guard, {scope_ref, :operation_timeout, error})
+              _ -> Process.exit(owner, {@nested_timeout_exit_tag, error})
+            end
 
             receive do
               {:DOWN, ^owner_monitor, :process, ^owner, _reason} -> :ok

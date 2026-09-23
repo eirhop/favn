@@ -670,37 +670,51 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp materialize_group_replacement(%Definition{} = definition, opts) do
+    scope_stage = group_stage(:scope)
+
+    with {:ok, candidate} <- render_group_candidate(definition, scope_stage, opts) do
+      renders = %{
+        scope_stage: scope_stage,
+        full: render_replacement_scope(definition, :full, opts),
+        incremental: render_replacement_scope(definition, :incremental, opts),
+        candidate: candidate
+      }
+
+      materialize_prepared_group(definition, Keyword.put(opts, :group_renders, renders))
+    end
+  end
+
+  defp materialize_prepared_group(definition, opts) do
     base_render = base_group_render(definition, opts)
 
     result =
-      with_session(
-        base_render.connection,
-        opts,
-        session_required_catalogs(definition, base_render),
-        session_required_resources(definition),
-        fn session ->
-          with {:ok, session, definition, base_render} <-
-                 resolve_publication_target(session, definition, base_render, opts),
-               :ok <- ensure_group_replacement_supported(session, base_render),
-               :ok <- ensure_checked_materialization_supported(session, definition, base_render) do
-            SQLClient.transaction(
-              session,
-              fn tx_session ->
-                with {:ok, prepared} <- prepare_publication(tx_session, base_render, opts),
-                     {:ok, {rendered, output}} <-
-                       group_replacement_transaction(tx_session, definition, opts),
-                     {:ok, output} <-
-                       publish_materialization(tx_session, prepared, definition, output, opts) do
-                  {:ok, {rendered, output}}
-                end
-              end,
-              sql_operation_opts(opts)
-              |> Keyword.put(:preserve_body_result_on_commit_error?, true)
-              |> Keyword.put(:pool_safe?, true)
-            )
-          end
+      managed_materialization(definition, base_render, opts, fn session,
+                                                                definition,
+                                                                base_render,
+                                                                attempt_opts ->
+        with :ok <- ensure_group_replacement_supported(session, base_render),
+             :ok <- ensure_checked_materialization_supported(session, definition, base_render) do
+          SQLClient.transaction(
+            session,
+            fn tx_session ->
+              with {:ok, prepared} <- prepare_publication(tx_session, base_render, attempt_opts),
+                   {:ok, {rendered, output}} <-
+                     group_replacement_transaction(tx_session, definition, attempt_opts),
+                   {:ok, output} <-
+                     publish_materialization(
+                       tx_session,
+                       prepared,
+                       definition,
+                       output,
+                       attempt_opts
+                     ),
+                   do: {:ok, {rendered, output}}
+            end,
+            sql_operation_opts(attempt_opts)
+            |> Keyword.put(:preserve_body_result_on_commit_error?, true)
+          )
         end
-      )
+      end)
 
     case result do
       {:ok, {%Render{} = rendered, %CheckedMaterialization{} = output}} ->
@@ -749,15 +763,15 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp group_replacement_transaction(%Session{} = session, %Definition{} = definition, opts) do
     base_render = base_group_render(definition, opts)
-    scope_stage = group_stage(:scope)
+    renders = Keyword.fetch!(opts, :group_renders)
+    scope_stage = renders.scope_stage
     candidate_stage = group_stage(:candidate)
 
     with {:ok, target_exists?} <- checked_target(session, base_render),
          scope_mode <- replacement_scope_mode(target_exists?, opts),
-         {:ok, %Render{} = scope_render} <- render_replacement_scope(definition, scope_mode, opts),
+         {:ok, scope_render} <- Map.fetch!(renders, scope_mode),
          :ok <- create_candidate_stage(session, scope_stage, scope_render, opts),
-         {:ok, %Render{} = candidate_render} <-
-           render_group_candidate(definition, scope_stage, opts),
+         candidate_render <- %{renders.candidate | relation: base_render.relation},
          candidate_render <- maybe_empty_generation_render(candidate_render, opts),
          :ok <- create_candidate_stage(session, candidate_stage, candidate_render, opts),
          {:ok, contract_validation} <-
@@ -1311,30 +1325,64 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp checked_materialize(%Definition{} = definition, %Render{} = rendered, opts) do
-    with_session(
-      rendered.connection,
-      opts,
-      session_required_catalogs(definition, rendered),
-      session_required_resources(definition),
-      fn session ->
+    managed_materialization(definition, rendered, opts, fn session,
+                                                           definition,
+                                                           rendered,
+                                                           attempt_opts ->
+      with :ok <- ensure_checked_materialization_supported(session, definition, rendered) do
+        SQLClient.transaction(
+          session,
+          fn tx_session ->
+            with {:ok, prepared} <- prepare_publication(tx_session, rendered, attempt_opts),
+                 {:ok, output} <-
+                   checked_transaction(tx_session, definition, rendered, attempt_opts),
+                 do:
+                   publish_materialization(tx_session, prepared, definition, output, attempt_opts)
+          end,
+          sql_operation_opts(attempt_opts)
+          |> Keyword.put(:preserve_body_result_on_commit_error?, true)
+        )
+      end
+    end)
+    |> map_checked_materialization_result(definition, rendered)
+  end
+
+  defp managed_materialization(definition, rendered, opts, fun) do
+    Favn.SQLAsset.MaterializationRetry.run(opts, fn attempt_opts ->
+      prepare = fn session ->
         with {:ok, session, definition, rendered} <-
-               resolve_publication_target(session, definition, rendered, opts),
-             :ok <- ensure_checked_materialization_supported(session, definition, rendered) do
-          SQLClient.transaction(
-            session,
-            fn tx_session ->
-              with {:ok, prepared} <- prepare_publication(tx_session, rendered, opts),
-                   {:ok, output} <- checked_transaction(tx_session, definition, rendered, opts),
-                   do: publish_materialization(tx_session, prepared, definition, output, opts)
-            end,
-            sql_operation_opts(opts)
-            |> Keyword.put(:preserve_body_result_on_commit_error?, true)
-            |> Keyword.put(:pool_safe?, true)
-          )
+               resolve_publication_target(session, definition, rendered, attempt_opts),
+             {:ok, support} <-
+               RuntimeCatalog.qualify_materialization_retry(
+                 session,
+                 Keyword.get(opts, :runtime_publication),
+                 rendered.relation,
+                 sql_operation_opts(attempt_opts)
+               ) do
+          publication = Keyword.get(opts, :runtime_publication)
+
+          support =
+            if publication && publication.asset_ref == Snapshot.ref(definition.asset.ref) &&
+                 Keyword.get(opts, :target_operation) != :rebuild_candidate,
+               do: support,
+               else: :unsupported
+
+          {:ok, {session, definition, rendered, support}}
         end
       end
-    )
-    |> map_checked_materialization_result(definition, rendered)
+
+      connect_opts =
+        sql_operation_opts(attempt_opts)
+        |> Keyword.put(:registry_name, @runner_registry)
+        |> maybe_put_required_catalogs(session_required_catalogs(definition, rendered))
+        |> maybe_put_required_resources(session_required_resources(definition))
+        |> Keyword.put(:prepare, prepare)
+
+      Favn.SQL.Client.with_session(rendered.connection, connect_opts, fn {session, definition,
+                                                                          rendered, support} ->
+        {support, fun.(session, definition, rendered, attempt_opts)}
+      end)
+    end)
   end
 
   defp resolve_publication_target(session, definition, rendered, opts) do
@@ -2183,10 +2231,27 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp failed_transaction_outcomes(%SQLError{} = error) do
     cond do
-      unknown_transaction_outcome?(error) -> {:unknown, :unknown}
-      transaction_not_started?(error) -> {:not_started, :not_started}
-      error.details[:transaction_outcome] == :rolled_back -> {:rolled_back, :rolled_back}
-      true -> {:unknown, :unknown}
+      SQLError.rejected_transaction?(error) ->
+        {:rolled_back, :rolled_back}
+
+      error.details[:session_phase] == :acquiring and
+          not is_nil(error.details[:transaction_retry_attempts]) ->
+        {:rolled_back, :rolled_back}
+
+      error.details[:session_phase] == :acquiring ->
+        {:not_started, :not_started}
+
+      unknown_transaction_outcome?(error) ->
+        {:unknown, :unknown}
+
+      transaction_not_started?(error) ->
+        {:not_started, :not_started}
+
+      error.details[:transaction_outcome] == :rolled_back ->
+        {:rolled_back, :rolled_back}
+
+      true ->
+        {:unknown, :unknown}
     end
   end
 
@@ -2379,7 +2444,10 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp maybe_put_timeout(opts, %DateTime{} = deadline_at) do
     remaining_ms = max(DateTime.diff(deadline_at, DateTime.utc_now(), :millisecond), 1)
-    Keyword.put(opts, :timeout_ms, remaining_ms)
+
+    opts
+    |> Keyword.put(:timeout_ms, remaining_ms)
+    |> Keyword.put(:deadline, Favn.SQL.Deadline.new(remaining_ms))
   end
 
   defp maybe_put_timeout(opts, _deadline_at), do: opts
@@ -2531,6 +2599,16 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp sql_write_outcome(%SQLError{} = error) do
     cond do
+      SQLError.rejected_transaction?(error) ->
+        :rolled_back
+
+      error.details[:session_phase] == :acquiring and
+          not is_nil(error.details[:transaction_retry_attempts]) ->
+        :rolled_back
+
+      error.details[:session_phase] == :acquiring ->
+        :not_started
+
       unknown_transaction_outcome?(error) ->
         :unknown
 
@@ -2549,6 +2627,9 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp sql_asset_retryable?(phase, %SQLError{} = error, classification) do
     cond do
+      error.details[:transaction_retry_attempts] ->
+        false
+
       classification in [:unknown_commit_state, :unknown_outcome_timeout] ->
         false
 
