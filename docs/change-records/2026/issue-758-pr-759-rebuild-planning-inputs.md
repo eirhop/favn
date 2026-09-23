@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#758](https://github.com/eirhop/favn/issues/758) |
 | Pull request | [#759](https://github.com/eirhop/favn/pull/759) |
@@ -706,7 +706,9 @@ the estimate. These exercise required invariants rather than optional features.
 | PostgreSQL task ownership and receipts | 12 focused tests pass, including native integration, same-release unsupported runner, terminal read failure, manual retry/replay, renewed-owner expiry guard, and independent-connection lock wait beyond deadline with parent/lock rollback | Real disposable PostgreSQL 18 database |
 | Full fast suite, first pass | Exposed stale schema fingerprint, predecessor fixture, retention/error compatibility, View fixture and two obsolete contract assertions; corrected in this change | Final reruns recorded below; this first run was not green |
 | Fast owning layers | Core 541, Runner 287, Orchestrator 963, View 843 passed; storage full run had 575/576 passing, followed by a passing focused retirement regression after restoring its existing error text; all 12 dedicated validation tests pass | Local full run plus correction reruns; final CI tracked separately |
-| CI at `19b668e1` | Umbrella fast, acceptance, slow, Dialyzer, quick checks, macOS native, HTTP security, and image workflows passed; Linux native integration failed 1/103 with a DuckDB short-file read | No causal link established to this change; final qualification remains pending |
+| CI at `19b668e1` | Umbrella fast, acceptance, slow, Dialyzer, quick checks, macOS native, HTTP security, and image workflows passed; Linux native integration failed 1/103 with a DuckDB short-file read | Retained Linux profile and parity did not run in this attempt; no causal link established to this change; requalification below passed |
+| Native Linux reproduction | All 103 tests pass locally using pinned DuckDB 1.5.5, CI seed 481175, and max_cases 8; isolated failing test also passes for both backends | Earlier CI short-file read did not reproduce; this is not proof of its cause |
+| Final code CI at `a82c16e4812700a896ff37bf780db26f641966e1` | [CI](https://github.com/eirhop/favn/actions/runs/35891757313), [images](https://github.com/eirhop/favn/actions/runs/35891757457), and [HTTP security](https://github.com/eirhop/favn/actions/runs/35891757479) all passed | Includes full fast/slow/acceptance, native Linux and macOS, retained Linux 1.5.2, semantic parity, Dialyzer, and quick checks; final record-only commit does not change code |
 | Compile | Final development compile with warnings as errors passed | Local compilation |
 | Dialyzer | Zero errors, zero skipped and zero unnecessary filters | Final implementation, local static analysis |
 | Static documentation checks | Formatter, test-tag guard and diff whitespace pass; relative links resolve in all four changed documents | Local checks |
@@ -720,7 +722,8 @@ rows, and marker through facade planning and then successfully replaces the tabl
 The native task integration, no-session runner test, start-time drift rejection,
 execution-time expectation rejection, and adapter generation tests cover these
 boundaries separately. Astra accepted this narrower verification approach; it is
-not claimed as full-stack proof. Final-tree CI and final review remain in progress.
+not claimed as full-stack proof. The earlier native CI I/O failure did not reproduce
+in the same-seed local group or final CI; its underlying cause remains unproven.
 
 ## Final review
 
@@ -730,5 +733,10 @@ waits, exact saved outcomes, historical evaluation times, legacy upgrade settlem
 and fixed capability guidance. These findings have been addressed; the final
 recheck includes verification and complexity accounting. A final misplaced type
 specification was corrected: the preparation-purpose argument belongs on
-`prepare_manifest_execution/7`, not `run_manifest/5`. Final approval remains pending
-Linux native requalification after the recorded database I/O failure.
+`prepare_manifest_execution/7`, not `run_manifest/5`.
+
+Astra xhigh approved code commit
+`a82c16e4812700a896ff37bf780db26f641966e1` after independently confirming all three
+workflow results on that exact commit. No blocking findings remain. The review
+accepts the documented manual-retry scope, layered verification deviation, and
+complexity overrun. The final bookkeeping changes only this record.
