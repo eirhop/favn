@@ -1159,3 +1159,49 @@ The repeated-start-crash and committed-terminal-reply-loss tests close the
 previously missing takeover proof. Final qualification is the current-head CI gate
 linked above; the PR remains draft until those checks pass. No merge, deployment,
 production retry or inventory/OOM change is included.
+
+### Additional pre-release sweep
+
+The maintainer requested another broad Tidewave-assisted pass during final CI.
+The pass covers ownership and lease handoff, recovery discovery, task admission
+and write fencing, cancellation, registration retry, cleanup, and result restore.
+It identified a sequential cleanup crash window not covered by the earlier
+settled-result restart assertion: a saved outcome restored before its unfinished
+settlement is appended and counted again. The new regression fails on `dbcde502`.
+The correction retains one result per original node/attempt, preserves the
+already-observed outcome count, and retains accepted asset detail without replaying
+execution. Astra's additional review also caught struct-shape differences after
+snapshot decoding and loss of saved diagnostic metadata in the first correction.
+Assets now merge by their original step and attempt; existing result metadata is
+preserved while retention fields are updated. The restart regression captures the
+actual snapshot committed with the outcome, roundtrips it through the snapshot
+codec, restores its result, and completes the interrupted settlement. It also
+checks distinct windows and attempts remain distinct. This completes the existing
+result-retention requirement; it adds no
+retry protocol, persistence schema or recovery state.
+
+Tidewave also exposed a stopped local orchestrator after source reloads and a
+missing migration from the merged main branch. After the local migration and
+application restart, the run manager and recovery loop are alive with zero active
+runs. This is development-environment evidence, not production workload proof.
+An investigated task-page error-shape concern was not reproduced: a PostgreSQL
+statement failure aborts the enclosing read transaction and returns an error.
+No speculative task-page change was made.
+
+| Area checked | Additional evidence |
+| --- | --- |
+| Owner handoff, stale monitors, cancellation, admission waiters and expired runner-task recovery | Source pass plus 53 surrounding tests passed. |
+| Registration deadlines, uncertain transition receipts, deferred callbacks and unknown-write fencing | Source pass checked bounded retry identity, single outstanding transition, and conservative write ownership; no additional confirmed defect. |
+| Cleanup and result restoration | One confirmed sequential replay defect fixed; 28 focused tests passed, including the real codec roundtrip and saved metadata assertions. |
+| Final correction qualification | Expanded orchestrator selection: 264 passed, three slow tests excluded. Warnings-as-errors compilation, Credo, Sobelow and Dialyzer passed; Dialyzer reported zero errors. |
+| Tidewave | Live restore probe confirmed one result and unchanged count after repeated restoration; local manager and recovery processes are alive. |
+| Earlier exact-head qualification | CI run 35913210432, control-plane image and HTTP security qualification passed on `dbcde502`; the additional correction requires fresh current-head qualification. |
+
+The additional correction is production **+45/-4**, bringing the conservative
+incremental amendment total to **+723/-370**. The added result identity and metadata
+handling remain within the existing result builder and sequential settlement
+modules. Astra Max independently approved this correction, verified the 28 focused
+tests and live Tidewave probe, and explicitly accepted the updated variance.
+Both additional review findings are resolved and the broader rerun passed.
+Approval remains conditional on fresh current-head CI before the draft is marked
+ready.

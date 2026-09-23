@@ -74,6 +74,28 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilderTest do
            ] = ResultBuilder.sort_asset_results(run_state(), results)
   end
 
+  test "restoring missing detail preserves the observed count and distinct attempts" do
+    first = NodeResult.new(%{node_key: {@first_ref, nil}, ref: @first_ref, attempt_count: 1})
+    second = %{first | attempt_count: 2, status: :ok}
+
+    run = %{
+      run_state()
+      | result: %{
+          node_results: [first],
+          metadata: %{
+            "saved_diagnostic" => "retain",
+            "result_retention" => %{"node_result_count" => 2}
+          }
+        }
+    }
+
+    restored = ResultBuilder.restore_node_result(run, second)
+    assert ResultBuilder.node_results(restored) == [second, first]
+    assert ResultBuilder.node_result_count(restored) == 2
+    assert restored.result.metadata["saved_diagnostic"] == "retain"
+    assert ResultBuilder.restore_node_result(restored, second) == restored
+  end
+
   test "aggregate result retains node results and run-owned metadata" do
     first = NodeResult.new(%{node_key: {@first_ref, nil}, ref: @first_ref, status: :ok})
     second = NodeResult.new(%{node_key: {@second_ref, nil}, ref: @second_ref, status: :ok})

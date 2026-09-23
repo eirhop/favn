@@ -220,8 +220,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
     settled =
       if failed_cleanup?(settled) do
-        recorded =
-          ResultBuilder.record_execution(
+        node_result =
+          ResultBuilder.execution_result(
             settled,
             resume.entry,
             resume.entry.stage,
@@ -230,7 +230,19 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
             resume.asset_results
           )
 
-        assets = resume.asset_results ++ Map.get(recorded.result, :asset_results, [])
+        recorded =
+          if resume.entry[:recovered_outcome],
+            do: ResultBuilder.restore_node_result(settled, node_result),
+            else: ResultBuilder.append_node_result(settled, node_result)
+
+        saved_assets = Map.get(recorded.result, :asset_results, [])
+
+        assets =
+          if resume.entry[:recovered_outcome],
+            do: saved_assets ++ resume.asset_results,
+            else: resume.asset_results ++ saved_assets
+
+        assets = Enum.uniq_by(assets, &cleanup_asset_identity/1)
 
         Snapshots.snapshot_update(recorded,
           result:
@@ -398,6 +410,15 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   defp failed_cleanup?(run),
     do: run.status == :error and is_map(run.metadata["failure_cleanup"])
+
+  defp cleanup_asset_identity(result) do
+    field = fn key -> Map.get(result, key, Map.get(result, Atom.to_string(key))) end
+
+    identity =
+      field.(:asset_step_id) || {field.(:ref), field.(:started_at), field.(:finished_at)}
+
+    {identity, field.(:attempt_count)}
+  end
 
   defp submit_attempt(
          %RunExecutionState{} = state,

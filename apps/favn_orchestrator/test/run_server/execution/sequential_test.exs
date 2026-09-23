@@ -738,21 +738,33 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     alias FavnOrchestrator.RunServer.FailureCleanup
     ref = {__MODULE__.Asset, :cleanup}
 
+    {:ok, version} =
+      %Favn.Manifest{assets: [manifest_asset(ref)]}
+      |> FavnTestSupport.with_manifest_graph()
+      |> FavnTestSupport.with_manifest_contract()
+      |> Version.new(manifest_version_id: "mv")
+
     run =
       RunState.new(
         id: "failed-sequential",
         workspace_id: "ws-cleanup",
         manifest_version_id: "mv",
-        manifest_content_hash: "sha256:mv",
+        manifest_content_hash: version.content_hash,
         asset_ref: ref,
         target_refs: [ref],
         plan: %Plan{
           nodes: %{
             {ref, nil} => %{
               ref: ref,
+              node_key: {ref, nil},
               window: nil,
+              upstream: [],
+              downstream: [],
               stage: 0,
-              retry_policy: Favn.Retry.Policy.default()
+              execution_pool: nil,
+              action: :run,
+              retry_policy: Favn.Retry.Policy.default(),
+              retry_policy_source: :default
             }
           }
         },
@@ -786,7 +798,15 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     result = %RunnerResult{
       run_id: run.id,
       status: :ok,
-      asset_results: [%Favn.Run.AssetResult{ref: ref, status: :ok, attempt_count: 1}]
+      asset_results: [
+        %Favn.Contracts.RunnerAssetResult{
+          ref: ref,
+          asset_step_id: entry.asset_step_id,
+          status: :ok,
+          attempt_count: 1,
+          duration_ms: 0
+        }
+      ]
     }
 
     Process.put({FakeStore, :commit_transition}, :succeed)
@@ -800,7 +820,10 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     assert settled.status == :error
     assert settled.error == :original_failure
     assert [%{status: :ok, attempt_count: 1}] = settled.result.node_results
-    assert_receive {:commit_transition, %{event: %{event_type: :step_finished} = event}}
+
+    assert_receive {:commit_transition,
+                    %{run: outcome_snapshot, event: %{event_type: :step_finished} = event}}
+
     assert_receive {:commit_transition, %{event: %{event_type: :step_settled}}}
     refute_received {:runner_admission, _}
     assert [%{status: :ok}] = settled.result.asset_results
@@ -816,6 +839,91 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     assert restarted.result.node_results == settled.result.node_results
     assert restarted.result.asset_results == settled.result.asset_results
     assert restarted.result.metadata.result_retention.node_result_count == 1
+
+    # A crash after the outcome but before settlement restores that same result
+    # before cleanup resumes the unfinished settlement.
+    assert {:terminal, recovered} =
+             FailureCleanup.perform(
+               {:settle_sequential, restarted, %Favn.Manifest.Version{}, %Favn.Manifest.Index{},
+                Map.put(entry, :recovered_outcome, decoded), {:ok, result}}
+             )
+
+    assert recovered.result.node_results == settled.result.node_results
+    assert recovered.result.asset_results == settled.result.asset_results
+    assert recovered.result.metadata.result_retention.node_result_count == 1
+
+    alias FavnOrchestrator.Storage.RunSnapshotCodec
+    {:ok, snapshot} = RunSnapshotCodec.encode_run(settled)
+    {:ok, manifest_record} = FavnOrchestrator.TestSupport.ManifestRecord.to_record(version)
+
+    assert {:ok, decoded_run} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: snapshot, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert [%Favn.Run.AssetResult{}] = decoded_run.result.asset_results
+
+    assert {:terminal, after_roundtrip} =
+             FailureCleanup.perform(
+               {:settle_sequential, %{decoded_run | plan: run.plan}, version,
+                %Favn.Manifest.Index{}, Map.put(entry, :recovered_outcome, decoded),
+                {:ok, result}}
+             )
+
+    assert length(after_roundtrip.result.node_results) == 1
+    assert length(after_roundtrip.result.asset_results) == 1
+
+    assert FavnOrchestrator.RunServer.Execution.ResultBuilder.node_result_count(after_roundtrip) ==
+             1
+
+    [saved_asset] = decoded_run.result.asset_results
+    other_window = %{saved_asset | asset_step_id: "different-window"}
+    other_attempt = %{saved_asset | attempt_count: 2}
+
+    with_siblings = %{
+      decoded_run
+      | plan: run.plan,
+        result: %{
+          decoded_run.result
+          | asset_results: [saved_asset, other_window, other_attempt]
+        }
+    }
+
+    assert {:terminal, distinct} =
+             FailureCleanup.perform(
+               {:settle_sequential, with_siblings, version, %Favn.Manifest.Index{},
+                Map.put(entry, :recovered_outcome, decoded), {:ok, result}}
+             )
+
+    assert distinct.result.asset_results == [saved_asset, other_window, other_attempt]
+
+    # Restart from the exact snapshot written with the outcome, before settlement.
+    {:ok, outcome_blob} = RunSnapshotCodec.encode_run(outcome_snapshot)
+
+    assert {:ok, saved_outcome} =
+             RunSnapshotCodec.decode_run(
+               %{run_blob: outcome_blob, manifest_version_id: version.manifest_version_id},
+               manifest_record
+             )
+
+    assert {:ok, outcome_only} =
+             FailureCleanup.perform(
+               {:restore_results, saved_outcome, progress, [{entry.asset_step_id, decoded}]}
+             )
+
+    assert outcome_only.result.asset_results == []
+
+    assert {:terminal, recovered} =
+             FailureCleanup.perform(
+               {:settle_sequential, outcome_only, %Favn.Manifest.Version{},
+                %Favn.Manifest.Index{}, Map.put(entry, :recovered_outcome, decoded),
+                {:ok, result}}
+             )
+
+    assert [%{status: :ok, attempt_count: 1}] = recovered.result.node_results
+    assert recovered.result.asset_results == settled.result.asset_results
+    assert recovered.result.metadata.result_retention.node_result_count == 1
   end
 
   test "sequential confirmed-result cleanup keeps one release owner" do
