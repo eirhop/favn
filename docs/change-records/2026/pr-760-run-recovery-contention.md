@@ -424,17 +424,161 @@ separately authorized observation after deployment.
 | Findings addressed and rechecked | All four clarified in the plan and verification matrix; Astra Max independently rechecked the corrections on 2026-09-23 |
 | Verdict | Approved. No remaining actionable plan findings or material scope creep; complexity budget accepted. Design approval only. |
 
+## Plan amendment: fail execution and retain automatic cleanup
+
+On 2026-09-23 the maintainer authorized implementation and requested a finite
+execution outcome with automatic cleanup, instead of an indefinite manual pause.
+The approved baseline above remains unchanged. This amendment supersedes its
+exhaustion-to-attention behavior for exhausted registration retries and exhausted
+automatic coordinator recovery. Inventory/OOM remains excluded.
+
+### Outcome and authority
+
+After the finite retry budget, persist the existing failed run status (`error`)
+and a versioned cleanup intent atomically, preserving the original failure and
+accepted results. Present **Failed — cleanup pending**. Never declare failure
+saved, release live authority, or dispatch cleanup based on an unconfirmed write.
+Reconcile the original transition receipt after a lost acknowledgement.
+
+Failure is scoped to the exact run. Never synthesize cancellation intent, call
+operation-wide cancellation, or cancel sibling backfill windows as a shortcut.
+Discover all original tasks with the existing exact-run keyset query, including
+helper tasks absent from active-task metadata.
+
+Cleanup is independent of execution completion. Reuse the existing ownership
+purpose `cleanup`, lease keeper, managed helpers, run event history, and recovery
+sweep. Select failed runs with pending cleanup separately from executable runs;
+claiming them must never grant execution purpose. Ordinary execution claims,
+asset admission, retry, and stage advancement remain forbidden after failure.
+Cleanup mutations require the current fence and cannot change the terminal
+outcome, its original error, or its terminal timestamp. Cancellation remains
+independently authoritative; a cancellation that wins before failure prevents
+that failure transition. Failed-cleanup and cancelled-cleanup authorization must
+remain explicit so one cannot reopen the other.
+
+Persist compact cleanup state and progress in the run snapshot/event stream,
+with an ownership projection for bounded recovery selection. Prefer the existing
+ownership columns where their semantics suffice; any new persisted column or
+index needs migration and explicit review. Cleanup scheduling has independent
+bounded pages and backoff, survives coordinator/process restart, and does not
+consume or reset the execution retry budget. Temporary cleanup database failures
+remain automatically eligible; exhausted execution attempts do not force cleanup
+into the execution diagnosis loop.
+
+### Cleanup permissions and progress
+
+Read original durable tasks and outcomes, settle confirmed results exactly once,
+and reconcile their materialization and generation bookkeeping. Reuse the
+existing settlement contracts with a cleanup-only continuation that cannot
+classify, admit, or retry asset work. Cancel queued/unneeded work through existing
+cancellation commands; active work requires its durable completion/cancellation
+outcome before releasing its execution resources. Lost cancellation replies do
+not prove that an external write stopped.
+
+Keep the existing cleanup permission boundary: completed operation evidence can
+be reused; new physical work is limited to read-only inspection/capability/marker
+reads. Failure cleanup must not create a new marker write or replay an uncertain
+one. If an original marker operation already exists, reconcile its durable
+result and exact marker identity. Missing or mismatching evidence becomes a
+specific cleanup-attention diagnostic, preserving the affected target hold.
+The normal bounded registration phase remains responsible for admissible marker
+initialization before execution failure.
+
+Release each proven-terminal task's execution leases and demand as it settles;
+release run-wide waiters/capacity when no active tasks remain. A held unknown
+external write continues to block conflicting work on that target. Unrelated
+runs and targets retain their concurrency. Cleanup completion must verify all
+required outcomes and resource releases before saving its completion receipt;
+failures during release remain retryable cleanup work. Every release requires
+the current cleanup fence. The existing unfenced bulk release must not be used
+as cleanup proof: the final release transaction must lock and verify ownership
+and confirm no active exact-run task remains before releasing remaining leases
+and waiters. Propagate release errors
+instead of using the current best-effort cleanup wrapper. Retention must preserve
+pending/attention cleanup evidence even after the run is terminal, using an
+explicit cleanup-state exclusion under the existing history lock. Protect the
+snapshot, events, task payloads/outcomes, pinned manifest and required inputs
+from age-based deletion across long outages. Do not equate a terminal
+run label with safe release, or report cleanup complete while evidence is missing.
+
+Record unresolved evidence per task/target and continue draining every other
+task before parking cleanup in attention. One unknown marker/write must not
+prevent successful siblings settling, active siblings receiving cancellation,
+or their proven-safe capacity being released. After draining, retain only the
+affected target protection and the evidence needed to resolve it.
+
+A failed run never resumes asset execution. Existing revision-checked Resume
+continues to apply to legacy running attention states. Failed cleanup attention
+must explain the unresolved task/target and permit the existing supported target
+reconciliation workflow; it must not offer execution Resume as a cleanup action.
+No automatic conversion or resume of legacy attention runs is included.
+
+### Responsiveness and diagnostics
+
+The coordinator retains state ownership. Bounded recovery reads and persistence
+commands run in registered helpers where delay measurements demonstrate the
+need; helpers return explicit results, not a copied execution state. One mutation
+may be outstanding per run. Heartbeats and cancellation intent remain responsive
+while sequence-changing events wait behind its receipt. Cleanup reports pending,
+complete, or attention separately from the immutable failed outcome. Diagnostics
+contain bounded reason codes and scheduled retry counts, with no raw SQL/data.
+
+```mermaid
+flowchart TD
+    A[Temporary bookkeeping failure] --> B[Retry original operation within budget]
+    B -->|Recovered| C[Continue execution]
+    B -->|Budget exhausted| D[Persist failure and cleanup intent]
+    D --> E[Recover cleanup automatically after restart]
+    E --> F[Reconcile existing tasks and release proven safe resources]
+    F -->|Temporary database failure| E
+    F -->|All cleanup confirmed| G[Failed with cleanup complete]
+    F -->|Unresolved external outcome| H[Failed with target attention]
+    H --> I[Preserve affected target hold]
+```
+
+### Additional verification and complexity budget
+
+Extend the baseline tests with failure plus cleanup atomicity, lost replies,
+restart after terminal failure, strict cleanup claim/transition permissions,
+cancellation races, read-only helper admission, confirmed sibling settlement,
+release failures, bounded sweep fairness, and nonempty unknown-write protection.
+Include omitted helper tasks, concurrent terminal and active task releases,
+lost release acknowledgements, and a mixed unknown/successful/live sibling case.
+Use an old terminal fixture to prove retention exclusion and cleanup resumption
+after a prolonged outage. Prove that a later unrelated run executes while failed cleanup remains pending,
+and that a conflicting target stays protected. A failed run must never become
+running/successful or create a replacement asset task. Both fresh and upgraded
+storage must select pending cleanup and stop selecting completed cleanup.
+
+| Additional slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| Failed execution with durable cleanup, narrow UI/read contract and canonical docs | 350–650 | 40–100 | 400–750 | 20–60 |
+
+This is additional to the unchanged baseline budget. It is justified by the
+separate terminal-cleanup lifecycle and its persistence/authorization proof.
+Ordinary rollback is additionally forbidden while failed cleanup is pending or
+in attention: RC18 does not recover those terminal runs. Settle cleanup with the
+compatible binary or use a forward fix; retain unresolved target protection.
+
+### Amendment review
+
+Astra Max requested three P2 clarifications: complete exact-run task inventory
+and fenced release proof, draining siblings before per-target attention, and
+retention protection across long outages. All three are now explicit above and
+were independently rechecked and approved by Astra Max on 2026-09-23.
+Approval covers the design; implementation verification remains required.
+
 ## Implementation outcome
 
-Implementation has not started. The request covers this plan and its independent
-review. No production code, tests, cloud configuration, or run state were changed.
+Implementation is authorized and has not started. Astra Max approved the amended
+lifecycle after all three P2 findings were corrected and rechecked. No cloud configuration or live run state has been changed.
 
 ## Deviations and decisions
 
 The maintainer explicitly exempted this record from the GitHub-issue requirement
 and excluded inventory/OOM work. The draft PR contains the reviewed plan only,
-so its status stays `Plan reviewed` until implementation begins. No implementation
-deviations exist yet.
+so its status stays `Plan reviewed` until implementation begins. The separately reviewed amendment above records the authorized lifecycle
+expansion; the original approved plan remains intact.
 
 ## Verification evidence
 
