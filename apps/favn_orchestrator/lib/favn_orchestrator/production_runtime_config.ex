@@ -53,6 +53,8 @@ defmodule FavnOrchestrator.ProductionRuntimeConfig do
           workspace_ids: [String.t()],
           auth_session_ttl_seconds: pos_integer(),
           active_run_plan_max_bytes: pos_integer(),
+          run_lease_duration_ms: 120_000..600_000,
+          max_active_runs: 1..512,
           scheduler: keyword(),
           run_submissions: keyword(),
           runner_pools: RunnerPools.t(),

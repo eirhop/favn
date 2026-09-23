@@ -10,6 +10,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
   alias FavnLocal.TestSupport.ReloadAssets
   alias FavnOrchestrator.Manifests
   alias FavnOrchestrator.ManifestStore
+  alias FavnOrchestrator.RunOwnership
   alias FavnOrchestrator.Persistence.Commands, as: C
   alias FavnOrchestrator.Persistence.SystemContext
   alias FavnOrchestrator.Persistence.WorkspaceContext
@@ -167,7 +168,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
 
     started = verify_incremental_commands(started, root_dir, fixture_file, workspace_id, view_url)
 
-    {workspace_context, pinned_run, pinned_version, pinned_ref} =
+    {workspace_context, pinned_run, pinned_version, pinned_ref, pinned_ownership} =
       create_release_pinned_run(workspace_id)
 
     reload_release_id = FavnTestSupport.runner_release_id(:reload)
@@ -210,7 +211,8 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
         pinned_run,
         pinned_version,
         pinned_ref,
-        started.runner_release_id
+        started.runner_release_id,
+        pinned_ownership
       )
 
     assert_eventually(fn ->
@@ -221,6 +223,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
     end)
 
     finish_release_pinned_run(workspace_context, pinned_run)
+    assert :ok = RunOwnership.release(workspace_context, pinned_ownership)
 
     assert {:ok, reloaded} = Task.await(reload, 60_000)
     assert reloaded.reload_status == :runner_replaced
@@ -505,10 +508,15 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
                command_id: "create:#{run.id}"
              )
 
-    {context, committed.run, version, ref}
+    assert {:ok, ownership} = RunOwnership.claim(context, run.id, "local-drain-acceptance")
+
+    owned_run =
+      RunState.with_storage_fence(committed.run, ownership.owner_id, ownership.fencing_token)
+
+    {context, owned_run, version, ref, ownership}
   end
 
-  defp enqueue_delayed_release_work(context, run, version, ref, release_id) do
+  defp enqueue_delayed_release_work(context, run, version, ref, release_id, ownership) do
     request = %GenerationCapabilitiesRequest{manifest: version, asset_ref: ref}
     {:ok, payload, payload_hash} = Codec.encode_payload(:generation_capabilities, request)
     {:ok, orchestration_context} = Codec.encode_orchestration_context(%{})
@@ -530,6 +538,7 @@ defmodule FavnLocal.DockerFreeLocalLifecycleAcceptanceTest do
       payload_hash: payload_hash,
       orchestration_context: orchestration_context,
       run_id: run.id,
+      run_authority: ownership,
       operation_id: nil,
       asset_step_id: nil,
       deadline_at: DateTime.add(now, 60, :second),

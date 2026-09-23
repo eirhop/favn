@@ -28,7 +28,7 @@ defmodule FavnUmbrella.MixProject do
       aliases: aliases(),
       listeners: listeners(Mix.env()),
       dialyzer: [
-        plt_add_apps: [:mix],
+        plt_add_apps: [:mix] ++ if(Mix.env() == :test, do: [:ex_unit], else: []),
         ignore_warnings: dialyzer_ignore_warnings(Mix.env()),
         list_unused_filters: true
       ]

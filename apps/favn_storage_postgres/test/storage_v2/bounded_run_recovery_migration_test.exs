@@ -84,7 +84,10 @@ defmodule FavnStoragePostgres.StorageV2.BoundedRunRecoveryMigrationTest do
       Ecto.Migrator.run(
         Repo,
         [{20_260_922_000_000, FavnStoragePostgres.Migrations.AddBoundedRunRecoveryV2}],
-        :down, all: true, prefix: "favn_control")
+        :down,
+        all: true,
+        prefix: "favn_control"
+      )
     end
 
     assert {:ok, %{ready?: true}} = Migrations.diagnostics(Repo)

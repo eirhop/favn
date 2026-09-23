@@ -16,6 +16,8 @@ defmodule FavnOrchestrator.RuntimeConfig do
   @max_auth_session_ttl_seconds 2_592_000
 
   @type t :: %__MODULE__{
+          run_lease_duration_ms: 120_000..600_000,
+          max_active_runs: 1..512,
           workspace_ids: [String.t()],
           api_server: keyword(),
           scheduler: keyword(),

@@ -196,8 +196,9 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert {:ok, _committed} = large_result
 
     assert large_queries == small_queries
-    # Includes the fixed retirement owner checks; sibling count adds no queries.
-    assert large_queries <= 12
+    # Includes retirement checks and SET LOCAL transaction_timeout at the outer
+    # boundary; sibling count still adds no queries.
+    assert large_queries <= 13
 
     plan =
       explain(
