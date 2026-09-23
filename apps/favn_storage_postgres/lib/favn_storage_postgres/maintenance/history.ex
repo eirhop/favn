@@ -12,6 +12,7 @@ defmodule FavnStoragePostgres.Maintenance.History do
     SELECT * FROM favn_control.runs WHERE workspace_id=$1 AND root_execution_group_id=$2
   )
   SELECT NOT EXISTS (SELECT 1 FROM members WHERE terminal_at IS NULL OR terminal_at >= $3)
+    AND NOT EXISTS (SELECT 1 FROM members WHERE snapshot #>> '{metadata,failure_cleanup,state}' IN ('pending','attention'))
     AND NOT EXISTS (SELECT 1 FROM members m JOIN favn_control.materializations x USING(workspace_id,run_id))
     AND NOT EXISTS (SELECT 1 FROM members m JOIN favn_control.materialization_claims x USING(workspace_id,run_id))
     AND NOT EXISTS (SELECT 1 FROM members m JOIN favn_control.runner_tasks t USING(workspace_id,run_id)

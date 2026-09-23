@@ -105,7 +105,7 @@ defmodule FavnOrchestrator.OperationCancellation do
   end
 
   defp recover_cancelled_run(context, run_id) do
-    case RunManager.recover_cancellation(context, run_id) do
+    case RunManager.recover_cleanup(context, run_id) do
       :ok -> :ok
       {:error, reason} -> report(context.workspace_id, run_id, reason)
     end

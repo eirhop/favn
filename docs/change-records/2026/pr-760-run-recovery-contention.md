@@ -2,13 +2,14 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | None. On 2026-09-23 the maintainer explicitly requested this record without a GitHub issue. |
 | Pull request | [#760](https://github.com/eirhop/favn/pull/760) |
 | Related work | [#754](https://github.com/eirhop/favn/pull/754), [#752](https://github.com/eirhop/favn/issues/752), [#692](https://github.com/eirhop/favn/pull/692) |
 | Affected areas | PostgreSQL run coordination; orchestrator registration and recovery continuations; run recovery diagnostics and detail view |
 | Approved plan commit | [9ebf481ef21edd600a0e1add6dcf6ef3309d363b](https://github.com/eirhop/favn/commit/9ebf481ef21edd600a0e1add6dcf6ef3309d363b) |
+| Approved amendment commit | [95a73af4](https://github.com/eirhop/favn/commit/95a73af4) |
 | Last updated | 2026-09-23 |
 
 ## One-minute summary
@@ -560,6 +561,44 @@ Ordinary rollback is additionally forbidden while failed cleanup is pending or
 in attention: RC18 does not recover those terminal runs. Settle cleanup with the
 compatible binary or use a forward fix; retain unresolved target protection.
 
+### Implementation refinement: bounded settlement helpers
+
+Astra Max reviewed the helper boundary on 2026-09-23. Recovery reads and
+settlement use explicit operations with a scoped stage snapshot. The coordinator
+retains awaits, timers, cancellation intent, and scheduling state. Stage snapshots
+can include sibling results: reserve their temporary input and reply copies through
+PlanCapacity before dispatch. Match the receipt to the owner generation and base
+sequence; process receipts before deferred messages. A lost settlement reply stops
+the owner and restores durable phases instead of repeating a multi-write closure.
+The same boundary includes `StageResult.resume_persisted/2`.
+The interim review also identified a capacity deadlock if ordinary runs occupy
+all slots while waiting for resources retained by a failed run. Astra Max approved
+two separate cleanup slots/preparers, still under PlanCapacity memory limits,
+with discovery outside ordinary admission. This is an explicit refinement of the
+shared active-run limit; ordinary execution concurrency remains unchanged.
+Read-only cleanup helpers reuse original successful evidence; otherwise they use
+a cleanup-generation identity after old tasks drain. This avoids waiting forever
+on an old-fence queued inspection. No new marker initialization is permitted;
+read helpers use the existing five-minute operation wait while their coordinator
+remains responsive. This refinement leaves original asset task identities intact.
+
+### Reviewed complexity-budget adjustment
+
+The formatted implementation currently adds 2,124 production lines and
+removes 340, versus the combined baseline/amendment range of +730–1,400 and
+−165–435. Supporting code/docs add 1,547 and remove 76, within the combined
+supporting range. These counts include formatting within edited functions and
+exclude this record and generated files.
+
+The production overrun comes from two concrete requirements exposed by review:
+terminal cleanup needs an explicit phased inventory/settlement/release state
+machine with durable restart and bounded attention, and moving settlement alone
+left synchronous cancellation reads, checkpoint writes, and refill on the receipt
+path. Explicit helper operations now cover those follow-up calls as well. The
+coordinator still owns timers/awaits and the existing manager owns helpers; no
+new scheduler, database table, dependency, or generic retry framework was added.
+Astra Max explicitly approved this complexity refinement on 2026-09-23 after comparing the final code with the preserved baseline and amendment.
+
 ### Amendment review
 
 Astra Max requested three P2 clarifications: complete exact-run task inventory
@@ -570,26 +609,84 @@ Approval covers the design; implementation verification remains required.
 
 ## Implementation outcome
 
-Implementation is authorized and has not started. Astra Max approved the amended
-lifecycle after all three P2 findings were corrected and rechecked. No cloud configuration or live run state has been changed.
+The implementation corrects the PostgreSQL lock order and renewal write, saves
+bounded registration retry slots, moves delayed recovery/settlement work into
+registered helpers, and adds durable cleanup after immutable execution failure.
+Cleanup uses the existing manager, ownership, event stream, and storage facades;
+there is no new table, dependency, scheduler, or asset retry policy.
+
+Cleanup first pages through all exact-run tasks, cancels active work, and releases
+safe terminal execution capacity/permits. Only after that drain does it settle
+original outcomes and read generation evidence. Queued work cannot be claimed or
+started after failure under the same history lock; current-generation cleanup
+reads and completion of already-started tasks remain permitted. A task cancelled
+before its first assignment is conclusive pre-start evidence even when a legacy
+retry-class field says unknown. Started unknown writes remain protected.
+Sequential settlement reuses its existing outcome/receipt path without pipeline
+materialization publication or advancing to another task. Cleanup shares the
+normal restoration outcome compatibility check. Failed cleanup attention shows
+bounded reason codes and original task IDs and refers administrators to the
+canonical held-write procedure; it offers no execution Resume.
+
+Admission waiters returned by short-lived helpers are registered to the long-lived
+coordinator. Resumed/rejected admission continuations also use explicit helpers.
+Lost replies stop the owner and restore durable evidence rather than rerunning a
+multi-write closure. No cloud configuration or live run state has been changed.
+
+### Final behavior
+
+```mermaid
+flowchart TD
+    A[Accepted asset result] --> B[Bounded registration retries]
+    B -->|Recovered| C[Continue run]
+    B -->|Exhausted| D[Fail execution and save cleanup intent]
+    D --> E[Drain original tasks and release safe capacity]
+    E --> F[Settle saved outcomes and read generation evidence]
+    F -->|Database unavailable| E
+    F -->|Verified| G[Failed with cleanup complete]
+    F -->|Unknown outcome| H[Failed with task diagnostics and target protection]
+```
 
 ## Deviations and decisions
 
-The maintainer explicitly exempted this record from the GitHub-issue requirement
-and excluded inventory/OOM work. The draft PR contains the reviewed plan only,
-so its status stays `Plan reviewed` until implementation begins. The separately reviewed amendment above records the authorized lifecycle
-expansion; the original approved plan remains intact.
+| Decision | Reason and effect | Review |
+| --- | --- | --- |
+| No GitHub issue; no inventory/OOM work | Explicit maintainer instructions; neither is added by implementation | Authorized by maintainer |
+| Fail execution with durable independent cleanup | Authorized amendment; retains immutable failure and target protections | Astra Max approved amendment |
+| Two reserved cleanup slots | Ordinary runs can occupy all slots waiting for failed-run resources; cleanup must still progress under memory limits | Astra Max approved refinement |
+| Scoped helper operations and cleanup-generation reads | Keeps receipt follow-up calls responsive and avoids waiting forever on old-fence read helpers; original asset identities remain unchanged | Astra Max approved design refinement; implementation rechecked |
+| Production line-count overrun | Explicit cleanup phases and follow-up helper boundaries exceeded the estimate; no new scheduler, table or dependency | Astra Max explicitly approved the final counts and rationale |
+| No orphan-claim sweep | Admission atomically commits claim, task and step; existing rollback tests prove the invariant. Exact-run paging reaches committed unstarted tasks | Astra Max confirmed no additional sweep needed |
+| Serialized restart fixtures | Harness events now round-trip through the production codec and expose complete hydrated helper identities | Covers both approved retry crash cut points |
+
+The original approved plan remains intact. The incident watchdog gap is not
+claimed to have one proven production cause: fault injection demonstrates that
+blocked settlement with a callback backlog now remains responsive beyond the
+watchdog interval.
 
 ## Verification evidence
 
+All checks use disposable local test databases or test stores. No production or
+Test run was resumed, reset, or otherwise mutated.
+
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Source and incident review | Completed against RC18 | Saved Test evidence and static source; no fresh live inspection |
-| Markdown links and whitespace | Passed: all repository-relative links resolve; whitespace check is clean | Documentation only |
-| Mermaid diagrams | Both parsed and rendered successfully with Mermaid 11.12.0 locally; both GitHub diagrams rendered at the approved baseline and after the PR-number rename (`5bf5b6a4`) | Browser verification of both GitHub render frames; diagrams unchanged by this evidence update |
-| Independent plan review | Approved by Astra Max after correction and recheck of four P2 findings | Design review; no implementation qualification |
+| Source and incident review | Completed against RC18 | Saved Test evidence; no fresh live incident inspection |
+| Real PostgreSQL lock regression | Red with original lock protocol; green with correction | Parent foreign-key/ownership lock cycle exercised with separate connections |
+| Renewal, cleanup, admission and task storage tests | 125 passed, 3 excluded | Reserved renewal pool, bounded total transaction deadline, cleanup authority/discovery, immutable failure, fenced release, nonempty unknown claim hold, aged retention exclusion |
+| Orchestrator fast suite | 981 passed (6 doctests, 975 tests), 3 excluded | Transient retry budget, helpers, late receipts, cancelled intent, cleanup restart, reserved slots, terminal sibling drain and unknown outcome protection |
+| Watchdog fault injection | Passed | Settlement held 50 seconds with 300 deferred callbacks; 500 ms coordinator queries and challenges remain responsive beyond the 45-second watchdog; no claim of production-load equivalence |
+| Durable registration crash points | 2 passed | Real Restore path from serialized events before dispatch and after dispatch/lost receipt; original task, retry count and absolute deadline checked |
+| Run detail component | 66 passed | Pending/complete/attention display, exact task diagnostics and no execution Resume |
+| Browser route catalog | Passed: 31 browser and 67 API routes | Route catalog guard |
+| Full security qualification | Passed on final code: 379 unique assertions | Final rerun after all code corrections in disposable Docker; dirty-worktree diagnostic, not exact-head release qualification |
+| Compile, format, static security, test-tier guard and links | Passed | Warnings-as-errors compile, strict Credo warning checks, Sobelow scans, CI tier coverage, clean whitespace and all changed-document relative links resolve |
+| Mermaid diagrams | All four diagrams parsed and rendered locally; three approved diagrams previously rendered on GitHub at `95a73af4` | Approved diagrams remain unchanged; final behavior diagram records the implemented drain/settlement order |
+| Independent plan/amendment reviews | Approved by Astra Max | Baseline and amendment approval, followed by interim implementation findings and corrections |
+| Independent implementation review | Approved by Astra Max on 2026-09-23 after findings were fixed and rechecked | Compared preserved baseline/amendment with final code, tests and outcome; explicitly accepted complexity increase |
 
-Not verified: implementation, concurrency regressions, retry behavior under
-fault injection, recovery latency after changes, CI qualification, deployment,
-or recovery of an existing paused run. Final implementation review is deferred
-until code exists and can be compared with the approved planning commit.
+Verification limitations: no deployment, live incident recovery, production latency
+measurement, or exact-merged-SHA release qualification. Earlier broad local runs
+hit an unrelated 100 ms manifest-memory timing assertion under concurrent Docker
+build load; its focused rerun passed. A preexisting stale disposable database was
+replaced with a fresh uniquely named test database; no development data was reset.

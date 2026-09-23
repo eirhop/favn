@@ -323,7 +323,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     {event_type, _retryable?} = StepAttemptLifecycle.step_outcome(step_status)
 
     retry_delay =
-      if retryable? and StepAttemptLifecycle.retry_allowed?(run_state, entry.node_key, attempt) do
+      if retryable? and
+           (not RunState.finalized?(run_state) and
+              StepAttemptLifecycle.retry_allowed?(run_state, entry.node_key, attempt)) do
         if entry[:recovered_outcome],
           do: Map.get(entry.recovered_outcome.data, "retry_after_ms"),
           else: StepAttemptLifecycle.retry_delay_ms(run_state, entry.node_key, attempt, result)
@@ -374,7 +376,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
       retry_after_ms: retry_delay,
       retry_exhausted?:
         retryable? and
-          not StepAttemptLifecycle.retry_allowed?(run_state, entry.node_key, attempt),
+          not (not RunState.finalized?(run_state) and
+                 StepAttemptLifecycle.retry_allowed?(run_state, entry.node_key, attempt)),
       execution_pool: Map.get(entry, :execution_pool),
       node_result: node_result
     }
@@ -548,7 +551,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
             resume.status == :ok ->
               :ok
 
-            resume.retryable? and not Persistence.externally_cancelled?(step_state) and
+            resume.retryable? and not RunState.finalized?(step_state) and
+              not Persistence.externally_cancelled?(step_state) and
                 StepAttemptLifecycle.retry_allowed?(
                   step_state,
                   resume.entry.node_key,
@@ -597,7 +601,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
         end
 
       {:error, reason} ->
-        if PersistenceRetry.recovery_required?(reason) do
+        if PersistenceRetry.recovery_required?(reason) or
+             is_map(step_state.metadata["failure_cleanup"]) do
           {:recovery_required, step_state,
            {:post_step_bookkeeping_unavailable, resume.entry.asset_ref, reason}}
         else
@@ -655,7 +660,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
               PersistenceRetry.replayable?(reason) ->
                 {:persist_retry, retry, reason}
 
-              PersistenceRetry.recovery_required?(reason) ->
+              PersistenceRetry.recovery_required?(reason) or
+                  is_map(step_state.metadata["failure_cleanup"]) ->
                 {:recovery_required, step_state,
                  {:resource_outcomes_unavailable, entry.asset_ref, reason}}
 

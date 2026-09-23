@@ -93,7 +93,29 @@ defmodule FavnView.Components.RunDetailPage do
         {cancellation_message(@run[:cancellation_status])}
       </.notice>
       <.notice
-        :if={@run[:recovery] && @run.recovery["disposition"] == "attention"}
+        :if={@run[:recovery] && @run.recovery["cleanup_state"]}
+        tone={if(@run.recovery["cleanup_state"] == "attention", do: :warning, else: :info)}
+        data-testid="run-failure-cleanup"
+      >
+        {failure_cleanup_message(@run.recovery["cleanup_state"])}
+        <ul :if={@run.recovery["cleanup_state"] == "attention"}>
+          <li :for={entry <- Enum.take(@run.recovery["unresolved"] || [], 32)}>
+            {entry["reason_code"]}<span :if={entry["task_id"]}> — task <code>{entry["task_id"]}</code></span>
+          </li>
+        </ul>
+        <span :if={@run.recovery["cleanup_state"] == "attention"}>
+          Ask a workspace administrator to inspect the listed tasks and follow the held-write
+          resolution procedure when a write outcome is unknown.
+        </span>
+        <span :if={@run.recovery["scheduled_registration_retries"]}>
+          Scheduled registration retries: {@run.recovery["scheduled_registration_retries"]}.
+        </span>
+      </.notice>
+      <.notice
+        :if={
+          @run[:recovery] && !@run.recovery["cleanup_state"] &&
+            @run.recovery["disposition"] == "attention"
+        }
         tone={:warning}
         data-testid="run-recovery-attention"
       >
@@ -390,4 +412,15 @@ defmodule FavnView.Components.RunDetailPage do
       "Needs attention. Cancellation was requested, but some work has an uncertain outcome. Check the run diagnostics before retrying."
 
   defp cancellation_message(_), do: nil
+
+  defp failure_cleanup_message("pending"),
+    do: "Run failed. Existing work is being checked and resources released automatically."
+
+  defp failure_cleanup_message("complete"), do: "Run failed. Cleanup is complete."
+
+  defp failure_cleanup_message("attention"),
+    do:
+      "Run failed. Cleanup needs attention for unresolved work. Affected targets remain protected."
+
+  defp failure_cleanup_message(_), do: "Run failed. Cleanup status is unavailable."
 end

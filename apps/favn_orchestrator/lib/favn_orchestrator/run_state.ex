@@ -217,12 +217,21 @@ defmodule FavnOrchestrator.RunState do
   @spec transition(t(), keyword(), DateTime.t()) :: t()
   def transition(%__MODULE__{} = run, attrs, %DateTime{} = occurred_at) when is_list(attrs) do
     validate_immutable_plan!(run, attrs)
+    attrs = preserve_cleanup_outcome(run, attrs)
 
     run
     |> Map.merge(Enum.into(attrs, %{}))
     |> Map.put(:event_seq, run.event_seq + 1)
     |> Map.put(:updated_at, occurred_at)
     |> with_snapshot_hash()
+  end
+
+  @doc false
+  @spec preserve_cleanup_outcome(t(), keyword()) :: keyword()
+  def preserve_cleanup_outcome(run, attrs) do
+    if finalized?(run) and is_map(run.metadata["failure_cleanup"]),
+      do: Keyword.drop(attrs, [:status, :error]),
+      else: attrs
   end
 
   @doc false

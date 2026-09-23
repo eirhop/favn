@@ -57,6 +57,47 @@ defmodule FavnView.RunDetailLiveTest do
     assert is_reference(mounted.assigns.fallback_poll_ref)
   end
 
+  for {state, message} <- [
+        {"pending", "released automatically"},
+        {"complete", "Cleanup is complete"},
+        {"attention", "Affected targets remain protected"}
+      ] do
+    test "failed cleanup #{state} does not offer execution resume" do
+      Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
+        detail = flow(run_id, :error)
+
+        recovery = %{
+          "cleanup_state" => unquote(state),
+          "unresolved" => [%{"reason_code" => "unknown_write", "task_id" => "held-task"}],
+          "disposition" => "attention",
+          "scheduled_registration_retries" => 8
+        }
+
+        {:ok, %{kind: :run, detail: %{detail | header: %{detail.header | recovery: recovery}}}}
+      end)
+
+      assert {:ok, mounted} =
+               RunDetailLive.mount(%{"run_id" => "failed-run"}, %{}, connected_socket())
+
+      html =
+        render_component(
+          &RunDetailLive.render/1,
+          Map.put(mounted.assigns, :operator_workspaces, [])
+        )
+
+      assert html =~ unquote(message)
+      assert html =~ "Scheduled registration retries: 8"
+
+      if unquote(state) == "attention" do
+        assert html =~ "held-task"
+        assert html =~ "unknown_write"
+        assert html =~ "workspace administrator"
+      end
+
+      refute html =~ "Resume recovery"
+    end
+  end
+
   test "attention displays the reason and ties browser resumption to the displayed revision" do
     Application.put_env(:favn_view, :operator_run_flow_fun, fn _context, run_id ->
       detail = flow(run_id, :running)

@@ -62,6 +62,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
           commits: [],
           held_task_kinds: Keyword.get(opts, :held_task_kinds, [:relation_inspection]),
           commit_failures: Keyword.get(opts, :commit_failures, %{}),
+          held_commits: Keyword.get(opts, :held_commits, []),
+          held_read_after: Keyword.get(opts, :held_read_after),
           renew_result: Keyword.get(opts, :renew_result, :ok),
           test_pid: Keyword.fetch!(opts, :test_pid)
         }
@@ -69,12 +71,32 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     end
 
     def put_task(task), do: Agent.update(agent(), &put_in(&1, [:tasks, task.task_id], task))
+
+    def clear_holds,
+      do: Agent.update(agent(), &%{&1 | held_task_kinds: [], held_commits: [:step_settled]})
+
     def commits, do: Agent.get(agent(), & &1.commits) |> Enum.reverse()
     def latest_run, do: Agent.get(agent(), & &1.run)
 
     # runs
 
     def get_run(_query) do
+      hold? =
+        Agent.get_and_update(agent(), fn state ->
+          if state.held_read_after &&
+               Enum.any?(state.commits, &(&1.event_type == state.held_read_after)),
+             do: {true, %{state | held_read_after: nil}},
+             else: {false, state}
+        end)
+
+      if hold? do
+        notify({:run_read_blocked, self()})
+
+        receive do
+          :release_read -> :ok
+        end
+      end
+
       case Agent.get(agent(), &Map.get(&1, :read_failure)) do
         nil -> {:ok, latest_run()}
         reason -> {:error, reason}
@@ -118,11 +140,41 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
           })
         end
 
-      {:ok, %{items: Enum.filter(events, &(&1.sequence > query.after_sequence))}}
+      committed =
+        Enum.map(
+          commits(),
+          &FavnOrchestrator.Projector.run_event(&1.run, &1.event_type, Map.get(&1, :data, %{}))
+        )
+
+      events = Enum.uniq_by(events ++ committed, & &1.sequence)
+
+      events =
+        Enum.map(events, fn event ->
+          {:ok, encoded} = FavnOrchestrator.Storage.RunEventCodec.encode(event)
+          {:ok, decoded} = FavnOrchestrator.Storage.RunEventCodec.decode(encoded)
+          decoded
+        end)
+
+      {:ok,
+       %{
+         items:
+           events
+           |> Enum.filter(&(&1.sequence > query.after_sequence))
+           |> Enum.sort_by(& &1.sequence)
+           |> Enum.take(query.limit)
+       }}
     end
 
     def commit_transition(command) do
       event_type = command.event.event_type
+
+      if event_type in Agent.get(agent(), & &1.held_commits) do
+        notify({:commit_blocked, event_type, self()})
+
+        receive do
+          :release_commit -> :ok
+        end
+      end
 
       case Agent.get_and_update(agent(), &record_commit(&1, command)) do
         {:fail, :history_busy} ->
@@ -159,7 +211,10 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
     defp record_commit(state, command) do
       event_type = command.event.event_type
-      commits = [%{event_type: event_type, run: command.run} | state.commits]
+
+      commits = [
+        %{event_type: event_type, run: command.run, data: command.event.data} | state.commits
+      ]
 
       case Map.get(state.commit_failures, event_type) do
         nil ->
@@ -257,6 +312,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         workspace_id: command.workspace_context.workspace_id,
         run_id: command.run_id,
         owner_id: command.owner_id,
+        claim_purpose:
+          if(latest_run().metadata["failure_cleanup"], do: :cleanup, else: :execution),
         fencing_token: Map.get(command, :fencing_token) || 7,
         expires_at: DateTime.add(DateTime.utc_now(), 120, :second),
         database_observed_at: DateTime.utc_now()
@@ -346,7 +403,19 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       %RunnerTask{
         workspace_id: command.workspace_context.workspace_id,
         task_id: command.task_id,
+        run_id: command.run_id,
+        enqueued_at: command.occurred_at,
         domain_identity: command.domain_identity,
+        data_state: :available,
+        manifest_version_id: command.manifest_version_id,
+        manifest_content_hash: command.manifest_content_hash,
+        deadline_at: command.deadline_at,
+        payload_version: PersistenceCodec.payload_version(),
+        orchestration_context_hash:
+          :crypto.hash(
+            :sha256,
+            :erlang.term_to_binary(command.orchestration_context, [:deterministic])
+          ),
         task_kind: command.task_kind,
         runner_pool: command.runner_pool,
         required_runner_release_id: command.required_runner_release_id,
@@ -360,6 +429,38 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         result: result,
         inserted_at: command.occurred_at
       }
+    end
+
+    def page_run(query) do
+      tasks = Agent.get(agent(), &Map.values(&1.tasks))
+
+      items =
+        tasks
+        |> Enum.filter(&(&1.run_id == query.run_id))
+        |> Enum.map(&%{task_id: &1.task_id, enqueued_at: &1.enqueued_at || &1.inserted_at})
+        |> Enum.sort_by(&{&1.enqueued_at, &1.task_id})
+        |> Enum.filter(&(is_nil(query.cursor) or {&1.enqueued_at, &1.task_id} > query.cursor))
+        |> Enum.take(query.limit)
+
+      {:ok, items}
+    end
+
+    def release_completed(command) do
+      case get(%{task_id: command.task_id}) do
+        {:ok, %{task_kind: :asset_attempt}} ->
+          notify({:terminal_capacity_released, command.task_id})
+          release_run_leases(nil)
+
+        _ ->
+          {:error, Error.new(:invalid, "execution lease release requires an asset task")}
+      end
+    end
+
+    def release_failed_run(_command) do
+      case Agent.get(agent(), &Map.get(&1, :cleanup_release_error)) do
+        nil -> release_run_leases(nil)
+        error -> {:error, error}
+      end
     end
 
     # admission
@@ -464,6 +565,410 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     {:ok, fixture: fixture}
   end
 
+  for cut <- [:before_dispatch, :after_dispatch] do
+    @tag store_opts:
+           if(cut == :before_dispatch,
+             do: [held_task_kinds: [:relation_inspection]],
+             else: [held_task_kinds: [], held_commits: [:step_settled]]
+           )
+    test "saved registration retry restores after #{cut} without resetting its budget", %{
+      fixture: fixture
+    } do
+      alias FavnOrchestrator.RunServer.Execution.RegistrationRetry
+      alias FavnOrchestrator.RunServer.Persistence
+      {pid, monitor} = start_run(fixture)
+      complete_asset_task(fixture)
+
+      if unquote(cut) == :before_dispatch do
+        assert_receive {:runner_task_held, :relation_inspection, _}, 5_000
+      else
+        assert_receive {:commit_blocked, :step_settled, _}, 5_000
+      end
+
+      saved = HarnessStore.latest_run()
+      GenServer.stop(pid, :normal)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+      await_lifecycle_removed(fixture.run)
+
+      pending = %{
+        entry: %{asset_step_id: step_id(saved), task_id: @asset_task_id},
+        stage: 0,
+        attempt: 1
+      }
+
+      assert {:ok, retry} =
+               RegistrationRetry.next(
+                 nil,
+                 pending,
+                 Error.new(:unavailable, "transient registration", retryable?: true)
+               )
+
+      data = RegistrationRetry.event(retry)
+
+      saved =
+        RunState.transition(saved, metadata: Map.put(saved.metadata, "registration_retry", data))
+
+      assert :ok = Persistence.persist_run_step(saved, :registration_retry_scheduled, data)
+      HarnessStore.clear_holds()
+      {restored, restored_monitor} = start_run(%{fixture | run: saved})
+      assert_receive {:commit_blocked, :step_settled, finish_worker}, 10_000
+      restored_state = :sys.get_state(restored).execution_state
+      send(finish_worker, :release_commit)
+      assert_receive {:DOWN, ^restored_monitor, :process, ^restored, :normal}, 10_000
+      assert HarnessStore.latest_run().status == :ok
+
+      events =
+        Enum.filter(HarnessStore.commits(), &(&1.event_type == :registration_retry_scheduled))
+
+      expected = if unquote(cut) == :before_dispatch, do: [1, 2], else: [1]
+
+      assert Enum.map(events, & &1.data["scheduled_retries"]) == expected,
+             inspect(restored_state.registration_retries)
+
+      assert Enum.all?(events, &(&1.data["deadline_at"] == data["deadline_at"]))
+      assert Enum.all?(events, &(&1.data["runner_task_id"] == data["runner_task_id"]))
+      assert Enum.count(HarnessStore.commits(), &(&1.event_type == :step_finished)) == 1
+    end
+  end
+
+  @tag store_opts: [held_task_kinds: []]
+  test "cleanup drains a later initializer and sibling before generation reads", %{
+    fixture: fixture
+  } do
+    task = running_asset_task(fixture)
+
+    result = %RunnerResult{
+      run_id: fixture.run.id,
+      manifest_version_id: fixture.run.manifest_version_id,
+      manifest_content_hash: fixture.run.manifest_content_hash,
+      required_runner_release_id: fixture.release_id,
+      status: :ok,
+      asset_results: [],
+      metadata: RunnerWork.lifecycle_metadata(task.payload)
+    }
+
+    HarnessStore.put_task(%{
+      task
+      | status: :succeeded,
+        result: result,
+        terminal_at: DateTime.utc_now()
+    })
+
+    HarnessStore.put_task(%{
+      task
+      | task_id: "later-initializer",
+        task_kind: :generation_marker_initialize,
+        inserted_at: DateTime.add(task.inserted_at, 1),
+        assignment_generation: 1
+    })
+
+    HarnessStore.put_task(%{
+      task
+      | task_id: "later-live-sibling",
+        inserted_at: DateTime.add(task.inserted_at, 2),
+        assignment_generation: 1
+    })
+
+    assert {:ok, failed} =
+             FavnOrchestrator.RunServer.FailureCleanup.fail(
+               RunState.with_storage_fence(fixture.run, "run-owner", @fencing_token),
+               :exhausted
+             )
+
+    {pid, monitor} = start_run(%{fixture | run: failed}, :cleanup)
+    assert_receive {:terminal_capacity_released, @asset_task_id}, 5_000
+    assert_receive {:runner_task_cancel_requested, "later-initializer"}, 1_000
+    assert_receive {:runner_task_cancel_requested, "later-live-sibling"}, 1_000
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid,
+                    {:shutdown, {:cleanup_deferred, :cleanup_tasks_pending}}},
+                   5_000
+
+    refute_received {:reconcile_initial, _}
+    assert HarnessStore.latest_run().metadata["failure_cleanup"]["state"] == "pending"
+  end
+
+  test "a waiter returned by an exited helper wakes the long-lived run server", %{
+    fixture: fixture
+  } do
+    alias FavnOrchestrator.ExecutionAdmission.{Coordinator, Waiter}
+    if is_nil(Process.whereis(Coordinator)), do: start_supervised!({Coordinator, []})
+    {pid, _monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:runner_task_held, :relation_inspection, _worker}, 5_000
+    scope = %{kind: :global, key: "waiter-transfer", limit: 1}
+    now = DateTime.utc_now()
+
+    waiter = %Waiter{
+      waiter_id: "transfer-waiter",
+      run_id: fixture.run.id,
+      asset_step_id: step_id(fixture.run),
+      queue_reason: :global_concurrency,
+      blocked_scope: scope,
+      requested_scopes: [scope],
+      stage: 0,
+      attempt: 1,
+      inserted_at: now,
+      updated_at: now,
+      deadline_at: DateTime.add(now, 60),
+      wake_generation: 1
+    }
+
+    helper =
+      Task.async(fn ->
+        :ok = Coordinator.register(waiter)
+        waiter
+      end)
+
+    assert ^waiter = Task.await(helper)
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | execution_state:
+            RunExecutionState.put_admission_waiters(state.execution_state, [waiter])
+      }
+    end)
+
+    assert :sys.get_state(Coordinator).subscribers[waiter.waiter_id].owner == pid
+    :erlang.trace(pid, true, [:receive])
+    Coordinator.notify_scopes([scope])
+
+    assert_receive {:trace, ^pid, :receive, {:execution_admission_wakeup, "transfer-waiter", 1}},
+                   1_000
+
+    :erlang.trace(pid, false, [:receive])
+  end
+
+  @tag store_opts: [
+         held_task_kinds: [],
+         held_commits: [:run_cleanup_completed, :run_cleanup_attention]
+       ]
+  test "a never-assigned cancelled asset settles its safe materialization claim", %{
+    fixture: fixture
+  } do
+    task = running_asset_task(fixture)
+
+    HarnessStore.put_task(%{
+      task
+      | status: :cancelled,
+        retry_class: :unknown_do_not_retry,
+        terminal_at: DateTime.utc_now()
+    })
+
+    assert {:ok, failed} =
+             FavnOrchestrator.RunServer.FailureCleanup.fail(
+               RunState.with_storage_fence(fixture.run, "run-owner", @fencing_token),
+               :exhausted
+             )
+
+    {pid, monitor} = start_run(%{fixture | run: failed}, :cleanup)
+    assert_receive {:commit_blocked, event, worker}, 5_000
+
+    assert event == :run_cleanup_completed,
+           inspect(:sys.get_state(pid).failure_cleanup.unresolved)
+
+    assert_receive {:materialization_finished, :failed, "claim-asset"}
+    send(worker, :release_commit)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+  end
+
+  test "a stale DOWN cannot strand the rest of the deferred queue", %{fixture: fixture} do
+    stale = make_ref()
+
+    state = %{
+      execution_state: %RunExecutionState{run: fixture.run, mode: :sequential, status: :awaiting},
+      deferred_execution_events: [{:DOWN, stale, :process, self(), :normal}, :continue_execution]
+    }
+
+    assert {:noreply, next} = RunServer.handle_info(:drain_deferred_execution, state)
+    assert_receive :drain_deferred_execution
+    assert {:noreply, drained} = RunServer.handle_info(:drain_deferred_execution, next)
+    assert drained.deferred_execution_events == []
+  end
+
+  test "ordinary capacity exhaustion still admits separately bounded cleanup", %{fixture: fixture} do
+    manager = FavnOrchestrator.RunManager
+    original = :sys.get_state(manager)
+    # Occupy every ordinary slot without starting unrelated fixture processes.
+    entry = %{
+      key: {"other", "busy"},
+      phase: :running,
+      ownership: nil,
+      purpose: :execution,
+      pids: MapSet.new()
+    }
+
+    :sys.replace_state(manager, &%{&1 | max_active: 1, lifecycles: %{make_ref() => entry}})
+
+    context =
+      FavnOrchestrator.Persistence.SystemContext.workspace(fixture.run.workspace_id, :test)
+
+    assert {:error, :run_start_capacity} = manager.recover_candidate(context, fixture.run.id)
+    assert :ok = manager.recover_cleanup(context, fixture.run.id)
+
+    assert Enum.any?(:sys.get_state(manager).lifecycles, fn {_, e} ->
+             Map.get(e, :purpose) == :cleanup
+           end)
+
+    :sys.replace_state(manager, fn state ->
+      %{
+        state
+        | max_active: original.max_active,
+          lifecycles: Map.reject(state.lifecycles, fn {_, e} -> e.key == {"other", "busy"} end)
+      }
+    end)
+  end
+
+  @tag store_opts: [held_task_kinds: [], held_read_after: :step_settled]
+  test "the cancellation read after a settlement receipt stays outside the coordinator", %{
+    fixture: fixture
+  } do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:run_read_blocked, worker}, 5_000
+
+    assert %{
+             execution_persist_pending: %{operation: {:cancellation_check, _, :pipeline_progress}}
+           } = :sys.get_state(pid, 500)
+
+    send(pid, {:favn_run_cancel_requested, :operator})
+    assert :sys.get_state(pid, 500).cancel_latched
+    send(worker, :release_read)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert Enum.count(HarnessStore.commits(), &(&1.event_type == :step_finished)) == 1
+  end
+
+  @tag :slow
+  @tag timeout: 75_000
+  @tag store_opts: [held_task_kinds: [], held_commits: [:step_finished]]
+  test "slow settlement and callback backlog remain responsive beyond the watchdog", %{
+    fixture: fixture
+  } do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:commit_blocked, :step_finished, worker}, 5_000
+    for _ <- 1..300, do: send(pid, {:DOWN, make_ref(), :process, self(), :normal})
+    keeper = :sys.get_state(pid).lease_keeper
+
+    for _ <- 1..10 do
+      receive do
+      after
+        5_000 -> :ok
+      end
+
+      assert :sys.get_state(pid, 500).execution_persist_pending.ref
+      lease = :sys.get_state(keeper, 500)
+      refute lease.revoked?
+      assert System.monotonic_time(:millisecond) - lease.last_response < 6_000
+    end
+
+    send(worker, :release_commit)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert HarnessStore.latest_run().status == :ok
+  end
+
+  @tag store_opts: [held_task_kinds: [], held_commits: [:step_finished]]
+  test "slow settlement answers lease challenges and latches cancellation", %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:commit_blocked, :step_finished, worker}, 5_000
+    state = :sys.get_state(pid)
+
+    for _ <- 1..3 do
+      token = make_ref()
+      send(pid, {:lease_challenge, state.lease_keeper, @fencing_token, token})
+      # A system query must complete while the settlement remains blocked.
+      assert :sys.get_state(pid, 500).execution_persist_pending.ref
+    end
+
+    send(pid, {:favn_run_cancel_requested, :operator})
+    assert :sys.get_state(pid, 500).cancel_latched == {:favn_run_cancel_requested, :operator}
+    send(worker, :release_commit)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert Enum.count(HarnessStore.commits(), &(&1.event_type == :step_finished)) == 1
+  end
+
+  @tag store_opts: [held_task_kinds: [], held_commits: [:step_finished]]
+  test "lost settlement reply stops the owner without replaying its closure", %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:commit_blocked, :step_finished, worker}, 5_000
+    Process.exit(worker, :kill)
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid,
+                    {:shutdown, :execution_operation_unconfirmed}},
+                   5_000
+
+    refute Enum.any?(HarnessStore.commits(), &(&1.event_type == :run_finished))
+    assert {:ok, %{status: :succeeded}} = HarnessStore.get(%{task_id: @asset_task_id})
+  end
+
+  @tag store_opts: [
+         held_task_kinds: [],
+         held_commits: [:run_cleanup_completed, :run_cleanup_attention]
+       ]
+  test "failed execution resumes cleanup and settles the original successful asset", %{
+    fixture: fixture
+  } do
+    task = running_asset_task(fixture)
+
+    result = %RunnerResult{
+      run_id: fixture.run.id,
+      manifest_version_id: fixture.run.manifest_version_id,
+      manifest_content_hash: fixture.run.manifest_content_hash,
+      required_runner_release_id: fixture.release_id,
+      status: :ok,
+      asset_results: [],
+      metadata: RunnerWork.lifecycle_metadata(task.payload)
+    }
+
+    HarnessStore.put_task(%{
+      task
+      | status: :succeeded,
+        result: result,
+        terminal_at: DateTime.utc_now()
+    })
+
+    HarnessStore.put_task(%{
+      task
+      | task_id: "existing-terminal-read",
+        task_kind: :relation_inspection,
+        status: :succeeded,
+        payload: %Favn.Contracts.RelationInspectionRequest{},
+        result: %Favn.Contracts.RelationInspectionResult{},
+        terminal_at: DateTime.utc_now()
+    })
+
+    assert {:ok, failed} =
+             FavnOrchestrator.RunServer.FailureCleanup.fail(
+               RunState.with_storage_fence(fixture.run, "run-owner", @fencing_token),
+               {:registration_retry_exhausted, %{}}
+             )
+
+    fixture = %{fixture | run: failed}
+    {pid, monitor} = start_run(fixture, :cleanup)
+    assert_receive {:commit_blocked, event, worker}, 5_000
+
+    assert event == :run_cleanup_completed,
+           inspect(:sys.get_state(pid).failure_cleanup.unresolved)
+
+    assert HarnessStore.latest_run().status == :error
+    assert_receive {:materialization_finished, :succeeded, "claim-asset"}
+    assert_receive {:reconcile_initial, "gen-asset"}
+    send(worker, :release_commit)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    saved = HarnessStore.latest_run()
+    assert saved.status == :error
+    assert saved.error == failed.error
+    assert saved.metadata["failure_cleanup"]["state"] == "complete"
+    assert Enum.count(HarnessStore.commits(), &(&1.event_type == :step_finished)) == 1
+    assert [_] = saved.result.node_results
+
+    assert {:ok, %{task_id: @asset_task_id, status: :succeeded}} =
+             HarnessStore.get(%{task_id: @asset_task_id})
+  end
+
   test "replacement has its own handoff deadline after the old stop acknowledgement timed out", %{
     fixture: fixture
   } do
@@ -524,14 +1029,13 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     keeper_monitor = Process.monitor(entry.keeper)
     assert entry.coordinator == nil
 
-    assert_receive {:diagnosis_required, "prior_generation_stop_unconfirmed", @fencing_token},
-                   12_000
+    assert_receive {:run_transition_committed, :run_failed}, 12_000
 
     assert_receive {:DOWN, ^preparer_monitor, :process, _, _}, 2_000
     assert_receive {:DOWN, ^keeper_monitor, :process, _, _}, 2_000
 
-    assert HarnessStore.latest_run().metadata["recovery_attention"]["phase"] ==
-             "prior_generation_stop_unconfirmed"
+    assert HarnessStore.latest_run().status == :error
+    assert HarnessStore.latest_run().metadata["failure_cleanup"]["state"] == "pending"
 
     assert :sys.get_state(manager).run_pids == %{}
     assert :sys.get_state(manager).lifecycles[old_id].phase == :stopping
@@ -760,7 +1264,10 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert_receive {:run_transition_held, :step_finished}, 5_000
     send(pid, {:favn_run_cancel_requested, :operator})
     pending = :sys.get_state(pid)
-    assert pending.execution_persist_pending.retry.event_type == :step_finished
+
+    assert Map.has_key?(pending.execution_persist_pending, :operation) or
+             pending.execution_persist_pending.retry.event_type == :step_finished
+
     assert {:favn_run_cancel_requested, :operator} in pending.deferred_execution_events
     refute_received {:run_transition_committed, :run_cancelled}
 
@@ -1034,11 +1541,32 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     end
   end
 
-  defp start_run(fixture) do
+  defp await_lifecycle_removed(run, tries \\ 200)
+  defp await_lifecycle_removed(_run, 0), do: flunk("old lifecycle did not stop")
+
+  defp await_lifecycle_removed(run, tries) do
+    live =
+      Enum.any?(
+        :sys.get_state(FavnOrchestrator.RunManager).lifecycles,
+        fn {_, e} -> e.key == {run.workspace_id, run.id} end
+      )
+
+    if live do
+      receive do
+      after
+        10 -> :ok
+      end
+
+      await_lifecycle_removed(run, tries - 1)
+    end
+  end
+
+  defp start_run(fixture, purpose \\ :execution) do
     ownership = %Ownership{
       workspace_id: fixture.run.workspace_id,
       run_id: fixture.run.id,
       owner_id: "run-owner",
+      claim_purpose: purpose,
       fencing_token: @fencing_token,
       expires_at: DateTime.add(DateTime.utc_now(), 120, :second),
       database_observed_at: DateTime.utc_now()
@@ -1103,6 +1631,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       workspace_id: fixture.run.workspace_id,
       task_id: @asset_task_id,
       task_kind: :asset_attempt,
+      data_state: :available,
       run_id: fixture.run.id,
       asset_step_id: step_id(fixture.run),
       runner_pool: "default",

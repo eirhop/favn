@@ -103,6 +103,11 @@ an inspection is queued behind other runner work. If the run is cancelled while
 the worker is pending, the binding stays `uninitialized` and the recovery
 workflow below applies.
 
+Temporary registration failures use the bounded durable retry policy in
+[run ownership and recovery](run-ownership-and-recovery.md#registration-retries-and-failed-run-cleanup).
+Retry exhaustion fails execution and independently reconciles existing work;
+accepted asset writes are never resubmitted by registration recovery.
+
 An initial materialization can commit in the data system while its control-plane
 binding remains incomplete. Recovery is a separate ownership-restoration
 workflow, not a rebuild and not general table adoption.

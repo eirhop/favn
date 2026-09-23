@@ -48,8 +48,8 @@ subtree before a replacement manager starts. Helpers register before doing work.
 Recovery reserves a local slot before claiming. It attaches renewal before loading
 the manifest. A newer generation waits for every old local process to go down
 before loading a fresh snapshot for execution. If the old generation cannot
-confirm shutdown, the replacement can only persist diagnosis and stop; it cannot
-remain renewing indefinitely or start execution. Repeated adoption of the same generation is
+confirm shutdown, the replacement persists terminal failure with cleanup intent and
+stops. Cleanup cannot start until the previous local generation stops. Repeated adoption of the same generation is
 idempotent; an older handoff cannot replace a newer owner.
 
 Fresh permission is required for each new task admission. Already submitted
@@ -71,7 +71,8 @@ and cancellation cleanup do not require renewing expired execution locks first.
 Ownership rows retain the claim purpose, automatic/attention disposition, retry
 count and next eligible recovery time. Three automatic execution recoveries are
 allowed, with 5, 15 and 60 second backoffs plus bounded jitter. Further claims are
-for diagnosis only. Renewal moves the eligibility time forward; restarting the
+for diagnosis only; the diagnostic owner persists terminal failure and durable
+cleanup intent, then stops. Renewal moves the eligibility time forward; restarting the
 orchestrator does not remove the backoff. Newly committed node settlement or a
 terminal outcome resets the count. Replaying an old event does not.
 
@@ -89,10 +90,54 @@ a healthy replacement. The transaction expires the old claim, clears active
 attention and resets recovery pacing. Original runner tasks are reconciled before
 further dispatch. Durable cancellation takes precedence over resume.
 
+## Registration retries and failed-run cleanup
+
+A successful asset result stays accepted while generation registration retries
+explicitly retryable PostgreSQL conflicts, timeouts, and unavailability. The first
+failure starts a 30-second budget with at most eight scheduled retries, using
+1/2/4/5-second backoff and bounded jitter. Each slot is persisted before dispatch;
+restarts retain its deadline and count. Recovery checks existing terminal helper
+evidence before spending another slot. Failed reads never mean missing work.
+
+Exhaustion persists `error` and versioned `failure_cleanup` intent atomically.
+The original failed outcome stays immutable. The ordinary recovery sweep selects
+pending cleanup separately using cleanup ownership, including after restart.
+Cleanup inventories the exact run's tasks in pages, drains all siblings, settles
+confirmed results, and releases resources under its current fence. Failure and
+new task claim/start serialize under the history lock: queued or assigned assets
+and mutating helpers cannot start after failure. Already-started work may still
+report its terminal outcome. No asset task
+or generation-marker write is created. Read-only inspection helpers may use a
+cleanup-generation identity when original terminal evidence is unavailable; a
+restart drains old helpers before admitting new reads. Their normal bounded wait
+runs in a registered helper while the coordinator answers lease challenges.
+
+Cleanup ends only after PostgreSQL confirms no active exact-run tasks and no
+active execution leases or admission waiters. Temporary persistence failures leave
+cleanup pending. Unknown external writes retain their target claims and locks;
+after other tasks drain, cleanup reports attention with bounded reason codes.
+Future work on unrelated targets can proceed. Two cleanup lifecycles have reserved local slots, in addition to the ordinary
+active-run limit and still subject to PlanCapacity memory limits. Cleanup discovery
+continues while ordinary admission is paused.
+Pending and attention cleanup retain their execution history and task evidence.
+
+The coordinator queues recovered task callbacks one at a time. Reads and step
+settlement run in registered helpers with one sequence mutation outstanding.
+PlanCapacity accounts for retained state and temporary operation copies. Lost
+helper replies stop the owner and restore durable phases; they never repeat a
+multi-write settlement blindly. Timers, cancellation hints, and sibling results
+remain coordinator-owned and wait behind the matching receipt.
+
+Existing attention runs retain the explicit resume procedure. Failed cleanup
+never offers execution resume or changes the failed outcome to successful.
+
 ## PostgreSQL and deployment
 
 Renewal takes the shared execution-history guard and a `NOWAIT` ownership-row
 lock. It does not take the broad run advisory lock or load the run snapshot.
+Run transitions lock ownership before the run row and use `FOR NO KEY UPDATE`
+for state changes, allowing foreign-key parent checks. Renewal updates expiry and
+recovery pacing in one statement with one database timestamp.
 Authoritative run transactions have a PostgreSQL 18 total transaction timeout of
 15 seconds, including nested work. An interrupted client does not prove whether a
 commit happened: retry only the original command identity and reconcile its receipt.
@@ -105,3 +150,8 @@ rollback requires a reviewed forward repair that preserves recovery state.
 See the [PostgreSQL operator runbook](../production/postgresql_operator_runbook.md)
 for connection budgeting and the recovery resume procedure, and the
 [environment reference](../production/control_plane_environment.md) for settings.
+
+Do not roll back to a binary without this cleanup protocol while failed cleanup
+is pending/in attention or registration retry events remain active. There is no
+schema migration to enforce this application-level compatibility boundary; finish
+cleanup with a compatible binary or apply a forward fix, preserving target holds.

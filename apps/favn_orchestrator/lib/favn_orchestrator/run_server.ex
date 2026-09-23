@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.RunServer do
   alias FavnOrchestrator.RunExecutionCleanup
   alias FavnOrchestrator.RunManager
   alias FavnOrchestrator.RunServer.Execution
+  alias FavnOrchestrator.RunServer.FailureCleanup
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunServer.PersistenceRetry
@@ -56,16 +57,27 @@ defmodule FavnOrchestrator.RunServer do
 
   @impl true
   def handle_continue(:execute, %{run_state: run_state, version: version} = state) do
-    if RunState.finalized?(run_state) do
-      :ok = Execution.release_manifest_lease(run_state)
-      :ok = RunExecutionCleanup.release_admission(run_state)
-      {:stop, :normal, state |> Map.put(:run_state, run_state) |> Map.put(:execution_state, nil)}
-    else
-      with {:ok, state, owned_run} <- bind_storage_ownership(state, run_state) do
-        continue_start(state, owned_run, version)
-      else
-        {:error, reason} -> {:stop, {:shutdown, {:run_ownership_unavailable, reason}}, state}
-      end
+    cond do
+      FailureCleanup.pending?(run_state) ->
+        with {:ok, state, owned_run} <- bind_storage_ownership(state, run_state) do
+          start_failure_cleanup(state, owned_run, version)
+        else
+          {:error, reason} -> {:stop, {:shutdown, {:run_ownership_unavailable, reason}}, state}
+        end
+
+      RunState.finalized?(run_state) ->
+        :ok = Execution.release_manifest_lease(run_state)
+        :ok = RunExecutionCleanup.release_admission(run_state)
+
+        {:stop, :normal,
+         state |> Map.put(:run_state, run_state) |> Map.put(:execution_state, nil)}
+
+      true ->
+        with {:ok, state, owned_run} <- bind_storage_ownership(state, run_state) do
+          continue_start(state, owned_run, version)
+        else
+          {:error, reason} -> {:stop, {:shutdown, {:run_ownership_unavailable, reason}}, state}
+        end
     end
   end
 
@@ -78,6 +90,9 @@ defmodule FavnOrchestrator.RunServer do
         state = %{state | run_state: run}
 
         cond do
+          FailureCleanup.pending?(run) ->
+            start_failure_cleanup(state, run, version)
+
           RunState.finalized?(run) ->
             stop_normally(state, run)
 
@@ -135,6 +150,141 @@ defmodule FavnOrchestrator.RunServer do
         {:noreply, state}
     end
   end
+
+  def handle_info(:continue_failure_cleanup, %{failure_cleanup: cleanup} = state) do
+    operation = FailureCleanup.operation(cleanup)
+
+    case account_helper_memory(state, cleanup.run, {cleanup, operation, operation}) do
+      :ok ->
+        task =
+          FavnOrchestrator.RunHelper.async(cleanup.run, fn ->
+            FailureCleanup.perform(operation)
+          end)
+
+        {:noreply, Map.put(state, :cleanup_operation, %{ref: task.ref, operation: operation})}
+
+      {:error, reason} ->
+        {:stop, {:shutdown, {:cleanup_memory_limit, reason}}, state}
+    end
+  end
+
+  def handle_info(
+        {ref, result},
+        %{cleanup_operation: %{ref: ref, operation: operation}, failure_cleanup: cleanup} = state
+      ) do
+    Process.demonitor(ref, [:flush])
+    state = Map.delete(state, :cleanup_operation)
+
+    case FailureCleanup.apply_result(cleanup, operation, result) do
+      {:cont, next} ->
+        send(self(), :continue_failure_cleanup)
+        {:noreply, %{state | failure_cleanup: next, run_state: next.run}}
+
+      {:done, next} ->
+        stop_normally(state, next.run)
+
+      {kind, reason} when kind in [:retry, :error] ->
+        OperationalEvents.emit(
+          :run_cleanup_deferred,
+          %{},
+          %{run_id: cleanup.run.id, reason_code: "cleanup_reconciliation_pending"},
+          level: :warning
+        )
+
+        {:stop, {:shutdown, {:cleanup_deferred, reason}}, state}
+    end
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{cleanup_operation: %{ref: ref}} = state
+      ),
+      do: {:stop, {:shutdown, {:cleanup_worker_lost, reason}}, state}
+
+  def handle_info({ref, result}, %{failure_operation: %{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+
+    case result do
+      {:ok, failed} -> stop_normally(state, failed)
+      {:error, reason} -> {:stop, {:shutdown, {:failure_persistence_unconfirmed, reason}}, state}
+    end
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{failure_operation: %{ref: ref}} = state
+      ),
+      do: {:stop, {:shutdown, {:failure_persistence_unconfirmed, reason}}, state}
+
+  def handle_info({:favn_run_cancel_requested, _reason}, %{failure_cleanup: _} = state),
+    do: {:noreply, state}
+
+  def handle_info(:drain_deferred_execution, %{execution_persist_pending: _} = state),
+    do: {:noreply, Map.delete(state, :deferred_drain_scheduled)}
+
+  def handle_info(:drain_deferred_execution, state) do
+    state = Map.delete(state, :deferred_drain_scheduled)
+
+    case Map.get(state, :deferred_execution_events, []) do
+      [] ->
+        {:noreply, state}
+
+      [message | rest] ->
+        next = Map.put(state, :deferred_execution_events, rest)
+
+        case handle_info(message, next) do
+          {:noreply, next} -> {:noreply, replay_deferred_execution_events(next)}
+          other -> other
+        end
+    end
+  end
+
+  # Receipts precede the deferral clauses: they release the sequence mutation gate.
+  def handle_info(
+        {ref, result},
+        %{
+          execution_persist_pending: %{
+            ref: ref,
+            operation: operation,
+            base_sequence: sequence,
+            generation: generation
+          },
+          execution_state: execution
+        } = state
+      ) do
+    Process.demonitor(ref, [:flush])
+
+    if execution.run.event_seq == sequence and execution.run.storage_fencing_token == generation do
+      state = Map.delete(state, :execution_persist_pending)
+
+      execution =
+        case Map.get(state, :cancel_latched) do
+          {:favn_run_cancel_requested, reason} -> %{execution | cancel_requested: reason}
+          nil -> execution
+        end
+
+      handle_execution_result(state, Execution.finish_operation(execution, operation, result))
+    else
+      {:stop, {:shutdown, :execution_receipt_mismatch}, state}
+    end
+  end
+
+  def handle_info(
+        {:DOWN, ref, :process, _pid, _reason},
+        %{execution_persist_pending: %{ref: ref, operation: _}} = state
+      ),
+      do: {:stop, {:shutdown, :execution_operation_unconfirmed}, state}
+
+  def handle_info(
+        {:favn_run_cancel_requested, _} = message,
+        %{execution_persist_pending: %{operation: _}} = state
+      ),
+      do: {:noreply, state |> Map.put(:cancel_latched, message) |> defer_execution_event(message)}
+
+  def handle_info(:recover_next, %{execution_persist_pending: _} = state),
+    do: {:noreply, defer_execution_event(state, :recover_next)}
+
+  def handle_info(:recover_next, state), do: handle_execution_event(state, :recover_next)
 
   @impl true
   def handle_info(:continue_execution, %{execution_persist_pending: _} = state),
@@ -208,6 +358,14 @@ defmodule FavnOrchestrator.RunServer do
       ),
       do: {:noreply, defer_execution_event(state, message)}
 
+  def handle_info({kind, _token} = message, %{execution_persist_pending: _} = state)
+      when kind in [:registration_retry, :registration_deadline],
+      do: {:noreply, defer_execution_event(state, message)}
+
+  def handle_info({kind, _token} = message, state)
+      when kind in [:registration_retry, :registration_deadline],
+      do: handle_execution_event(state, message)
+
   def handle_info({:runner_result, execution_id, result}, state),
     do: handle_execution_event(state, {:runner_result, execution_id, result})
 
@@ -273,7 +431,8 @@ defmodule FavnOrchestrator.RunServer do
              :step_failed,
              :step_timed_out,
              :step_cancelled,
-             :step_settled
+             :step_settled,
+             :registration_retry_scheduled
            ],
       do: {:noreply, defer_execution_event(state, message)}
 
@@ -373,6 +532,27 @@ defmodule FavnOrchestrator.RunServer do
     end
   end
 
+  defp start_failure_cleanup(state, run, version) do
+    case FailureCleanup.new(run, version) do
+      {:ok, cleanup} ->
+        send(self(), :continue_failure_cleanup)
+
+        {:noreply,
+         state
+         |> Map.put(:execution_state, nil)
+         |> Map.put(:run_state, run)
+         |> Map.put(:failure_cleanup, cleanup)}
+
+      {:error, reason} ->
+        {:stop, {:shutdown, {:cleanup_inputs_unavailable, reason}}, state}
+    end
+  end
+
+  defp account_helper_memory(%{capacity_managed?: true}, run, retained),
+    do: RunManager.resize_active_run_memory(run, retained)
+
+  defp account_helper_memory(_state, _run, _retained), do: :ok
+
   defp resize_execution_memory(
          %{capacity_managed?: true},
          %RunState{} = run,
@@ -404,6 +584,8 @@ defmodule FavnOrchestrator.RunServer do
      })}
   end
 
+  defp continue_execution(%{execution_state: nil} = state), do: {:noreply, state}
+
   defp continue_execution(%{execution_state: %RunExecutionState{} = execution_state} = state) do
     handle_execution_result(state, Execution.handle_event(execution_state, :continue))
   end
@@ -413,6 +595,36 @@ defmodule FavnOrchestrator.RunServer do
          event
        ) do
     handle_execution_result(state, Execution.handle_event(execution_state, event))
+  end
+
+  defp handle_execution_event(state, _event), do: {:noreply, state}
+
+  defp handle_execution_result(state, {:operation, execution, operation}) do
+    retained = {execution, operation, operation, Map.get(state, :deferred_execution_events, [])}
+
+    case account_helper_memory(state, execution.run, retained) do
+      :ok ->
+        task =
+          FavnOrchestrator.RunHelper.async(execution.run, fn ->
+            Execution.perform_operation(operation)
+          end)
+
+        pending = %{
+          ref: task.ref,
+          operation: operation,
+          base_sequence: execution.run.event_seq,
+          generation: execution.run.storage_fencing_token
+        }
+
+        {:noreply,
+         state
+         |> Map.put(:run_state, execution.run)
+         |> Map.put(:execution_state, execution)
+         |> Map.put(:execution_persist_pending, pending)}
+
+      {:error, reason} ->
+        {:stop, {:shutdown, {:execution_memory_limit, reason}}, state}
+    end
   end
 
   defp handle_execution_result(state, {:cont, %RunExecutionState{} = execution_state}) do
@@ -465,9 +677,26 @@ defmodule FavnOrchestrator.RunServer do
 
   defp handle_execution_result(
          state,
+         {:recovery_required, %RunExecutionState{} = execution,
+          {:registration_retry_exhausted, _} = reason}
+       ) do
+    execution = Execution.stop_for_recovery(execution)
+    run = execution.run
+    task = FavnOrchestrator.RunHelper.async(run, fn -> FailureCleanup.fail(run, reason) end)
+
+    {:noreply,
+     state
+     |> Map.put(:execution_state, nil)
+     |> Map.put(:run_state, run)
+     |> Map.put(:failure_operation, %{ref: task.ref})}
+  end
+
+  defp handle_execution_result(
+         state,
          {:recovery_required, %RunExecutionState{} = execution_state, reason}
        ) do
-    FavnOrchestrator.RunServer.RecoveryAttention.record(execution_state.run, reason)
+    unless transient_recovery?(reason),
+      do: FavnOrchestrator.RunServer.RecoveryAttention.record(execution_state.run, reason)
 
     {:stop, {:shutdown, :run_execution_recovery_required},
      state
@@ -506,6 +735,14 @@ defmodule FavnOrchestrator.RunServer do
      |> Map.put(:execution_state, execution_state)
      |> Map.put(:execution_persist_pending, %{token: token, retry: retry, reason: reason})}
   end
+
+  defp transient_recovery?(%FavnOrchestrator.Persistence.Error{retryable?: true, kind: kind})
+       when kind in [:conflict, :unavailable, :timeout], do: true
+
+  defp transient_recovery?(reason) when is_tuple(reason),
+    do: reason |> Tuple.to_list() |> Enum.any?(&transient_recovery?/1)
+
+  defp transient_recovery?(_), do: false
 
   defp finalize_terminal(state, %RunState{} = terminal) do
     state = stop_post_step_workers(state)
@@ -730,16 +967,29 @@ defmodule FavnOrchestrator.RunServer do
   defp latest_run_snapshot(%RunState{} = fallback), do: fallback
 
   defp defer_execution_event(state, message) do
-    Map.update(state, :deferred_execution_events, [message], &[message | &1])
+    queue = Map.get(state, :deferred_execution_events, [])
+    queue = if message in queue, do: queue, else: queue ++ [message]
+    next = Map.put(state, :deferred_execution_events, queue)
+
+    case account_helper_memory(
+           next,
+           state.execution_state.run,
+           {state.execution_state, Map.get(state, :execution_persist_pending), queue}
+         ) do
+      :ok -> next
+      {:error, _} -> exit({:shutdown, :deferred_execution_memory_limit})
+    end
   end
 
   defp replay_deferred_execution_events(state) do
-    state
-    |> Map.get(:deferred_execution_events, [])
-    |> Enum.reverse()
-    |> Enum.each(&send(self(), &1))
-
-    Map.delete(state, :deferred_execution_events)
+    if Map.get(state, :deferred_execution_events, []) != [] and
+         not Map.has_key?(state, :execution_persist_pending) and
+         not Map.get(state, :deferred_drain_scheduled, false) do
+      send(self(), :drain_deferred_execution)
+      Map.put(state, :deferred_drain_scheduled, true)
+    else
+      state
+    end
   end
 
   defp cancel_pending_execution_resume(

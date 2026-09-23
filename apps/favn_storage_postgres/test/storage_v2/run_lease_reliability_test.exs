@@ -26,6 +26,224 @@ defmodule FavnStoragePostgres.StorageV2.RunLeaseReliabilityTest do
     :ok
   end
 
+  test "failed cleanup is durable, fenced, read-only and independently discoverable", f do
+    {:ok, original} = Runs.get_run(%GetRun{workspace_context: f.context, run_id: f.id})
+
+    info = %{
+      "version" => 1,
+      "state" => "pending",
+      "reason_code" => "registration_retry_exhausted",
+      "started_at" => DateTime.to_iso8601(DateTime.utc_now())
+    }
+
+    failed =
+      RunState.transition(original,
+        status: :error,
+        error: %{type: :recovery_exhausted},
+        metadata: %{"failure_cleanup" => info, :terminal_event_type => :run_failed}
+      )
+
+    assert {:ok, _} = commit_cleanup(f, original, failed, :run_failed)
+    {:ok, saved_failure} = Runs.get_run(%GetRun{workspace_context: f.context, run_id: f.id})
+    assert :ok = release(f)
+    make_due(f)
+    assert {:ok, []} = Store.recovery_candidates(f.context, 64)
+    assert {:ok, [id]} = Store.cleanup_candidates(f.context, 64)
+    assert id == f.id
+
+    assert {:error, %{kind: :conflict}} =
+             Store.claim_run(%{f.claim | command_id: "wrong-purpose"})
+
+    assert {:ok, cleanup} =
+             Store.claim_run(%{f.claim | command_id: "failed-cleanup", purpose: :cleanup})
+
+    f = %{f | ownership: cleanup}
+
+    assert {:ok, _} =
+             FavnStoragePostgres.RunnerTasks.Store.enqueue(read_command(f, "rt_cleanup", cleanup))
+
+    complete =
+      RunState.transition(failed,
+        metadata: Map.put(failed.metadata, "failure_cleanup", %{info | "state" => "complete"})
+      )
+
+    assert {:error, %{kind: :conflict}} =
+             commit_cleanup(f, failed, complete, :run_cleanup_completed)
+
+    assert {:error, %{kind: :conflict}} =
+             FavnStoragePostgres.Admission.Store.release_failed_run(%C.ReleaseFailedRunResources{
+               workspace_context: f.context,
+               run_id: f.id,
+               owner_id: cleanup.owner_id,
+               fencing_token: cleanup.fencing_token
+             })
+
+    # The exact helper inventory prevents a false success even without snapshot task ids.
+    assert failed.runner_task_id == nil
+
+    assert {:error, %{kind: :fenced}} =
+             commit_cleanup(f, failed, %{complete | status: :ok}, :run_finished)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runner_tasks SET status='cancelled',terminal_at=clock_timestamp() WHERE workspace_id=$1",
+      [f.id]
+    )
+
+    assert {:ok, _} =
+             FavnStoragePostgres.Admission.Store.release_failed_run(%C.ReleaseFailedRunResources{
+               workspace_context: f.context,
+               run_id: f.id,
+               owner_id: cleanup.owner_id,
+               fencing_token: cleanup.fencing_token
+             })
+
+    assert {:error, %{kind: :fenced}} =
+             commit_cleanup(
+               %{f | ownership: %{cleanup | fencing_token: cleanup.fencing_token - 1}},
+               failed,
+               complete,
+               :run_cleanup_completed
+             )
+
+    assert {:ok, _} = commit_cleanup(f, failed, complete, :run_cleanup_completed)
+    assert :ok = release(f)
+    make_due(f)
+    assert {:ok, []} = Store.cleanup_candidates(f.context, 64)
+    assert {:ok, saved} = Runs.get_run(%GetRun{workspace_context: f.context, run_id: f.id})
+    assert saved.status == :error
+    assert saved.error == saved_failure.error
+  end
+
+  test "cleanup completion cannot discard nonempty unknown write protection", f do
+    {:ok, original} = Runs.get_run(%GetRun{workspace_context: f.context, run_id: f.id})
+
+    info = %{
+      "version" => 1,
+      "state" => "pending",
+      "reason_code" => "automatic_recovery_exhausted"
+    }
+
+    failed =
+      RunState.transition(original,
+        status: :error,
+        error: %{type: :recovery_exhausted},
+        metadata: %{"failure_cleanup" => info, :terminal_event_type => :run_failed}
+      )
+
+    assert {:ok, _} = commit_cleanup(f, original, failed, :run_failed)
+    # A retained claim is the safety evidence even when the task itself is terminal.
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.materialization_claims
+        (workspace_id,claim_key,deployment_id,target_kind,target_id,partition_key,run_id,
+         claim_command_id,claim_request_hash,owner_id,fencing_token,status,expires_at,version,
+         inserted_at,updated_at,evidence_generation_id,effect_state,effect_task_id,effect_assignment_generation,effect_started_at)
+      SELECT workspace_id,'unknown-hold',deployment_id,target_kind,target_id,'latest',run_id,
+        'unknown-hold',decode(repeat('00',32),'hex'),'old-writer',1,'claimed',clock_timestamp(),1,
+        clock_timestamp(),clock_timestamp(),'retained-evidence','outcome_unknown','unknown-task',1,clock_timestamp()
+      FROM favn_control.run_targets WHERE workspace_id=$1 AND run_id=$1
+      """,
+      [f.id]
+    )
+
+    complete =
+      RunState.transition(failed,
+        metadata: Map.put(failed.metadata, "failure_cleanup", Map.put(info, "state", "complete"))
+      )
+
+    assert {:error, %{details: %{reason_code: "cleanup_write_hold_unresolved"}}} =
+             commit_cleanup(f, failed, complete, :run_cleanup_completed)
+
+    attention =
+      RunState.transition(failed,
+        metadata: Map.put(failed.metadata, "failure_cleanup", Map.put(info, "state", "attention"))
+      )
+
+    assert {:ok, _} = commit_cleanup(f, failed, attention, :run_cleanup_attention)
+
+    assert %{rows: [["claimed", "outcome_unknown"]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status,effect_state FROM favn_control.materialization_claims WHERE workspace_id=$1",
+               [f.id]
+             )
+
+    assert {:ok, []} = Store.cleanup_candidates(f.context, 64)
+  end
+
+  test "old failed cleanup retains its history until cleanup is complete", f do
+    assert :ok = release(f)
+    old = DateTime.add(DateTime.utc_now(), -90, :day)
+    cutoff = DateTime.add(DateTime.utc_now(), -30, :day)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET terminal_at=$2,status='error',snapshot=jsonb_set(snapshot,'{metadata}', $3::jsonb) WHERE workspace_id=$1",
+      [f.id, old, %{"failure_cleanup" => %{"version" => 1, "state" => "pending"}}]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.run_ownerships SET expires_at=$2,updated_at=$2 WHERE workspace_id=$1",
+      [f.id, old]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.outbox_events SET publication_id=outbox_event_id,published_at=$2 WHERE workspace_id=$1",
+      [f.id, old]
+    )
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.projection_cursors SET last_publication_id=(SELECT COALESCE(max(publication_id),0) FROM favn_control.outbox_events)",
+      []
+    )
+
+    SQL.query!(Repo, "DELETE FROM favn_control.target_statuses WHERE workspace_id=$1", [f.id])
+    SQL.query!(Repo, "DELETE FROM favn_control.asset_window_states WHERE workspace_id=$1", [f.id])
+
+    %{rows: workspaces} =
+      SQL.query!(
+        Repo,
+        "SELECT workspace_id FROM favn_control.workspaces WHERE workspace_id<>$1",
+        [f.id]
+      )
+
+    policy = %FavnOrchestrator.Retention.Policy{excluded_workspace_ids: List.flatten(workspaces)}
+    assert %{eligible_count: 0} = FavnStoragePostgres.Maintenance.History.preview!(policy, cutoff)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET snapshot=jsonb_set(snapshot,'{metadata,failure_cleanup,state}','\"attention\"') WHERE workspace_id=$1",
+      [f.id]
+    )
+
+    assert %{eligible_count: 0} = FavnStoragePostgres.Maintenance.History.preview!(policy, cutoff)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runs SET snapshot=jsonb_set(snapshot,'{metadata,failure_cleanup,state}','\"complete\"') WHERE workspace_id=$1",
+      [f.id]
+    )
+
+    assert %{eligible_count: 1} = FavnStoragePostgres.Maintenance.History.preview!(policy, cutoff)
+  end
+
+  defp commit_cleanup(f, before, after_run, event) do
+    Runs.commit_transition(%C.CommitRunTransition{
+      workspace_context: f.context,
+      command_id: "cleanup-#{event}-#{after_run.event_seq}-#{f.ownership.fencing_token}",
+      expected_sequence: before.event_seq,
+      run: after_run,
+      owner_id: f.ownership.owner_id,
+      fencing_token: f.ownership.fencing_token,
+      event: Projector.run_event(after_run, event, %{})
+    })
+  end
+
   test "fresh migration matches the supported schema" do
     assert {:ok, diagnostics} = FavnStoragePostgres.StorageV2.Migrations.diagnostics(Repo)
     assert diagnostics.ready?, inspect(diagnostics)
@@ -102,6 +320,109 @@ defmodule FavnStoragePostgres.StorageV2.RunLeaseReliabilityTest do
     send(pid, :release)
     Task.await(holder)
     assert {:ok, _} = Store.renew_run(renewal(f))
+  end
+
+  test "a waiting transition never holds the parent row ahead of ownership", f do
+    {:ok, run} = Runs.get_run(%GetRun{workspace_context: f.context, run_id: f.id})
+    next = RunState.transition(run, status: :running)
+
+    command = %C.CommitRunTransition{
+      workspace_context: f.context,
+      command_id: "transition-" <> f.id,
+      expected_sequence: run.event_seq,
+      run: next,
+      owner_id: f.ownership.owner_id,
+      fencing_token: f.ownership.fencing_token,
+      event: Projector.run_event(next, :run_started, %{})
+    }
+
+    parent = self()
+
+    holder =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            "SELECT 1 FROM favn_control.run_ownerships WHERE workspace_id=$1 AND run_id=$2 FOR UPDATE",
+            [f.id, f.id]
+          )
+
+          send(parent, {:ownership_held, self()})
+          receive do: (:release -> :ok)
+        end)
+      end)
+
+    assert_receive {:ownership_held, holder_pid}, 2_000
+
+    reader =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          %{rows: [[pid]]} = SQL.query!(Repo, "SELECT pg_backend_pid()", [])
+          send(parent, {:snapshot_reader, pid})
+          Runs.commit_transition(command)
+        end)
+      end)
+
+    assert_receive {:snapshot_reader, backend}, 2_000
+    await_lock_wait(backend, 100)
+
+    try do
+      # This is the same parent-row lock needed by the ownership FK check.
+      assert {:ok, _} =
+               Repo.transaction(fn ->
+                 SQL.query!(
+                   Repo,
+                   "SELECT 1 FROM favn_control.runs WHERE workspace_id=$1 AND run_id=$2 FOR KEY SHARE NOWAIT",
+                   [f.id, f.id]
+                 )
+               end)
+    after
+      send(holder_pid, :release)
+      Task.await(holder)
+      Task.await(reader)
+    end
+  end
+
+  test "state-only run locks are compatible with parent foreign-key checks", f do
+    parent = self()
+
+    holder =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          assert {:ok, _} = Runs.locked_snapshot(f.id, f.id)
+          send(parent, {:snapshot_held, self()})
+          receive do: (:release -> :ok)
+        end)
+      end)
+
+    assert_receive {:snapshot_held, pid}, 2_000
+
+    try do
+      assert {:ok, _} =
+               Repo.transaction(fn ->
+                 SQL.query!(
+                   Repo,
+                   "SELECT 1 FROM favn_control.runs WHERE workspace_id=$1 AND run_id=$2 FOR KEY SHARE NOWAIT",
+                   [f.id, f.id]
+                 )
+               end)
+    after
+      send(pid, :release)
+      Task.await(holder)
+    end
+  end
+
+  defp await_lock_wait(_pid, 0), do: flunk("snapshot reader did not wait on ownership")
+
+  defp await_lock_wait(pid, attempts) do
+    case SQL.query!(Repo, "SELECT wait_event_type FROM pg_stat_activity WHERE pid=$1", [pid]).rows do
+      [["Lock"]] ->
+        :ok
+
+      _ ->
+        Process.sleep(10)
+        await_lock_wait(pid, attempts - 1)
+    end
   end
 
   test "ordinary pool saturation leaves reserved renewal capacity available", f do

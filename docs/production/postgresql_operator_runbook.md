@@ -532,6 +532,15 @@ durable task state before proceeding. Do not edit run statuses, delete locks,
 extend expired leases, or rerun an unknown write to unblock recovery. No data
 migration is required.
 
+### Failed execution with cleanup attention
+
+The run detail notice lists bounded reason codes and exact task IDs. Inspect
+those original tasks before resolving an affected target. For `unknown_write`
+or `unknown_helper_write`, a workspace administrator must follow the
+[held-write resolution procedure](elastic_runners.md#resolve-a-held-write),
+including proof that the runner and backend have stopped. Failed execution stays
+failed; cleanup does not offer Resume or authorize another asset attempt.
+
 ## PostgreSQL upgrades
 
 Minor upgrades require CI, restore-drill, and canary evidence. A major upgrade also
@@ -634,6 +643,17 @@ cannot read new-format tasks.
 
 
 ## Resume a run that needs recovery attention
+
+New transient generation-registration failures retry automatically. When the
+budget is exhausted, the run fails and cleanup continues automatically, including
+after orchestrator restart. A failed run's cleanup status is separate from its
+execution result. Pending cleanup needs no resume click. Cleanup attention means
+unresolved evidence remains protected; inspect the affected task/target before
+using its existing target recovery workflow. Never clear a target hold to make a
+failed run look complete. See the [cleanup contract](../architecture/run-ownership-and-recovery.md#registration-retries-and-failed-run-cleanup).
+
+The procedure below applies to existing nonterminal attention runs; an upgrade
+does not automatically resume them.
 
 Inspect the run's attention reason, revision, attempts and last confirmed renewal.
 Resolve the cause and check any unresolved external write before resuming. Resume

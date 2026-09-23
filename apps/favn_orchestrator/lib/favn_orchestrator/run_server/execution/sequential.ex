@@ -77,7 +77,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     metadata = ResultSanitizer.merge_metadata(state.run.metadata, result.metadata)
 
     retry_delay =
-      if retryable? and
+      if not failed_cleanup?(state.run) and retryable? and
            StepAttemptLifecycle.retry_allowed?(state.run, entry.node_key, entry.attempt) do
         if entry[:recovered_outcome],
           do: Map.get(entry.recovered_outcome.data, "retry_after_ms"),
@@ -218,7 +218,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     settled = RunState.transition(resume.run, [])
 
     retryable? =
-      resume.retryable? and
+      not failed_cleanup?(settled) and resume.retryable? and
         StepAttemptLifecycle.retry_allowed?(settled, resume.entry.node_key, resume.entry.attempt)
 
     data = %{
@@ -246,6 +246,9 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     state = %{state | run: resume.run}
 
     cond do
+      failed_cleanup?(state.run) ->
+        {:terminal, state.run}
+
       Persistence.externally_cancelled?(state.run) ->
         {:terminal,
          Snapshots.cancelled_terminal(
@@ -369,6 +372,9 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   def refs(%RunState{} = run_state),
     do: [{run_state.asset_ref, {run_state.asset_ref, nil}, 0}]
+
+  defp failed_cleanup?(run),
+    do: run.status == :error and is_map(run.metadata["failure_cleanup"])
 
   defp submit_attempt(
          %RunExecutionState{} = state,

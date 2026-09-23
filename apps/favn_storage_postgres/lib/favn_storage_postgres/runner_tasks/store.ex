@@ -295,11 +295,16 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   @impl true
   def transition(%C.TransitionRunnerTask{} = command) do
     idempotent_transact(command, "transition", fn ->
+      lock_cancellation_owner!(command)
       task = fenced_task!(command)
       validate_transition!(command)
 
-      if command.transition in [:preparing, :running],
-        do: admit_deployment_task!(task, command.occurred_at)
+      if command.transition in [:preparing, :running] do
+        if failed_run_cleanup?(task) and not CleanupReads.authorized?(task),
+          do: Repo.rollback(Error.new(:fenced, "failed execution cannot start work"))
+
+        admit_deployment_task!(task, command.occurred_at)
+      end
 
       {status, expires_at} = transition_values!(task, command)
 
@@ -3382,7 +3387,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       is_nil(task) ->
         choose_claim_candidate(rest, command)
 
-      CancellationOwnership.cancelled?(task.workspace_id, task.run_id) and
+      (CancellationOwnership.cancelled?(task.workspace_id, task.run_id) or
+         failed_run_cleanup?(task)) and
           not CleanupReads.authorized?(task) ->
         if WriteOwnership.try_lock_target!(task.workspace_id, task.write_target_id) do
           WriteOwnership.finish_unstarted!(task)
@@ -3403,6 +3409,19 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
           choose_claim_candidate(rest, command)
         end
     end
+  end
+
+  defp failed_run_cleanup?(%{run_id: nil}), do: false
+
+  defp failed_run_cleanup?(task) do
+    Repo.exists?(
+      from(r in Run,
+        where:
+          r.workspace_id == ^task.workspace_id and r.run_id == ^task.run_id and
+            r.status == "error" and
+            fragment("? #>> '{metadata,failure_cleanup,version}' = '1'", r.snapshot)
+      )
+    )
   end
 
   defp claim_target_ready?(%RunnerTask{write_target_id: nil}, _command), do: true

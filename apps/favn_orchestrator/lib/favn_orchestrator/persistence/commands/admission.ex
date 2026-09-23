@@ -294,3 +294,10 @@ defmodule FavnOrchestrator.Persistence.Commands.ReleaseCompletedExecution do
           owner_generation: pos_integer()
         }
 end
+
+defmodule FavnOrchestrator.Persistence.Commands.ReleaseFailedRunResources do
+  @moduledoc "Releases one bounded cleanup batch under current authority after all exact-run tasks are terminal."
+  @enforce_keys [:workspace_context, :run_id, :owner_id, :fencing_token]
+  defstruct @enforce_keys ++ [limit: 100]
+  @type t :: %__MODULE__{}
+end

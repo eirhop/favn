@@ -109,6 +109,9 @@ defmodule FavnStoragePostgres.Admission.Store do
         %FavnOrchestrator.Persistence.Commands.ReleaseCompletedExecution{} = command
       ) do
     transaction(fn ->
+      unless workspace_context?(command.workspace_context),
+        do: Repo.rollback(Error.new(:invalid, "invalid cleanup workspace context"))
+
       workspace = command.workspace_context.workspace_id
       FavnStoragePostgres.CancellationOwnership.lock!(workspace, command.run_id)
       ownership = lock_run_ownership!(workspace, command.run_id)
@@ -532,6 +535,106 @@ defmodule FavnStoragePostgres.Admission.Store do
     else
       Repo.rollback(Error.new(:fenced, "execution lease cannot be released"))
     end
+  end
+
+  @impl true
+  def release_failed_run(
+        %FavnOrchestrator.Persistence.Commands.ReleaseFailedRunResources{} = command
+      ) do
+    transaction(fn ->
+      unless workspace_context?(command.workspace_context),
+        do: Repo.rollback(Error.new(:invalid, "invalid cleanup workspace context"))
+
+      workspace = command.workspace_context.workspace_id
+      FavnStoragePostgres.CancellationOwnership.lock!(workspace, command.run_id)
+
+      authority = %{
+        workspace_id: workspace,
+        run_id: command.run_id,
+        owner_id: command.owner_id,
+        fencing_token: command.fencing_token
+      }
+
+      FavnStoragePostgres.RunOwnership.Store.validate_failed_cleanup!(authority)
+
+      unless is_integer(command.limit) and command.limit in 1..500,
+        do: Repo.rollback(Error.new(:invalid, "invalid cleanup release limit"))
+
+      assert_no_active_tasks!(workspace, command.run_id)
+      released = release_run_leases!(command)
+
+      if released.released_lease_ids == [] and released.expired_waiter_ids == [] do
+        assert_no_cleanup_resources!(workspace, command.run_id)
+      end
+
+      FavnStoragePostgres.RunOwnership.Store.validate_failed_cleanup!(authority)
+      released
+    end)
+  end
+
+  @doc false
+  def assert_no_active_tasks!(workspace, run_id) do
+    if Repo.exists?(
+         from(t in FavnStoragePostgres.Schemas.RunnerTask,
+           where:
+             t.workspace_id == ^workspace and t.run_id == ^run_id and
+               t.status in ["queued", "assigned", "preparing", "running", "cancelling"]
+         )
+       ),
+       do:
+         Repo.rollback(
+           Error.new(:conflict, "failed cleanup still has active tasks", retryable?: true)
+         )
+  end
+
+  @doc false
+  def assert_no_cleanup_resources!(workspace, run_id) do
+    leases? =
+      Repo.exists?(
+        from(l in ExecutionLease,
+          where: l.workspace_id == ^workspace and l.run_id == ^run_id and l.status == "active"
+        )
+      )
+
+    waiters? =
+      Repo.exists?(
+        from(w in AdmissionWaiter,
+          where:
+            w.workspace_id == ^workspace and w.run_id == ^run_id and
+              w.status in ["waiting", "claimed"]
+        )
+      )
+
+    if leases? or waiters?,
+      do: Repo.rollback(Error.new(:conflict, "cleanup resources remain busy", retryable?: true))
+  end
+
+  @doc false
+  def assert_no_unresolved_write_holds!(workspace, run_id) do
+    %{rows: [[held]]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT EXISTS (
+          SELECT 1 FROM favn_control.materialization_claims c
+          WHERE c.workspace_id=$1 AND c.effect_state IN ('in_flight','outcome_unknown')
+            AND (c.run_id=$2 OR c.effect_task_id IN (SELECT task_id FROM favn_control.runner_tasks WHERE workspace_id=$1 AND run_id=$2))
+          UNION ALL
+          SELECT 1 FROM favn_control.target_operation_locks l
+          WHERE l.workspace_id=$1 AND l.effect_state IN ('in_flight','outcome_unknown')
+            AND l.effect_task_id IN (SELECT task_id FROM favn_control.runner_tasks WHERE workspace_id=$1 AND run_id=$2)
+        )
+        """,
+        [workspace, run_id]
+      )
+
+    if held,
+      do:
+        Repo.rollback(
+          Error.new(:conflict, "unresolved target write protection remains",
+            details: %{reason_code: "cleanup_write_hold_unresolved"}
+          )
+        )
   end
 
   defp release_run_leases!(command) do

@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   blocking execution call stack.
   """
 
+  alias FavnOrchestrator.ExecutionAdmission.Coordinator
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
@@ -79,6 +80,9 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           terminal_failure: map() | nil,
           pipeline_continuation: map() | nil,
           recovery: map() | nil,
+          recovery_queue: :queue.queue(),
+          cancel_requested: term(),
+          registration_retries: map(),
           paused_admission: map() | nil
         }
 
@@ -96,6 +100,9 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             admission_timers: %{},
             admission_waiters: %{},
             post_step_continuations: %{},
+            registration_retries: %{},
+            recovery_queue: {[], []},
+            cancel_requested: nil,
             accumulated_results: [],
             sequential_refs: [],
             sequential_index: 0,
@@ -248,6 +255,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   @doc "Stores persisted admission waiters owned by this run server."
   @spec put_admission_waiters(t(), [map()]) :: t()
   def put_admission_waiters(%__MODULE__{} = state, waiters) when is_list(waiters) do
+    Enum.each(waiters, fn waiter -> :ok = Coordinator.register(waiter, self()) end)
     next_waiters = Map.new(waiters, &{&1.waiter_id, &1})
     %{state | admission_waiters: Map.merge(state.admission_waiters, next_waiters)}
   end

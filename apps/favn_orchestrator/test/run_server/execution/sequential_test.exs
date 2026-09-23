@@ -1,4 +1,6 @@
 defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
+  alias FavnTestSupport.ExecutionDriver
+
   use ExUnit.Case, async: false
 
   alias Favn.Manifest.Version
@@ -12,7 +14,6 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.Persistence.Results.RunnerTask
   alias FavnOrchestrator.Persistence.Stores
-  alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunServer.Execution.Sequential
@@ -311,7 +312,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       else
         if disposition == :uncertain do
           assert {:persist_retry, paused, retry, %{kind: :timeout}} = Sequential.continue(state)
-          assert {:recovery_required, _, _} = Execution.retry_persistence(paused, retry)
+          assert {:recovery_required, _, _} = ExecutionDriver.retry_persistence(paused, retry)
           refute_received {:commit_transition, %{event: %{event_type: :step_failed}}}
         else
           assert {:terminal, _} = Sequential.continue(state)
@@ -548,7 +549,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     assert {:persist_retry, retry_state,
             %PersistenceRetry{event_type: :step_failed, data: %{asset_ref: ^ref}} = retry,
             :forced_failure} =
-             Execution.handle_event(state, {:runner_result, task_id, {:ok, result}})
+             ExecutionDriver.handle_event(state, {:runner_result, task_id, {:ok, result}})
 
     assert_receive {:commit_transition, command}
     assert command.event.event_type == :step_failed
@@ -560,7 +561,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     Process.put({FakeStore, :commit_transition}, :succeed)
     on_exit(fn -> Process.delete({FakeStore, :commit_transition}) end)
 
-    assert {:terminal, failed} = Execution.retry_persistence(retry_state, retry)
+    assert {:terminal, failed} = ExecutionDriver.retry_persistence(retry_state, retry)
     assert failed.status == :error
     assert failed.error.outcome == :unknown
     assert_receive {:put_execution_checkpoint, checkpoint}
@@ -719,7 +720,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
     assert {:persist_retry, retry_state, %PersistenceRetry{event_type: :step_finished} = retry,
             :forced_failure} =
-             Execution.handle_event(state, {:runner_result, task_id, {:ok, result}})
+             ExecutionDriver.handle_event(state, {:runner_result, task_id, {:ok, result}})
 
     assert_receive {:release_execution_lease, %{lease_id: "lease-persistence-retry-refill"}}
     refute_received {:admit_execution, _command}
@@ -727,10 +728,60 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     Process.put({FakeStore, :commit_transition}, :succeed)
     on_exit(fn -> Process.delete({FakeStore, :commit_transition}) end)
 
-    assert {:terminal, failed} = Execution.retry_persistence(retry_state, retry)
+    assert {:terminal, failed} = ExecutionDriver.retry_persistence(retry_state, retry)
     assert failed.status == :error
     assert_receive {:runner_admission, %{enqueue: %{run_id: "run-persistence-retry-refill"}}}
     refute_receive {:release_execution_lease, _duplicate}
+  end
+
+  test "failed sequential cleanup settles the accepted result without materialization completion or advancement" do
+    alias FavnOrchestrator.RunServer.FailureCleanup
+    ref = {__MODULE__.Asset, :cleanup}
+
+    run =
+      RunState.new(
+        id: "failed-sequential",
+        workspace_id: "ws-cleanup",
+        manifest_version_id: "mv",
+        manifest_content_hash: "sha256:mv",
+        asset_ref: ref,
+        target_refs: [ref],
+        runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
+      )
+
+    run =
+      RunState.transition(run,
+        status: :error,
+        error: :original_failure,
+        metadata: %{
+          "failure_cleanup" => %{"version" => 1, "state" => "pending"},
+          :terminal_event_type => :run_failed
+        }
+      )
+
+    entry = %{
+      run_id: run.id,
+      asset_ref: ref,
+      node_key: {ref, nil},
+      window: nil,
+      asset_step_id: "step",
+      task_id: "task",
+      stage: 0,
+      attempt: 1,
+      materialization_claim: %{purpose: :ownership_only}
+    }
+
+    result = %RunnerResult{run_id: run.id, status: :ok, asset_results: []}
+    Process.put({FakeStore, :commit_transition}, :succeed)
+
+    assert {:terminal, settled} =
+             FailureCleanup.perform({:settle_sequential, run, entry, {:ok, result}})
+
+    assert settled.status == :error
+    assert settled.error == :original_failure
+    assert_receive {:commit_transition, %{event: %{event_type: :step_finished}}}
+    assert_receive {:commit_transition, %{event: %{event_type: :step_settled}}}
+    refute_received {:runner_admission, _}
   end
 
   test "sequential confirmed-result cleanup keeps one release owner" do
@@ -800,7 +851,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
     assert {:persist_retry, _state, %PersistenceRetry{event_type: :step_finished},
             :forced_failure} =
-             Execution.handle_event(state, {:runner_result, task_id, {:ok, result}})
+             ExecutionDriver.handle_event(state, {:runner_result, task_id, {:ok, result}})
 
     assert_receive {:commit_transition, command}
     assert command.event.event_type == :step_finished
@@ -847,7 +898,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     }
 
     assert {:terminal, failed} =
-             Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+             ExecutionDriver.handle_event(state, {:attempt_timeout, task_id, timeout_token})
 
     assert failed.status == :error
     assert failed.error.type == :runner_await_outcome_unconfirmed
@@ -934,11 +985,11 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       if unquote(readable?) do
         assert {:persist_retry, _state, %PersistenceRetry{event_type: :step_finished},
                 :forced_failure} =
-                 Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+                 ExecutionDriver.handle_event(state, {:attempt_timeout, task_id, timeout_token})
       else
         assert {:recovery_required, recovering,
                 {:completed_runner_result_unavailable, ^task_id, %{kind: :unavailable}}} =
-                 Execution.handle_event(state, {:attempt_timeout, task_id, timeout_token})
+                 ExecutionDriver.handle_event(state, {:attempt_timeout, task_id, timeout_token})
 
         assert ActiveTaskSet.active_runner_task_ids(recovering.run) == [task_id]
         refute_received {:release_execution_lease, _}

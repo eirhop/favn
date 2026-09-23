@@ -1,4 +1,6 @@
 defmodule FavnOrchestrator.RunServer.Execution.StepRunningPersistTest do
+  alias FavnTestSupport.ExecutionDriver
+
   use ExUnit.Case, async: false
 
   alias FavnOrchestrator.Events
@@ -6,7 +8,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StepRunningPersistTest do
   alias FavnOrchestrator.Persistence.Results.RunCommitted
   alias FavnOrchestrator.Persistence.Runtime
   alias FavnOrchestrator.Persistence.Stores
-  alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
   alias FavnOrchestrator.RunState
 
@@ -67,7 +68,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StepRunningPersistTest do
 
     state = %RunExecutionState{run: run, awaits: %{task_id => await}}
 
-    assert {:cont, next} = Execution.handle_event(state, {:runner_task_started, task_id, %{}})
+    assert {:cont, next} =
+             ExecutionDriver.handle_event(state, {:runner_task_started, task_id, %{}})
 
     assert_receive {:run_transition_committed, %CommitRunTransition{} = command}
     assert command.expected_sequence == run.event_seq
@@ -79,7 +81,9 @@ defmodule FavnOrchestrator.RunServer.Execution.StepRunningPersistTest do
     assert next.run.event_seq == run.event_seq + 1
     assert %{started_persisted?: true} = next.awaits[task_id]
 
-    assert {:cont, ^next} = Execution.handle_event(next, {:runner_task_started, task_id, %{}})
+    assert {:cont, ^next} =
+             ExecutionDriver.handle_event(next, {:runner_task_started, task_id, %{}})
+
     refute_receive {:run_transition_committed, _command}, 20
   end
 

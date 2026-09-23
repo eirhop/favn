@@ -1,4 +1,6 @@
 defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
+  alias FavnTestSupport.ExecutionDriver
+
   use ExUnit.Case, async: true
 
   alias FavnOrchestrator.RunServer.Execution
@@ -27,13 +29,13 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
     }
 
     assert {:cont, ^state} =
-             Execution.handle_event(
+             ExecutionDriver.handle_event(
                state,
                {:runner_await_down, task_id, make_ref(), :stale}
              )
 
     assert {:cont, ^state} =
-             Execution.handle_event(state, {:attempt_timeout, task_id, make_ref()})
+             ExecutionDriver.handle_event(state, {:attempt_timeout, task_id, make_ref()})
   end
 
   test "runner started signals are ignored without a live, unpersisted await" do
@@ -42,7 +44,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
     missing = %RunExecutionState{awaits: %{}}
 
     assert {:cont, ^missing} =
-             Execution.handle_event(missing, {:runner_task_started, task_id, %{}})
+             ExecutionDriver.handle_event(missing, {:runner_task_started, task_id, %{}})
 
     await = %{
       pid: self(),
@@ -57,7 +59,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
     persisted = %RunExecutionState{awaits: %{task_id => await}}
 
     assert {:cont, ^persisted} =
-             Execution.handle_event(persisted, {:runner_task_started, task_id, %{}})
+             ExecutionDriver.handle_event(persisted, {:runner_task_started, task_id, %{}})
   end
 
   test "stale admission generations do not remove the current waiter" do
@@ -65,7 +67,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
     state = %RunExecutionState{admission_waiters: %{waiter.waiter_id => waiter}}
 
     assert {:cont, ^state} =
-             Execution.handle_event(
+             ExecutionDriver.handle_event(
                state,
                {:execution_admission_wakeup, waiter.waiter_id, 1}
              )
@@ -113,7 +115,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
     }
 
     assert {:cont, next} =
-             Execution.handle_event(state, {:stage_admission_timeout, timer_token})
+             ExecutionDriver.handle_event(state, {:stage_admission_timeout, timer_token})
 
     assert next.status == :admission_wait
     assert next.awaits == state.awaits
@@ -121,7 +123,7 @@ defmodule FavnOrchestrator.RunServer.Execution.ExecutionEventTest do
     assert next.admission_timers == %{}
 
     assert {:cont, ^next} =
-             Execution.handle_event(next, {:stage_admission_timeout, timer_token})
+             ExecutionDriver.handle_event(next, {:stage_admission_timeout, timer_token})
   end
 
   test "batch-budget refills are immediate only before the admission deadline" do

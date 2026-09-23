@@ -59,9 +59,43 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
         opts \\ []
       )
       when is_tuple(asset_ref) and is_atom(task_kind) and is_list(opts) do
+    case Keyword.get(opts, :cleanup_generation) do
+      generation
+      when is_integer(generation) and
+             task_kind in [
+               :relation_inspection,
+               :generation_capabilities,
+               :generation_marker_read
+             ] ->
+        original_id = task_id(context.workspace_id, task_kind, domain_identity, version)
+
+        with {:ok, original} <- existing_task(context, original_id) do
+          identity =
+            if original && original.status == :succeeded,
+              do: domain_identity,
+              else: {:failed_run_cleanup, generation, domain_identity}
+
+          ensure(
+            context,
+            version,
+            asset_ref,
+            task_kind,
+            payload,
+            identity,
+            Keyword.delete(opts, :cleanup_generation)
+          )
+        end
+
+      _ ->
+        ensure_task(context, version, asset_ref, task_kind, payload, domain_identity, opts)
+    end
+  end
+
+  defp ensure_task(context, version, asset_ref, task_kind, payload, domain_identity, opts) do
     task_id = task_id(context.workspace_id, task_kind, domain_identity, version)
 
-    with {:ok, existing_task} <- existing_task(context, task_id) do
+    with {:ok, existing_task} <- existing_task(context, task_id),
+         :ok <- reconciliation_read(existing_task, opts) do
       occurred_at =
         (existing_task && existing_task.enqueued_at) ||
           Keyword.get(opts, :occurred_at, DateTime.utc_now())
@@ -106,11 +140,29 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
         }
 
         with {:ok, task} <- ensure_persisted(context, existing_task, command),
-             do: maybe_retry_safe(context, task)
+             do:
+               if(Keyword.get(opts, :reconcile_only?, false),
+                 do: {:ok, task},
+                 else: maybe_retry_safe(context, task)
+               )
       else
         :error -> {:error, {:unsupported_runner_task_kind, task_kind}}
         {:error, _reason} = error -> error
       end
+    end
+  end
+
+  defp reconciliation_read(task, opts) do
+    if Keyword.get(opts, :reconcile_only?, false) and
+         (is_nil(task) or task.status not in @terminal_statuses) do
+      {:error,
+       FavnOrchestrator.Persistence.Error.new(
+         :unavailable,
+         "existing registration evidence is not terminal",
+         retryable?: true
+       )}
+    else
+      :ok
     end
   end
 

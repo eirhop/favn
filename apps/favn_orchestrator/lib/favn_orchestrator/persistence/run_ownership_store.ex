@@ -27,6 +27,9 @@ defmodule FavnOrchestrator.Persistence.RunOwnershipStore do
   @callback recovery_candidates(FavnOrchestrator.Persistence.WorkspaceContext.t(), pos_integer()) ::
               {:ok, [String.t()]} | {:error, Error.t()}
 
+  @callback cleanup_candidates(FavnOrchestrator.Persistence.WorkspaceContext.t(), pos_integer()) ::
+              {:ok, [String.t()]} | {:error, Error.t()}
+
   @callback claim_run(ClaimRun.t()) :: {:ok, RunOwnership.t()} | {:error, Error.t()}
   @callback claim_recovery_batch(ClaimRecoveryBatch.t()) ::
               {:ok, [RunOwnership.t()]} | {:error, Error.t()}
