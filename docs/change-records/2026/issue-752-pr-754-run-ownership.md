@@ -703,8 +703,8 @@ rechecks cancellation ownership for both parent and member before committing.
 CLI, service API and the existing run detail page expose the same operation.
 The old RunServer heartbeat and best-effort attention paths are removed.
 
-Implementation verification and final independent acceptance are still underway;
-the status remains `Implementing`. No production deployment is implied.
+Implementation and independent review are complete. Final-head CI and the
+listed release/deployment gates remain required. No production deployment is implied.
 
 ## Deviations from the approved plan
 
