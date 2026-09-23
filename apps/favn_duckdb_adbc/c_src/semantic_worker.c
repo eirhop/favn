@@ -160,7 +160,10 @@ static void test_signal(char signal_name) {
     if (!path) return;
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
     if (fd < 0) return;
-    write(fd, &signal_name, 1);
+    if (write(fd, &signal_name, 1) != 1) {
+        close(fd);
+        return;
+    }
     close(fd);
 }
 #endif

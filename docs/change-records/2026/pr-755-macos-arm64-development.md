@@ -811,7 +811,7 @@ invocations in Favn-owned paths. Production release identity remains Linux/amd64
 The Python-free architecture follows the separately approved amendment. There
 is no new public DSL, persistence backend, migration, or production target.
 `git diff --numstat` including new files, excluding this record and generated
-artifacts, reports **1,009 production lines added / 492 deleted** and **1,315
+artifacts, reports **1,012 production lines added / 492 deleted** and **1,315
 test, fixture, script, CI and canonical-documentation lines added / 296
 deleted**. All four counts are within the amended ranges. The authoring test
 correction, queued-receipt race fix and focused protocol/fault fixtures arose
@@ -839,7 +839,7 @@ unexplained overrun or retained Python implementation.
 | Disposable native PostgreSQL 18.6 | Temporary cluster started with restricted runtime role; used by the separate-node lifecycle acceptance | Temporary local test instance, not production deployment |
 | Partial Python lifecycle adaptation | Failed before native PID receipt; stopped when owner rejected Python-based approach | Superseded work, not a passing regression suite |
 | Python-free source guard | Passed on the target Mac; no tracked or untracked Python source or active invocation remained | Static source check, not proof about unrelated third-party dependencies |
-| Native worker build | `mix compile --warnings-as-errors` built C with `-Wall -Wextra -Werror` on macOS 26.5.1 arm64; target Elixir 1.20.4 and OTP 29.1 | Linux build awaits CI |
+| Native worker build | `mix compile --warnings-as-errors` built C with `-Wall -Wextra -Werror` on macOS 26.5.1 arm64; target Elixir 1.20.4 and OTP 29.1. Hosted Linux and macOS production worker builds passed. | The fault-enabled Linux test build still requires the next CI run after its correction |
 | Native semantic, lifecycle and artifact tests | 31 passed together on macOS with pinned DuckDB 1.5.5 after the protocol/fault and malformed-option additions | Native plugin layer; Linux run awaits CI |
 | Separate-node source lifecycle | 1 acceptance test passed against restricted-role PostgreSQL 18.6 on the target Mac; start, reload, replacement, stop and restart observed | Test fixture, not every CLI command in a consumer project |
 | Native DuckLake/PostgreSQL | Temporary-directory installation of checksum-pinned DuckLake and PostgreSQL-scanner extensions; real table creation, insert and read returned `42.50` | Smoke fixture, not every catalog concurrency path |
@@ -851,14 +851,15 @@ unexplained overrun or retained Python implementation.
 | GitHub workflow validation after PR creation | Prior head run [35781822523](https://github.com/eirhop/favn/actions/runs/35781822523) failed before jobs because `runner.temp` was used at job-level `env`; corrected on the rebased branch by setting the driver path at step scope and exporting it for later steps. The next run [35826985571](https://github.com/eirhop/favn/actions/runs/35826985571) created and ran jobs. | Validates workflow acceptance, not job success |
 | First hosted job run and CI follow-up | Quick checks failed because the Python-removal guard invoked `rg`, absent on the hosted Linux image. Native macOS passed 101/102 integration tests; the remaining test helper incorrectly required a password in the trust-authenticated PostgreSQL URL. The guard now scans Git-listed source with Elixir alone, and the helper supports passwordless URLs. Locally, the guard passed and the complete matching macOS integration slice passed 102/102 against native PostgreSQL 18.6 with the CI-style passwordless URL and checksum-pinned DuckDB 1.5.5. | The hosted fixes need a new run; this is test infrastructure, not a runtime contract change |
 | Linux fast-suite failure in that run | An unchanged storage test timed out awaiting terminal manifest deployment (548/549 passed). Its exact test passed locally against disposable PostgreSQL 18.6. The surrounding file passed 32/33 at the CI seed; a different test received a 429 admission response. | Timing-sensitive storage tests remain a CI qualification risk; no storage runtime behavior was changed in this PR |
+| Second hosted CI run | [35835190050](https://github.com/eirhop/favn/actions/runs/35835190050) passed quick checks, macOS native semantic/DuckLake and separate-node qualification, acceptance, slow tests, and Dialyzer. The Linux umbrella fast-test step passed, so the earlier storage timeout did not recur. The later Linux native integration step failed five lifecycle cases because GCC treated an unchecked `write` in test-only signal logging as an error when compiling the fault-enabled worker with `-Werror`; parity was skipped. The signal logger now checks the one-byte write result. Local warning-free build and all 17 lifecycle tests passed after the correction. | Hosted Linux fault-enabled build and exact cross-host parity still need another run; no change to production worker behavior |
 | Rebase integration checks on macOS 26 arm64 | `mix compile --warnings-as-errors`; `favn_sql_runtime` fast 139 passed; `favn_runner` fast 287 passed; `favn_duckdb_adbc` fast 47 passed; native semantic/lifecycle/artifact 31 passed with checksum-pinned DuckDB 1.5.5; canonical artifact ID and JSON SHA-256 unchanged; formatter, Python guard, tag guard, Ruby YAML parse and diff check passed | Checks the merged main contracts locally, not hosted Linux or GitHub workflow validation |
 | Full umbrella fast suite on target Mac | Not green: Linux production-target crash fixture, PostgreSQL bootstrap authentication fixtures on a trust-authenticated disposable cluster, and storage contention assertions failed; the in-scope authoring path-portability fixture was corrected and passed; targeted changed-code suites passed | Remaining failures do not establish a regression in native development; full Mac suite is not claimed |
 | Hex package listing | Native C source, Makefile and Elixir grammar were included; build stopped on existing private-package metadata/internal-dependency constraints | Does not prove publishable Hex package |
 
 ### Not verified
 
-The corrected hosted macOS/Linux CI, exact cross-host artifact parity, Linux worker lifecycle
-regressions, exhaustive completion-race interleavings, complete
+The corrected hosted Linux fault-enabled worker tests, exact cross-host artifact parity,
+exhaustive completion-race interleavings, complete
 consumer CLI use, production image builds, and Hex publication remain
 unverified. The native Mac source-lifecycle and DuckLake smoke paths above are
 verified. Mermaid rendering on GitHub has not yet been checked.
@@ -873,3 +874,4 @@ verified. Mermaid rendering on GitHub has not yet been checked.
 | Verdict | Astra approved the implementation with no blocking findings. Hosted Linux/macOS tests and exact-byte parity must pass before merge. |
 | Post-rebase recheck | Astra xhigh independently compared the original and rebased patch stacks on 2026-09-23. Both reviewed planning blobs are byte-identical, the implementation patch is preserved apart from mainline CI context, the updated counts match `git numstat`, and the step-scoped CI driver correction is valid. No blocking findings; hosted Linux/macOS tests and exact-byte parity remain required before merge. |
 | CI failure follow-up review | Astra xhigh independently confirmed the first hosted job failures, exercised the no-`rg` guard with positive and negative fixtures, checked passwordful and passwordless URL cases, reran the affected DuckLake test, and verified the revised complexity counts on 2026-09-23. No findings; hosted CI and cross-host parity remain required before merge. |
+| Linux fault-worker CI recheck | Astra xhigh independently confirmed the second hosted run's five GCC failures, passed a native fault-enabled syntax check and focused signal-log lifecycle test, and verified that production-preprocessed C was unchanged. The record and complexity counts matched the evidence on 2026-09-23. No findings; hosted Linux qualification and parity still require another run. |
