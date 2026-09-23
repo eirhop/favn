@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implemented |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | None. On 2026-09-23 the maintainer explicitly requested this record without a GitHub issue. |
 | Pull request | [#760](https://github.com/eirhop/favn/pull/760) |
@@ -10,6 +10,7 @@
 | Affected areas | PostgreSQL run coordination; orchestrator registration and recovery continuations; run recovery diagnostics and detail view |
 | Approved plan commit | [9ebf481ef21edd600a0e1add6dcf6ef3309d363b](https://github.com/eirhop/favn/commit/9ebf481ef21edd600a0e1add6dcf6ef3309d363b) |
 | Approved amendment commit | [95a73af4](https://github.com/eirhop/favn/commit/95a73af4) |
+| Follow-up amendment | Approved by Astra Max on 2026-09-23; implementation and qualification outstanding |
 | Last updated | 2026-09-23 |
 
 ## One-minute summary
@@ -684,9 +685,356 @@ Test run was resumed, reset, or otherwise mutated.
 | Mermaid diagrams | All four diagrams parsed and rendered locally; three approved diagrams previously rendered on GitHub at `95a73af4` | Approved diagrams remain unchanged; final behavior diagram records the implemented drain/settlement order |
 | Independent plan/amendment reviews | Approved by Astra Max | Baseline and amendment approval, followed by interim implementation findings and corrections |
 | Independent implementation review | Approved by Astra Max on 2026-09-23 after findings were fixed and rechecked | Compared preserved baseline/amendment with final code, tests and outcome; explicitly accepted complexity increase |
+| Subsequent exact-head CI | Failed at `3ccc56093adec1016f6920e2329614a9913dae03` | [Fast tests](https://github.com/eirhop/favn/actions/runs/35895699439/job/107299008260): 15 storage lifecycle failures; [slow tests](https://github.com/eirhop/favn/actions/runs/35895699439/job/107299008562): transition query count 16 exceeds budget 13; [Dialyzer](https://github.com/eirhop/favn/actions/runs/35895699439/job/107299008159): 10 warnings. Acceptance, image qualification and HTTP security checks passed. |
 
 Verification limitations: no deployment, live incident recovery, production latency
 measurement, or exact-merged-SHA release qualification. Earlier broad local runs
 hit an unrelated 100 ms manifest-memory timing assertion under concurrent Docker
 build load; its focused rerun passed. A preexisting stale disposable database was
 replaced with a fresh uniquely named test database; no development data was reset.
+
+## Follow-up lifecycle audit: qualification blocked
+
+After the implementation review, the maintainer requested a wider audit of runs.
+The findings below were checked against `3ccc56093adec1016f6920e2329614a9913dae03`
+on 2026-09-23. The earlier review remains part of the history; these new findings
+reopen implementation and block qualification. The approved baseline and amendment
+remain unchanged. This audit changed no production code and excludes inventory/OOM.
+
+| Finding | Evidence and impact | Required correction |
+| --- | --- | --- |
+| A lost `step_running` commit reply can strand successful work | A disposable PostgreSQL test committed the real transition, then returned a timeout. The runner task succeeded, but the next `step_finished` write reused the committed sequence with different content and stopped with `persistence_replay_rejected`. The error branch in `Execution.finish_step_running/4` retains the old run sequence. This behavior predates this PR. | Resolve the exact transition receipt before allowing the next transition. Preserve the original command and external task identity; never repeat the successful asset execution. |
+| Permanent cleanup evidence errors are retried indefinitely | Tidewave evaluation confirmed that event, detail and outcome read errors with `retryable?: false` return `{:retry, reason}`. A missing detail returns `:invalid_cleanup_reply`. `RunServer` stops in both cases while durable cleanup remains pending; discovery schedules another attempt. History reads precede task draining, so this can prevent sibling cleanup. This is in the new cleanup path. | Distinguish transient reads from permanent evidence failures. Drain safely identifiable tasks, retain unresolved write protection, and reach durable cleanup attention for evidence that cannot be repaired automatically. |
+| Permanent start and terminal persistence errors have no retry limit | A disposable PostgreSQL-backed run with an injected permanent start rejection repeated the same write four times, remained pending and alive, and recorded neither failure cleanup nor recovery attention. Source inspection confirms no retry budget in start or terminal persistence handling. The terminal case was not separately fault-injected. These paths predate this PR. | Use consistent error classification and bounded exact-command reconciliation. Preserve cancellation and ownership fencing, and make failure/attention durable when the database is writable. |
+
+The fast-suite failures include crash probes that assume persistence runs in the
+coordinator process; the new helper boundary changes the sender PID and the
+lifetime of process-local counters. Repair those probes without weakening their
+crash/restart assertions and rerun the complete affected suite. The query-count
+failure is an exceeded constant budget; it does not demonstrate growth with the
+number of siblings. Review the extra locking queries before changing the budget.
+The Dialyzer failures include continuation-state contracts that no longer match
+the implementation.
+
+The umbrella Phoenix server and Tidewave were started with an isolated local
+database. Runtime evaluation supports the cleanup finding; the two additional
+fault tests used separate disposable PostgreSQL fixtures. These are controlled
+reproductions, not observations of a new production incident. Sequential execution
+and cancellation still contain synchronous database work; their responsiveness
+under sustained contention remains a verification gap. No unsafe replay of an
+unknown external write was found in the inspected paths.
+
+## Plan amendment: close the remaining lifecycle failure gaps
+
+On 2026-09-23 the maintainer requested that the audit recommendations be added
+to this record and independently reviewed. This section plans the corrections;
+it does not claim they are implemented. It supplements the preserved baseline
+and first amendment. The existing issue waiver also applies to this update.
+
+### Intended outcome and scope
+
+A lost database reply must not strand successful work. A permanent error must
+end execution or require a specific evidence decision, rather than keep a
+coordinator alive retrying the same rejected command. Cleanup must drain every
+task it can identify safely before reporting evidence that remains unresolved.
+
+The corrections cover the three audited paths, the failing lifecycle fixtures,
+state types and query budget, and delayed-storage verification of sequential
+execution and cancellation. The orchestrator keeps lifecycle decisions; PostgreSQL
+keeps atomic receipts and authority checks. Reuse the existing persistence retry,
+managed-helper, cleanup and recovery-discovery mechanisms. No new scheduler,
+general retry framework, persistence backend, public execution mode, database
+table, or dependency is planned. Inventory/OOM remains excluded.
+
+The lost-reply and permanent-start defects were reproduced with real run
+coordinators and disposable PostgreSQL fixtures. The cleanup error classification
+was executed through Tidewave; its repeated restart follows from source inspection.
+Terminal persistence and sequential/cancellation responsiveness still require
+their own fault-injection proofs. These differences in evidence must remain
+visible in implementation results.
+
+### Current and proposed behavior
+
+The current paths disagree about the meaning of a failed database call:
+
+```mermaid
+flowchart TD
+    A[Database call reports an error] --> B{Lifecycle step}
+    B -->|Task started| C[Log error and keep old event number]
+    C --> D[Later update can conflict with committed history]
+    B -->|Run start or finish| E[Retry without a limit]
+    B -->|Cleanup history read| F[Restart cleanup with the same unreadable evidence]
+    F --> G[Other tasks may remain undrained]
+```
+
+The amended paths use the existing receipt and cleanup boundaries consistently:
+
+```mermaid
+flowchart TD
+    A[Lifecycle persistence operation] --> B{Confirmed result}
+    B -->|Committed receipt| C[Adopt committed state and continue]
+    B -->|Temporary error or uncertain reply| D[Reconcile exact command within budget]
+    D -->|Receipt found| C
+    D -->|Budget exhausted| E[Stop execution and resolve durable state]
+    B -->|Permanent rejection| E
+    B -->|Newer owner or cancellation| F[Yield to durable authority]
+    E -->|Original receipt confirmed| C
+    E -->|Outcome already terminal| G[Preserve terminal outcome]
+    E -->|Readable nonterminal state| H[Persist failure and cleanup intent]
+    E -->|Authority or storage unavailable| I[Retain evidence for paced recovery]
+    H --> J[Drain exact-run tasks before restoring history]
+    J --> R{History read result}
+    R -->|Permanent invalid or gapped history| S[Record global history gap and retain affected write protection]
+    S --> N[Release only proven safe capacity]
+    R -->|Complete contiguous history| K[Settle independently proven results]
+    R -->|Temporary read failure| L[Keep cleanup pending with backoff]
+    K -->|Temporary read failure| L
+    L --> J
+    K -->|Isolated task evidence gap| M[Record task gap and continue proven siblings]
+    M --> N
+    K -->|Evidence complete| N
+    N --> O{All original tasks terminal and safe releases confirmed}
+    O -->|No| L
+    O -->|Yes, no gaps| P[Cleanup complete]
+    O -->|Yes, unresolved evidence| Q[Cleanup attention with target protection]
+```
+
+### A. Confirm task-start transitions before advancing
+
+Route `step_running` failures through the existing `PersistenceRetry` continuation
+instead of returning unchanged execution state. Retain the original run snapshot,
+event sequence, event data and timestamps for exact replay. Do not construct a
+fresh event for each attempt. Acknowledging this advisory status event still
+participates in the authoritative sequence; its unknown outcome cannot be ignored.
+
+Allow only one sequence-changing command per run in flight. While its receipt is
+unresolved, defer runner results and other sequence-changing messages; continue
+servicing ownership challenges and cancellation intent. Apply a reply only to its
+matching helper reference, base sequence and ownership generation. Stop local
+helpers before relinquishing authority; stopping a helper is not proof that its
+database command rolled back. Fences and receipt reconciliation govern late writes.
+
+After a confirmed receipt, adopt the committed sequence, mark the task-start
+notification handled, then drain deferred results. On restart, restore committed
+history and the original task identities. A stale-owner reply cannot restart
+execution. Never replay asset execution, materialization or marker writes to repair
+this control-plane transition.
+
+`step_running` shares section B's budget, final receipt/state reconciliation,
+cancellation/fencing rules and failure/cleanup fallback with run-start and terminal
+commands. It must not fall through to the existing generic running-attention branch
+on retry exhaustion or permanent rejection. Even after repeated reply loss reaches
+the budget, a confirmed original receipt permits its matching continuation; failure
+is considered only after resolving the current durable state as described below.
+
+### B. Bound task-start, run-start and terminal persistence through the same policy
+
+Use the existing `PersistenceRetry` 30-second budget and one-second scheduling
+interval for `step_running`, run-start and terminal commands. Measure elapsed time
+from the first failed attempt using a monotonic clock. The same command's
+retry, reread and cancellation-reconciliation branches share that budget; a
+callback or phase change must not restart it. Registration keeps its separately
+persisted retry deadline and attempt count.
+
+The 30-second budget is per live ownership generation, not a new promise of a
+30-second lifetime across process crashes. A restart uses the existing persisted
+ownership recovery-attempt limit and diagnosis-to-failure/cleanup route. Do not
+reset that counter merely because ownership renews, a status event saves, or a
+coordinator starts. Existing genuine settlement progress retains its current
+reset semantics. Tests must prove repeated crashes without progress eventually
+reach the existing exhausted-recovery outcome.
+
+| Result | Required action |
+| --- | --- |
+| Exact committed receipt | Adopt it once and continue the matching continuation. |
+| Explicit retryable conflict, timeout or unavailable database | Reconcile the original command within the remaining budget. Preserve uncertainty after a lost reply. |
+| Permanent rejection | Stop retrying that rejected command immediately; resolve current durable state before choosing an outcome. A permanent response after an earlier uncertain attempt does not prove the earlier write was absent. |
+| Lost ownership | Stop local execution; do not persist a new failure or release another owner's resources. |
+| Authoritative cancellation | Follow the existing cancellation lifecycle and its immutable outcome; do not convert it to failure cleanup. |
+| Budget exhausted | End the current execution attempt, resolve the latest durable state under fencing, and use the failure/cleanup or recovery path below. |
+
+On permanent rejection or exhaustion, first check the original receipt and current
+durable run state. Preserve an already committed terminal success, failure or
+cancellation, including its original result, error and terminal timestamp. A
+nonterminal snapshot with valid current authority may transition atomically to
+failed execution plus cleanup intent using `FailureCleanup.fail/2`; retain accepted
+task results and the original failure reason. A sequence race requires rereading
+durable authority, not overwriting the competing transition.
+
+If that durable state cannot be established or failure/attention cannot be saved,
+stop the live attempt with all necessary task/target evidence retained. Use the
+existing paced ownership recovery/diagnosis path; do not claim that failure or
+cleanup is durable, release unresolved write protection, or keep a healthy
+coordinator in an unlimited persistence loop. Database unavailability is not proof
+of an external outcome. Terminal receipt and release failures must likewise retain
+their actual uncertainty rather than report cleanup complete.
+
+Perform potentially slow start, terminal, reread and failure persistence through
+the existing registered-helper contract. The coordinator owns timers and intent;
+its callbacks do not wait for those database operations.
+
+### C. Drain cleanup tasks before depending on run history
+
+Begin failed cleanup with the existing bounded exact-run task inventory and drain
+pass. It includes original asset and helper tasks omitted from active-task metadata.
+Cancel still-active work through existing fenced cancellation commands and wait
+for durable terminal outcomes. Release only capacity proven safe by the existing
+task/fence checks. Historical event reconstruction must not be a prerequisite for
+requesting cancellation of an independently identified task.
+
+Distinguish unreadable overall history from missing evidence for one known task.
+`RecoveryProgress` requires contiguous history up to the pinned snapshot sequence;
+the PostgreSQL event decoder can reject an entire page without identifying a task.
+A valid prefix does not prove that later settlement receipts are absent.
+
+For a permanently unreadable or gapped event stream, record a run-level history
+reason. Continue the independent task drain and proven-terminal execution-capacity
+release, retaining every affected materialization/target hold whose settlement
+cannot be established. Do not feed the valid prefix or a gapped reducer into
+settlement, reconstruct missing outcomes, or infer that work is unsettled from
+absence in that prefix. After the existing active-task and resource guards pass,
+finish in cleanup attention with the global history reason. Unavailable database
+reads remain transient and do not establish such a permanent history gap.
+
+Only after the complete contiguous event stream is validated may the cleanup
+continuation classify isolated detail/outcome, checkpoint or task evidence failures
+and settle siblings whose required evidence is complete:
+
+- Temporary database failures remain pending cleanup with the existing discovery
+  backoff. A database outage is not a permanent evidence gap.
+- A permanent invalid/missing detail, outcome or required task evidence records
+  a bounded reason code and affected task/sequence, then advances to other tasks.
+  Never interpret a failed read as empty history or successful settlement.
+- A missing/invalid checkpoint blocks every settlement that depends on it; it does
+  not prevent task draining or independently proven execution-capacity release.
+- Skip only the settlement whose required evidence is unavailable. Retain its
+  materialization/target protection. Keep draining and settling independent tasks.
+- Preserve known unresolved reasons across a deferred cleanup/restart through the
+  existing versioned cleanup metadata and `run_cleanup_progress` event. Keep the
+  existing bounded diagnostic sample and count; do not copy raw history or payloads.
+
+An incomplete task-inventory page is not an empty page. If inventory or active-task
+status cannot be established, retain pending cleanup and the last verified cursor;
+surface its precise failure. Do not bypass the storage checks that prohibit final
+cleanup attention/completion while original tasks are active or execution leases
+and waiters remain. Permanent per-task evidence failure must not prevent advancing
+past that task in an otherwise readable inventory. No schema migration is planned;
+any need for a new authority/storage contract requires a reviewed amendment.
+
+After all original tasks are terminal and safe resource releases are confirmed,
+persist cleanup `attention` for unresolved evidence, or `complete` only if all
+required evidence is resolved. A failed run's outcome, error and timestamp remain
+immutable. Attention stops automatic cleanup discovery for that run and names what
+needs reconciliation; it cannot offer execution Resume. Pending and attention
+continue to protect retained history and unknown external writes.
+
+### D. Repair qualification and close the responsiveness proof gap
+
+Adapt crash gates in `CoreAuthorityTest` to distinguish coordinator and helper
+processes explicitly. Replace process-dictionary counters that depended on one
+long-lived worker with fixture-owned, run-scoped probe state. Gate and kill the
+intended process at the same durable cut point. Keep assertions for task identity,
+accepted receipts, sibling outcomes, capacity and target exclusion; do not fix a
+test by removing its crash or extending an arbitrary sleep.
+
+Make continuation types describe the actual waiting/running/completed states and
+their retry fields. Correct incomplete state construction or return handling where
+the warning reveals code defects. Require Dialyzer without new suppressions or
+broadening the affected contracts to unrestricted `term()`/`map()` to hide errors.
+
+Measure and explain the extra transition queries. Remove redundant reads/locking
+where safe, preserving cancellation-owner serialization and the corrected lock
+order. Keep the no-growth assertion at 10,000 group siblings. A higher constant
+budget is acceptable only with measured query accounting and explicit reviewer
+acceptance; passing a looser assertion alone is not evidence of improvement.
+
+Exercise sequential dispatch/settlement and cancellation with delayed storage,
+including a large active-task set. If the coordinator cannot answer challenges
+and cancellation intent while database work waits, move only the demonstrated
+blocking operations or bounded batches through the existing helper continuation.
+One mutation remains outstanding per run; result ordering, cancellation authority,
+late replies and helper accounting keep their current invariants. Do not increase
+the watchdog, database timeouts or concurrency limits as a substitute.
+
+Update the canonical run-ownership/recovery document and owning moduledocs with
+the resulting behavior. No new UI flow is expected; existing diagnostics should
+render the specific reason and cleanup state through the orchestrator facade.
+
+### Verification required before implementation approval
+
+Each fault regression must fail for the intended reason on the audited code and
+pass after its owning correction. Use the existing shared fixtures and disposable
+PostgreSQL setup. Fault hooks must distinguish rejection before commit, committed
+reply loss, and loss of the helper/coordinator after commit.
+
+| Scenario | Required proof |
+| --- | --- |
+| `step_running` rejection before commit and committed reply loss | Original transition reconciles; correct next sequence; successful task settles once; no manual recovery, replacement task or repeated external write. |
+| `step_running` repeated committed reply loss through budget expiry, permanent rejection before commit, and permanent rejection after an uncertain attempt | Final receipt/state reconciliation adopts a confirmed original receipt or reaches durable failure/cleanup; preserved successful task results; no fallback to running attention merely from generic retry exhaustion; no repeated asset execution. |
+| Start and terminal permanent rejection | Rejected command is not retried indefinitely; a readable nonterminal run reaches durable failure/cleanup, while an already committed terminal outcome remains unchanged. Exercise both paths, not only start. |
+| Start/terminal transient faults and lost replies | Exact command identity survives retries; original result/error/timestamp survives terminal replay; bounded retries reach the defined recovery/failure branch. |
+| Crash and takeover at each unresolved receipt | Restore actual durable state; preserve task identities; reject stale replies; repeated crashes without progress spend the persisted recovery limit. Include committed terminal reply loss. |
+| Global unreadable/gapped cleanup history after a valid prefix | Corrupt a later event page; no settlement is reconstructed from the prefix; independently identified siblings drain; safe execution capacity is released; actual target holds survive; cleanup reaches attention only after storage guards pass and a later automatic sweep does not select it. |
+| One task's missing detail/outcome with complete contiguous history | The affected settlement is skipped and reported; a sibling with complete evidence settles once; live and queued siblings drain; unresolved target protection survives; cleanup reaches attention after safe releases. |
+| Transient cleanup outage and restart | Pending remains automatically discoverable; stored unresolved reasons survive restart; no false attention/completion or premature release. |
+| Unknown write mixed with successful/live siblings | A real nonempty claim/target hold survives; conflicting replacement work is refused; unrelated run/target proceeds; original assignments and write count are unchanged. |
+| Cancellation and ownership races | Durable cancellation wins when committed first; old owners cannot fail, settle or release resources for a new generation; no asset work starts after immutable failure. |
+| Sequential and cancellation responsiveness | Under delayed storage beyond the real 45-second watchdog window, actual challenges and bounded coordinator calls remain responsive; ordered receipt processing and durable cancellation remain correct. |
+| Existing regressions and query cost | Repaired crash fixtures retain their proofs; affected fast/slow suites pass; query work stays independent of sibling count and the final constant budget is justified. |
+
+Run the owning-layer tests first, then required format/compile, Dialyzer, fast,
+acceptance, slow and test-tier gates on the completed change. Obtain green CI on
+the final pushed code and a new Astra Max implementation review against both
+preserved baselines and this amendment. Plan approval does not clear the existing
+CI failures or authorize a claim that the implementation is complete.
+
+### Additional complexity budget and rollout
+
+These estimates cover the incremental correction against audited commit
+`3ccc56093adec1016f6920e2329614a9913dae03`; the previously approved budgets and
+actual counts remain unchanged. Supporting lines include tests, fixtures and
+canonical documentation; this record and generated files are excluded.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| Exact transition reconciliation for task start, run start and terminal persistence | 100–220 | 80–160 | 180–320 | 10–40 |
+| Cleanup drain ordering, permanent evidence classification and retained diagnostics | 80–160 | 30–90 | 180–300 | 10–40 |
+| Fixture/type/query correction and verified sequential/cancellation helper gaps | 40–140 | 30–110 | 160–300 | 50–140 |
+| Total incremental budget | 220–520 | 140–360 | 520–920 | 70–220 |
+
+The production allowance assumes reuse of existing continuations and removal of
+the replaced retry loops. It includes helper changes only where the delayed-storage
+test demonstrates a gap. Apply the repository's variance-review rule to actual
+counts, including materially fewer deletions. A new retry engine, storage schema
+or broader runner/adapter redesign would exceed this amendment's scope.
+
+Deploy through the normal qualified release path after implementation approval.
+No automatic resume of legacy attention runs or production data repair is included.
+The earlier rollback restriction for failed cleanup pending/attention still applies.
+Existing pending cleanup must remain readable and continue under the corrected
+binary. No production or Test mutation is authorized by this planning update.
+
+### Follow-up amendment review
+
+Astra Max independently reviewed the amendment's root causes, receipt/authority
+semantics, permanent-error handling, cleanup progress, complexity and verification
+plan on 2026-09-23. The initial verdict was **Request changes**, with two P2 findings:
+
+1. Explicitly apply the final receipt/state reconciliation and failure/cleanup
+   policy to `step_running`, including repeated reply loss through budget expiry
+   and permanent rejection after an uncertain attempt.
+2. Distinguish global unreadable/gapped history from isolated task evidence gaps.
+   A valid event prefix cannot justify settlement; drain independently identified
+   tasks, retain affected write protection and reach attention after storage guards.
+
+Both corrections are explicit in the plan, diagram and verification matrix. The
+recheck also corrected the diagram to show original receipt confirmation after
+budget expiry and to keep transient history-read failures in pending cleanup.
+
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent Astra agent, `gpt-6-astra`, reasoning effort `max` |
+| Final recheck | 2026-09-23; both P2 findings and diagram corrections rechecked |
+| Verdict | **Approved.** No remaining actionable plan findings; scope and incremental complexity budget accepted. |
+| Document verification | Both earlier approved baselines remain unchanged; local links and `git diff --check` pass; both new Mermaid diagrams parsed and rendered locally. |
+| Approval boundary | Plan only. Code corrections, required fault tests, green final-head CI and a new independent implementation review remain outstanding. |
