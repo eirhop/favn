@@ -775,7 +775,10 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
     Process.put({FakeStore, :commit_transition}, :succeed)
 
     assert {:terminal, settled} =
-             FailureCleanup.perform({:settle_sequential, run, entry, {:ok, result}})
+             FailureCleanup.perform(
+               {:settle_sequential, run, %Favn.Manifest.Version{}, %Favn.Manifest.Index{}, entry,
+                {:ok, result}}
+             )
 
     assert settled.status == :error
     assert settled.error == :original_failure

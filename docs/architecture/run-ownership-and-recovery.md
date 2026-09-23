@@ -90,6 +90,33 @@ a healthy replacement. The transaction expires the old claim, clears active
 attention and resets recovery pacing. Original runner tasks are reconciled before
 further dispatch. Durable cancellation takes precedence over resume.
 
+## Uncertain run transitions
+
+Run-start, task-start notifications and terminal persistence retain the original
+command while its database outcome is uncertain. One sequence-changing operation
+runs at a time. Registered helpers perform database work so the coordinator can
+answer lease challenges and retain cancellation intent, including during sequential
+execution and cancellation dispatch.
+
+Transient transition errors use a 30-second budget from the first failed attempt,
+with one-second retry scheduling. Permanent rejections stop command replay
+immediately. Final reconciliation compares canonical saved snapshot and event
+content; decoded in-memory hashes are not durable receipts. A confirmed original
+receipt allows its matching continuation, even after the retry budget expires.
+An already-saved terminal outcome retains its result, error and timestamp.
+Observing that outcome does not authorize another bulk capacity release. If the
+original terminal write succeeded but its capacity release failed, the outcome
+is adopted unchanged; existing admission reconciliation and lease expiry handle
+remaining capacity. A normal coordinator exit alone is not proof that every
+capacity release succeeded.
+
+If the saved run is still nonterminal and current authority permits it, failure
+and cleanup intent are written atomically. Unavailable storage or lost authority
+stops the local attempt with task and target evidence retained for paced recovery.
+Cancellation keeps its existing authority rules and shares the original retry
+budget. The 30-second clock is per live ownership generation; repeated crashes
+without settlement progress spend the persisted recovery-attempt limit.
+
 ## Registration retries and failed-run cleanup
 
 A successful asset result stays accepted while generation registration retries
@@ -102,8 +129,13 @@ evidence before spending another slot. Failed reads never mean missing work.
 Exhaustion persists `error` and versioned `failure_cleanup` intent atomically.
 The original failed outcome stays immutable. The ordinary recovery sweep selects
 pending cleanup separately using cleanup ownership, including after restart.
-Cleanup inventories the exact run's tasks in pages, drains all siblings, settles
-confirmed results, and releases resources under its current fence. Failure and
+Cleanup first inventories the exact run's tasks in pages and drains all siblings.
+Only complete, contiguous event history permits result settlement. A permanent
+history gap records a run-level reason, skips settlement from that history, and
+retains affected target protection. A missing individual outcome or detail records
+its task/sequence reason while independently proven siblings continue. Reasons are
+saved in versioned cleanup progress before advancing and survive restart.
+Confirmed results and safe resources are settled under the current fence. Failure and
 new task claim/start serialize under the history lock: queued or assigned assets
 and mutating helpers cannot start after failure. Already-started work may still
 report its terminal outcome. No asset task

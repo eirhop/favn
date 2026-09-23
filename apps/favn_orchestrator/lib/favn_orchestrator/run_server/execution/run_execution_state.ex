@@ -46,14 +46,20 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   replies.
   """
   @type post_step_continuation :: %{
-          required(:pid) => pid(),
-          required(:pending) => map()
+          required(:pid) => pid() | nil,
+          required(:pending) => map(),
+          optional(:retry) => FavnOrchestrator.RunServer.Execution.RegistrationRetry.t() | nil,
+          optional(:waiting?) => boolean(),
+          optional(:existing_only?) => boolean(),
+          optional(:timer_ref) => reference(),
+          optional(:deadline_token) => reference(),
+          optional(:deadline_timer) => reference() | nil
         }
 
   @type t :: %__MODULE__{
           run: RunState.t(),
           version: Version.t(),
-          manifest_index: Index.t(),
+          manifest_index: Index.t() | FavnOrchestrator.RunServer.Execution.compact_index(),
           mode: mode(),
           status: status(),
           manifest_lease_id: String.t() | nil,
@@ -132,6 +138,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
       mode: Keyword.fetch!(opts, :mode),
       manifest_lease_id: Keyword.fetch!(opts, :manifest_lease_id),
       work_set: ActiveTaskSet.new(run),
+      recovery_queue: :queue.new(),
       sequential_refs: Keyword.get(opts, :sequential_refs, []),
       stage_groups: Keyword.get(opts, :stage_groups, []),
       freshness_context: Keyword.get(opts, :freshness_context),

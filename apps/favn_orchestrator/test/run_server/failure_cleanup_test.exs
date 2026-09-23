@@ -109,7 +109,7 @@ defmodule FavnOrchestrator.RunServer.FailureCleanupTest do
 
   test "unresolved registration releases terminal permits before proceeding and propagates release failure" do
     state = %FailureCleanup{
-      run: %RunState{},
+      run: %RunState{metadata: %{"failure_cleanup" => %{"version" => 1, "state" => "pending"}}},
       version: nil,
       index: nil,
       progress: nil,
@@ -120,6 +120,9 @@ defmodule FavnOrchestrator.RunServer.FailureCleanupTest do
 
     assert {:cont, state} =
              FailureCleanup.apply_result(state, {:generation, nil, 1}, {:error, :marker_mismatch})
+
+    assert {:progress, _, _} = progress = FailureCleanup.operation(state)
+    assert {:cont, state} = FailureCleanup.apply_result(state, progress, :ok)
 
     assert {:release_unresolved, _, %{task_id: "asset"}} =
              operation = FailureCleanup.operation(state)
@@ -169,5 +172,112 @@ defmodule FavnOrchestrator.RunServer.FailureCleanupTest do
 
     assert {:retry, :fenced} =
              FailureCleanup.apply_result(state, {:task, nil, "t"}, {:error, :fenced})
+  end
+
+  test "a later history gap prevents settlement from its valid prefix" do
+    run = %RunState{
+      id: "run",
+      manifest_version_id: "mv",
+      manifest_content_hash: "hash",
+      plan: %Favn.Plan{nodes: %{}, node_stages: []},
+      event_seq: 3,
+      metadata: %{"failure_cleanup" => %{"version" => 1, "state" => "pending"}}
+    }
+
+    state = %FailureCleanup{
+      run: run,
+      version: nil,
+      index: nil,
+      progress: FavnOrchestrator.RunServer.Execution.RecoveryProgress.new(run),
+      phase: :events,
+      history_end: 3,
+      draining?: false
+    }
+
+    event = %{
+      run_id: "run",
+      manifest_version_id: "mv",
+      manifest_content_hash: "hash",
+      sequence: 1,
+      event_type: :run_started,
+      data: %{}
+    }
+
+    assert {:cont, prefix} =
+             FailureCleanup.apply_result(
+               state,
+               {:events, nil, "run", 0},
+               {:ok, %{items: [event]}}
+             )
+
+    assert prefix.phase == :events
+
+    assert {:cont, gap} =
+             FailureCleanup.apply_result(
+               prefix,
+               {:events, nil, "run", 1},
+               {:ok, %{items: [%{event | sequence: 3}]}}
+             )
+
+    assert gap.phase == :resources
+    assert gap.unresolved_count == 1
+
+    assert {:progress, _, %{"unresolved" => [%{"reason_code" => "cleanup_history_incomplete"}]}} =
+             FailureCleanup.operation(gap)
+  end
+
+  test "terminal evidence failure drains siblings without rediscovering terminal tasks" do
+    state = %FailureCleanup{
+      run: %RunState{},
+      version: nil,
+      index: nil,
+      progress: nil,
+      phase: :tasks,
+      tasks: [%{task_id: "malformed"}, %{task_id: "sibling"}]
+    }
+
+    assert {:cont, state} =
+             FailureCleanup.apply_result(
+               state,
+               {:drain_task, nil, "malformed"},
+               {:ok, {:unresolved, "terminal_task_resources_unresolved", "malformed"}}
+             )
+
+    refute state.waiting?
+
+    assert {:cont, state} =
+             FailureCleanup.apply_result(state, {:drain_task, nil, "sibling"}, {:ok, :settled})
+
+    assert {:cont, state} = FailureCleanup.apply_result(state, {:tasks, nil}, {:ok, []})
+    assert state.phase == :events
+    assert state.unresolved_count == 1
+  end
+
+  test "missing outcome skips that settlement while a transient read retains its place" do
+    state = %FailureCleanup{
+      run: %RunState{},
+      version: nil,
+      index: nil,
+      progress: nil,
+      phase: :outcome,
+      entry: %{task_id: "missing", resource_circuit_permits: []},
+      tasks: [%{task_id: "missing"}, %{task_id: "independent"}],
+      draining?: false
+    }
+
+    operation = {:outcome, nil, "run", 5}
+    unavailable = Error.new(:unavailable, "offline", retryable?: true)
+
+    assert {:retry, ^unavailable} =
+             FailureCleanup.apply_result(state, operation, {:error, unavailable})
+
+    assert {:cont, skipped} = FailureCleanup.apply_result(state, operation, {:ok, %{items: []}})
+    assert skipped.phase == :release_unresolved
+
+    assert {:cont, next} =
+             FailureCleanup.apply_result(skipped, {:release_unresolved, nil, state.entry}, :ok)
+
+    assert next.tasks == [%{task_id: "independent"}]
+    assert next.unresolved_count == 1
   end
 end

@@ -40,7 +40,9 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   @enforce_keys [:run, :version, :index, :progress]
   defstruct @enforce_keys ++
               [
-                phase: :events,
+                phase: :tasks,
+                history_end: nil,
+                progress_dirty?: false,
                 cursor: nil,
                 tasks: [],
                 entry: nil,
@@ -111,7 +113,15 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   def new(run, version) do
     with true <- pending?(run), {:ok, index} <- Index.build_from_version(version) do
       {:ok,
-       %__MODULE__{run: run, version: version, index: index, progress: RecoveryProgress.new(run)}}
+       %__MODULE__{
+         run: run,
+         version: version,
+         index: index,
+         progress: RecoveryProgress.new(run),
+         history_end: run.event_seq,
+         unresolved: Enum.reverse(get_in(run.metadata, ["failure_cleanup", "unresolved"]) || []),
+         unresolved_count: get_in(run.metadata, ["failure_cleanup", "unresolved_count"]) || 0
+       }}
     else
       false -> {:error, :cleanup_not_pending}
       error -> error
@@ -120,6 +130,17 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
 
   @doc "Describes the next bounded read or fenced settlement operation."
   @spec operation(t()) :: tuple()
+  def operation(%{progress_dirty?: true} = s) do
+    info =
+      Map.merge(s.run.metadata["failure_cleanup"], %{
+        "unresolved_count" => s.unresolved_count,
+        "unresolved" => Enum.reverse(s.unresolved)
+      })
+
+    run = RunState.transition(s.run, metadata: Map.put(s.run.metadata, "failure_cleanup", info))
+    {:progress, run, info}
+  end
+
   def operation(%{phase: :events} = s),
     do: {:events, context(s.run), s.run.id, s.progress.sequence}
 
@@ -153,7 +174,7 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
 
   def operation(%{phase: :settle} = s) do
     if RunState.execution_mode(s.run) == :sequential,
-      do: {:settle_sequential, s.run, s.entry, s.result},
+      do: {:settle_sequential, s.run, s.version, s.index, s.entry, s.result},
       else:
         {:settle, StageAttemptState.new(s.run, [], [s.entry], [], MapSet.new()), s.entry,
          s.result}
@@ -227,7 +248,15 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
           {:error, :cleanup_task_identity_mismatch}
 
         task.status in @terminal ->
-          with :ok <- release_terminal_capacity(run, task), do: {:ok, :settled}
+          case release_terminal_capacity(run, task) do
+            :ok ->
+              {:ok, :settled}
+
+            {:error, reason} ->
+              if PersistenceRetry.recovery_required?(reason) or fenced?(reason),
+                do: {:error, reason},
+                else: {:ok, {:unresolved, "terminal_task_resources_unresolved", id}}
+          end
 
         true ->
           RunnerTasks.request_cancellation(run.workspace_id, id, %{kind: :failed_run_cleanup},
@@ -282,8 +311,17 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   def perform({:outcome, context, id, sequence}),
     do: Runs.page_events(context, id, after_sequence: sequence - 1, limit: 1)
 
-  def perform({:settle_sequential, run, entry, result}),
-    do: Sequential.handle_result(%RunExecutionState{run: run}, entry, result)
+  def perform({:settle_sequential, run, version, index, entry, result}),
+    do:
+      Sequential.handle_result(
+        RunExecutionState.new(run, version,
+          manifest_index: index,
+          mode: :sequential,
+          manifest_lease_id: nil
+        ),
+        entry,
+        result
+      )
 
   def perform({:settle, stage, entry, result}),
     do: StageResult.process(stage, entry, result, %{stage: entry.stage, attempt: entry.attempt})
@@ -301,25 +339,29 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
 
   def perform({:release_unresolved, run, entry}), do: release_permits(run, entry)
   def perform({:resources, command}), do: Stores.stores().admission.release_failed_run(command)
+
+  def perform({:progress, run, info}),
+    do: Persistence.persist_run_step(run, :run_cleanup_progress, info)
+
   def perform({:finish, run, event, data}), do: Persistence.persist_run_step(run, event, data)
 
   @doc "Applies a matching operation reply in the coordinator."
   @spec apply_result(t(), tuple(), term()) ::
           {:cont, t()} | {:done, t()} | {:retry, term()} | {:error, term()}
   def apply_result(s, {:events, _, _, _}, {:ok, page}) do
-    events = Enum.take_while(page.items, &(&1.sequence <= s.run.event_seq))
+    events = Enum.take_while(page.items, &(&1.sequence <= s.history_end))
 
-    with true <- events != [] or s.progress.sequence == s.run.event_seq,
+    with true <- events != [] or s.progress.sequence == s.history_end,
          {:ok, progress} <- RecoveryProgress.fold(s.progress, events) do
       {:cont,
        %{
          s
          | progress: progress,
-           phase: if(progress.sequence == s.run.event_seq, do: :details, else: :events),
+           phase: if(progress.sequence == s.history_end, do: :details, else: :events),
            detail_ids: progress.details
        }}
     else
-      _ -> {:cont, %{unresolved(s, "cleanup_history_incomplete", nil) | phase: :tasks}}
+      _ -> {:cont, %{unresolved(s, "cleanup_history_incomplete", nil) | phase: :resources}}
     end
   end
 
@@ -336,7 +378,7 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
     do: {:retry, :cleanup_tasks_pending}
 
   def apply_result(%{draining?: true} = s, {:tasks, _}, {:ok, []}),
-    do: {:cont, %{s | draining?: false, cursor: nil}}
+    do: {:cont, %{s | draining?: false, cursor: nil, phase: :events}}
 
   def apply_result(s, {:tasks, _}, {:ok, []}), do: {:cont, %{s | phase: :resources}}
 
@@ -347,11 +389,19 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
 
   def apply_result(s, {:drain_task, _, _}, {:ok, :settled}), do: {:cont, next_task(s)}
 
+  def apply_result(s, {:drain_task, _, _}, {:ok, {:unresolved, code, id}}),
+    do: {:cont, s |> unresolved(code, id) |> next_task()}
+
   def apply_result(s, {:drain_task, _, _}, {:ok, :waiting}),
     do: {:cont, next_task(%{s | waiting?: true})}
 
-  def apply_result(s, {:drain_task, run, id}, {:error, reason}),
-    do: apply_result(s, {:task, run, id}, {:error, reason})
+  def apply_result(s, {:drain_task, _, id}, {:error, reason}) do
+    if PersistenceRetry.recovery_required?(reason) or fenced?(reason),
+      do: {:retry, reason},
+      else:
+        {:cont,
+         s |> unresolved("task_drain_unresolved", id) |> Map.put(:waiting?, true) |> next_task()}
+  end
 
   def apply_result(s, {:task, _, _}, {:ok, :waiting}),
     do: {:cont, next_task(%{s | waiting?: true})}
@@ -412,10 +462,10 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
     end
   end
 
-  def apply_result(s, {:settle_sequential, _, _, _}, {:terminal, run}),
+  def apply_result(s, {:settle_sequential, _, _, _, _, _}, {:terminal, run}),
     do: {:cont, next_task(%{s | run: run})}
 
-  def apply_result(_s, {:settle_sequential, _, _, _}, {:persist_retry, _, _, reason}),
+  def apply_result(_s, {:settle_sequential, _, _, _, _, _}, {:persist_retry, _, _, reason}),
     do: {:retry, reason}
 
   def apply_result(s, {kind, _, _, _}, result) when kind == :settle, do: settlement(s, result)
@@ -465,6 +515,39 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
          }}
       ),
       do: {:cont, %{unresolved(s, "write_hold_unresolved", nil) | phase: :finish}}
+
+  def apply_result(s, {:progress, run, _}, :ok),
+    do: {:cont, %{s | run: run, progress_dirty?: false}}
+
+  def apply_result(s, {:events, _, _, _}, {:error, reason}) do
+    if PersistenceRetry.recovery_required?(reason) or fenced?(reason),
+      do: {:retry, reason},
+      else: {:cont, %{unresolved(s, "cleanup_history_unreadable", nil) | phase: :resources}}
+  end
+
+  def apply_result(s, {:detail, _, _, id, _}, reply) do
+    case reply do
+      {:error, reason}
+      when is_struct(reason, FavnOrchestrator.Persistence.Error) and
+             (reason.retryable? or reason.kind in [:fenced, :timeout, :unavailable]) ->
+        {:retry, reason}
+
+      _ ->
+        {:cont, %{unresolved(s, "cleanup_detail_unavailable", id) | detail_ids: tl(s.detail_ids)}}
+    end
+  end
+
+  def apply_result(s, {:outcome, _, _, _}, reply) do
+    case reply do
+      {:error, reason}
+      when is_struct(reason, FavnOrchestrator.Persistence.Error) and
+             (reason.retryable? or reason.kind in [:fenced, :timeout, :unavailable]) ->
+        {:retry, reason}
+
+      _ ->
+        {:cont, unresolved_entry(s, s.entry, "cleanup_outcome_unavailable")}
+    end
+  end
 
   def apply_result(_s, _op, {:error, reason}), do: {:retry, reason}
   def apply_result(_s, _op, other), do: {:error, {:invalid_cleanup_reply, other}}
@@ -526,12 +609,20 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   defp unresolved_entry(s, entry, code),
     do: %{unresolved(s, code, entry.task_id) | entry: entry, phase: :release_unresolved}
 
-  defp unresolved(s, code, id),
-    do: %{
+  defp unresolved(s, code, id) do
+    reason = %{"reason_code" => code, "task_id" => id}
+
+    if reason in s.unresolved do
       s
-      | unresolved_count: s.unresolved_count + 1,
-        unresolved: Enum.take([%{"reason_code" => code, "task_id" => id} | s.unresolved], 32)
-    }
+    else
+      %{
+        s
+        | unresolved_count: s.unresolved_count + 1,
+          progress_dirty?: true,
+          unresolved: Enum.take([reason | s.unresolved], 32)
+      }
+    end
+  end
 
   defp release_terminal_capacity(run, %{task_kind: :asset_attempt} = task) do
     with :ok <- ExecutionAdmission.release_completed(run, task.task_id),
@@ -544,7 +635,6 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   defp release_permits(run, entry) do
     case ResourceCircuits.release(run, entry.resource_circuit_permits) do
       :ok -> :ok
-      {:ok, _} -> :ok
       error -> error
     end
   end

@@ -227,6 +227,18 @@ defmodule FavnOrchestrator.Storage.JsonSafeTest do
     refute Map.has_key?(exception, "details")
   end
 
+  test "persisted typed failures retain their type when details include a different reason code" do
+    error =
+      JsonSafe.error(%{
+        type: :recovery_exhausted,
+        reason_code: "automatic_recovery_exhausted",
+        phase: :audit_history_failure
+      })
+
+    decoded = error |> Jason.encode!() |> Jason.decode!()
+    assert JsonSafe.error(decoded) == error
+  end
+
   test "arbitrary adapter details and blank error codes stay safely projectable" do
     for details <- ["adapter detail", [:opaque], 42, nil] do
       atom_error = %{

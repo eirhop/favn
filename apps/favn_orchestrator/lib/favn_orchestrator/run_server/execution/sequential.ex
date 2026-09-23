@@ -34,6 +34,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @type directive ::
           {:await, RunExecutionState.t(), map()}
           | {:cont, RunExecutionState.t()}
+          | {:retry_timer, RunExecutionState.t(), map()}
           | {:terminal, RunState.t()}
           | {:persist_retry, RunExecutionState.t(), PersistenceRetry.t(), term()}
 
@@ -848,18 +849,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     )
   end
 
-  defp schedule_retry_timer(state, retry) do
-    timer_token = make_ref()
-    timer_ref = Process.send_after(self(), {:retry_attempt, timer_token}, retry.retry_after_ms)
-
-    {:cont,
-     RunExecutionState.put_retry_timer(
-       state,
-       timer_token,
-       timer_ref,
-       retry
-     )}
-  end
+  defp schedule_retry_timer(state, retry), do: {:retry_timer, state, retry}
 
   defp clear_retry_state(metadata) do
     metadata

@@ -64,6 +64,8 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
           commit_failures: Keyword.get(opts, :commit_failures, %{}),
           held_commits: Keyword.get(opts, :held_commits, []),
           held_read_after: Keyword.get(opts, :held_read_after),
+          hold_cancel?: Keyword.get(opts, :hold_cancel?, false),
+          terminal_release_error: Keyword.get(opts, :terminal_release_error),
           renew_result: Keyword.get(opts, :renew_result, :ok),
           test_pid: Keyword.fetch!(opts, :test_pid)
         }
@@ -132,7 +134,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
             runner_task_id: "rt-asset",
             position: %{
               "version" => 1,
-              "mode" => "pipeline",
+              "mode" => Atom.to_string(FavnOrchestrator.RunState.execution_mode(run)),
               "index" => 0,
               "attempt" => 1,
               "phase" => "admit"
@@ -355,6 +357,13 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     end
 
     def request_cancellation(command) do
+      if Agent.get_and_update(agent(), fn state ->
+           {state.hold_cancel?, %{state | hold_cancel?: false}}
+         end) do
+        notify({:cancel_blocked, self()})
+        receive do: (:release_cancel -> :ok)
+      end
+
       notify({:runner_task_cancel_requested, command.task_id})
 
       case get(%{task_id: command.task_id}) do
@@ -475,7 +484,15 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     end
 
     def release_run_leases(_command) do
-      {:ok, %CapacityRelease{released_lease_ids: [], expired_waiter_ids: [], freed_scope_ids: []}}
+      error = Agent.get(agent(), & &1.terminal_release_error)
+
+      if error && FavnOrchestrator.RunState.finalized?(latest_run()) do
+        notify(:terminal_capacity_release_failed)
+        {:error, error}
+      else
+        {:ok,
+         %CapacityRelease{released_lease_ids: [], expired_waiter_ids: [], freed_scope_ids: []}}
+      end
     end
 
     # materialization and target generations
@@ -517,6 +534,20 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
 
   setup context do
     fixture = fixture()
+
+    fixture =
+      if context[:sequential?] do
+        run = %{
+          fixture.run
+          | submit_kind: :manual,
+            plan: %{fixture.run.plan | dependencies: :none}
+        }
+
+        %{fixture | run: RunState.with_snapshot_hash(run)}
+      else
+        fixture
+      end
+
     store_opts = Map.get(context, :store_opts, [])
 
     {:ok, agent} = HarnessStore.start(fixture.run, Keyword.put(store_opts, :test_pid, self()))
@@ -868,6 +899,76 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert HarnessStore.latest_run().status == :ok
   end
 
+  for operation <- [:sequential_settlement, :cancellation] do
+    @tag :slow
+    @tag lifecycle_responsiveness: true
+    @tag timeout: 75_000
+    @tag responsiveness_operation: operation
+    @tag sequential?: operation == :sequential_settlement
+    @tag store_opts: [
+           held_task_kinds: [],
+           held_commits: if(operation == :sequential_settlement, do: [:step_finished], else: []),
+           hold_cancel?: operation == :cancellation
+         ]
+    test "#{operation} remains responsive beyond the real watchdog", %{
+      fixture: fixture,
+      responsiveness_operation: operation
+    } do
+      {pid, monitor} = start_run(fixture)
+
+      worker =
+        if operation == :sequential_settlement do
+          complete_asset_task(fixture)
+          assert_receive {:commit_blocked, :step_finished, worker}, 5_000
+          worker
+        else
+          assert_receive {:run_transition_committed, :step_running}, 5_000
+
+          Agent.update(
+            Application.fetch_env!(:favn_orchestrator, :post_step_run_server_agent),
+            fn state ->
+              %{
+                state
+                | run:
+                    RunState.transition(state.run,
+                      metadata: Map.put(state.run.metadata, :cancel_requested, true)
+                    )
+              }
+            end
+          )
+
+          send(pid, {:favn_run_cancel_requested, :operator})
+          assert_receive {:cancel_blocked, worker}, 5_000
+          worker
+        end
+
+      keeper = :sys.get_state(pid, 500).lease_keeper
+
+      for _ <- 1..10 do
+        receive do
+        after
+          5_000 -> :ok
+        end
+
+        assert :sys.get_state(pid, 500).execution_persist_pending.ref
+        lease = :sys.get_state(keeper, 500)
+        refute lease.revoked?
+        assert System.monotonic_time(:millisecond) - lease.last_response < 6_000
+      end
+
+      send(worker, if(operation == :cancellation, do: :release_cancel, else: :release_commit))
+
+      if operation == :cancellation do
+        assert_receive {:runner_task_cancel_requested, @asset_task_id}, 5_000
+        assert {:ok, task} = HarnessStore.get(%{task_id: @asset_task_id})
+        RunnerTaskResultRouter.notify(task)
+      end
+
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+      assert HarnessStore.latest_run().status in [:ok, :cancelled]
+    end
+  end
+
   @tag store_opts: [held_task_kinds: [], held_commits: [:step_finished]]
   test "slow settlement answers lease challenges and latches cancellation", %{fixture: fixture} do
     {pid, monitor} = start_run(fixture)
@@ -1150,6 +1251,26 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
       assert_receive {:materialization_finished, :succeeded, "claim-asset"}
       refute_receive {:materialization_finished, _, _}, 20
     end
+  end
+
+  @tag store_opts: [
+         held_task_kinds: [],
+         terminal_release_error: %Error{
+           kind: :unavailable,
+           message: "release reply lost",
+           retryable?: true
+         }
+       ]
+  test "terminal release failure adopts the saved outcome without writing another terminal event",
+       %{fixture: fixture} do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive :terminal_capacity_release_failed, 5_000
+    terminal = HarnessStore.latest_run()
+    assert terminal.status == :ok
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert HarnessStore.latest_run() == terminal
+    assert Enum.count(HarnessStore.commits(), &(&1.event_type == :run_finished)) == 1
   end
 
   test "recovery attention reports persistence and survives ordinary progress", %{
@@ -1651,7 +1772,7 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         metadata: %{node_key: @node_key}
       },
       orchestration_context: %{
-        kind: :pipeline,
+        kind: RunState.execution_mode(fixture.run),
         decision: %{
           decision: :run,
           reason: :upstream_refreshed,

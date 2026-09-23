@@ -1039,3 +1039,84 @@ budget expiry and to keep transient history-read failures in pending cleanup.
 | Verdict | **Approved.** No remaining actionable plan findings; scope and incremental complexity budget accepted. |
 | Document verification | Both earlier approved baselines remain unchanged; local links and `git diff --check` pass; both new Mermaid diagrams parsed and rendered locally. |
 | Approval boundary | Plan only. Code corrections, required fault tests, green final-head CI and a new independent implementation review remain outstanding. |
+
+## Follow-up implementation outcome (in qualification)
+
+Implemented against the independently approved follow-up amendment at
+`89229b26c2b6319a5ee3f0d7883bc317d8cf5aed`. The preserved baseline and both
+amendment bodies above remain the review baseline. Inventory/OOM is unchanged.
+
+### Implemented behavior
+
+- Task-start persistence now retains its original transition and defers subsequent
+  result processing until that transition is confirmed or resolved. Run-start and
+  terminal writes use the same bounded 30-second transition policy. A permanent
+  rejection resolves durable state immediately rather than retrying forever.
+- Receipt comparison uses canonical persisted snapshot and event content. Decoded
+  term hashes and decoded event fields cannot be compared as original input terms.
+  Saved terminal outcomes are adopted without another terminal write or bulk
+  release. Cancellation during task-start persistence enters cancellation drain;
+  cancellation conflicting with terminal persistence shares its original budget.
+- Sequential operations, cancellation reads/dispatch and startup reads/attention
+  persistence use the existing registered helpers. The coordinator retains timer
+  ownership and services its real lease keeper during delayed database work.
+- Failed cleanup first inventories and drains exact-run tasks. Global invalid
+  history blocks settlement from a valid prefix. Permanent per-task evidence gaps
+  retain bounded diagnostics while independent siblings continue. Diagnostics are
+  checkpointed and restored across cleanup restart. Uncertain task reads remain
+  pending; known-terminal malformed entries do not become fictitious active tasks.
+- Crash gates now identify actual helpers separately from the coordinators they
+  kill. Run-scoped fixture Agents replace counters tied to worker process identity.
+  Continuation types and queue construction describe actual runtime values.
+
+### Discoveries, deviations and review decisions
+
+1. **Stored failure encoding:** the restart regression exposed a pre-existing
+   `JsonSafe.error/1` rewrite of an explicit stored error type from its nested
+   reason code. That changed an immutable failed outcome and prevented cleanup
+   from finishing. The narrow fix preserves a nonblank stored type; raw errors,
+   fallback classification and sanitization retain their behavior. A JSON round
+   trip regression and PostgreSQL cleanup restart exercise the contract. Astra
+   Max accepted this necessary deviation during interim review.
+2. **Terminal release failure:** an already-saved terminal outcome is authoritative
+   but is not fresh permission for bulk capacity release. The original write path
+   attempts release; after an uncertain release, adoption preserves the outcome
+   and remaining capacity relies on existing admission reconciliation/expiry.
+   The regression asserts one terminal event and unchanged terminal state; normal
+   process exit alone is not asserted as immediate release proof.
+3. **Query count:** measured transition statements remain constant at **16** with
+   both small history and 10,000 siblings. The three statements above the previous
+   bound are two cancellation-authority point reads and the root advisory lock.
+   Astra Max explicitly accepted the measured constant bound. The no-growth
+   assertion remains; no authority check was removed to meet the old number.
+4. **Recovery fixture expectations:** malformed/expired target authority now
+   produces durable failure plus cleanup intent, as required by the approved
+   policy. Tests retain original task identities and target fencing assertions,
+   replacing their obsolete expectation of a running manual-attention state.
+5. **Intermediate review corrections:** canonical receipt normalization, preserving
+   durable cancellation, avoiding bulk release on adopted terminal state, keeping
+   startup attention persistence in helpers, and distinguishing known-terminal
+   malformed details from unknown task status were corrected before final review.
+
+Incremental counts against audited production `3ccc56093adec1016f6920e2329614a9913dae03`
+are currently production **+566/-359**, tests/support **+667/-51** (documentation
+excluded). Production additions exceed the upper estimate by 46 lines, below its
+100-line variance threshold. Support deletions are 19 below the minimum estimate,
+exceeding its 17.5-line threshold: retained crash tests required small gate/counter
+adaptations, while new fault matrices added coverage without replacing them. This
+variance requires explicit final reviewer acceptance; removing useful tests solely
+to meet a deletion estimate would weaken qualification.
+
+### Verification progress
+
+- Focused orchestrator/storage-codec suite: **239 passed**, three slow tests
+  excluded; the latest cancellation race correction is awaiting rerun.
+- Sequential settlement and cancellation each held for **50 seconds**: **2 passed**,
+  coordinator responsive and ownership renewal current beyond the real 45-second
+  watchdog. No watchdog/timeouts were increased.
+- Dialyzer: **zero errors**, no suppressions added; final-source rerun pending.
+- Query growth test: **passed**, 16 statements at both history sizes.
+- PostgreSQL fault/restart/cancellation qualification, full final-head CI and the
+  fresh final Astra Max implementation review are still in progress. Intermediate
+  failing runs are diagnostic evidence, not qualification. This section will be
+  completed with the final results before implementation approval.

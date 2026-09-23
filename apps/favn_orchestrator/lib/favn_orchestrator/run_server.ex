@@ -4,8 +4,9 @@ defmodule FavnOrchestrator.RunServer do
 
   The server advances the non-blocking execution state machine from runner,
   retry, admission, cancellation, and post-step worker messages. Terminal
-  persistence is retried in-process so transient storage failures do not
-  discard the final outcome. A write rejected by the run-ownership fence on the
+  persistence preserves the original command within a 30-second retry budget.
+  Permanent rejection or exhaustion reconciles durable state before failure cleanup;
+  an already-saved terminal result is never replaced. A write rejected by the run-ownership fence on the
   run-start, step, or terminal path is never retried: the process stops with
   `run_ownership_lost` and recovery proceeds under the newer owner. Admission
   and bookkeeping preserve their original commands for safe persistence replay;
@@ -38,7 +39,6 @@ defmodule FavnOrchestrator.RunServer do
           required(:lease_keeper) => pid()
         }
 
-  @terminal_persist_retry_ms 1_000
   @execution_persist_retry_ms 1_000
 
   @doc "Starts an unregistered process for one run snapshot and manifest version."
@@ -84,7 +84,21 @@ defmodule FavnOrchestrator.RunServer do
   defp continue_start(%{recovering?: true} = state, %RunState{} = claimed, version) do
     context = SystemContext.workspace(claimed.workspace_id, :run_worker)
 
-    case Runs.get(context, claimed.id) do
+    start_operation(state, claimed, version, {:snapshot, claimed, version}, fn ->
+      Runs.get(context, claimed.id)
+    end)
+  end
+
+  defp continue_start(state, %RunState{} = run_state, %Version{} = version) do
+    running = RunState.transition(run_state, status: :running)
+    persist_run_start(state, running, version)
+  end
+
+  defp resume_start(state, {:execution, running}, result),
+    do: resume_execution_start(state, running, result)
+
+  defp resume_start(state, {:snapshot, claimed, version}, result) do
+    case result do
       {:ok, saved} ->
         run = copy_storage_fence(saved, claimed)
         state = %{state | run_state: run}
@@ -108,10 +122,14 @@ defmodule FavnOrchestrator.RunServer do
     end
   end
 
-  defp continue_start(state, %RunState{} = run_state, %Version{} = version) do
-    running = RunState.transition(run_state, status: :running)
-    persist_run_start(state, running, version)
+  @impl true
+  def handle_info({ref, result}, %{startup_operation: %{ref: ref, resume: resume}} = state) do
+    Process.demonitor(ref, [:flush])
+    resume_start(Map.delete(state, :startup_operation), resume, result)
   end
+
+  def handle_info({:DOWN, ref, :process, _, reason}, %{startup_operation: %{ref: ref}} = state),
+    do: {:stop, {:shutdown, {:run_start_unconfirmed, reason}}, state}
 
   @impl true
   def handle_info(:activate, %{awaiting_activation: true, lease_keeper: keeper} = state) do
@@ -293,13 +311,69 @@ defmodule FavnOrchestrator.RunServer do
   def handle_info(:continue_execution, state), do: continue_execution(state)
 
   def handle_info(
-        {:retry_run_start_persist, token},
-        %{run_start_persist_pending: %{token: token, run: running, version: version}} = state
+        {:retry_lifecycle_persist, token},
+        %{lifecycle_pending: %{token: token, retry: retry}} = state
+      ),
+      do: persist_lifecycle(Map.delete(state, :lifecycle_pending), retry)
+
+  def handle_info(
+        {ref, result},
+        %{lifecycle_pending: %{ref: ref, retry: retry, resolving?: resolving?}} = state
       ) do
-    state
-    |> Map.delete(:run_start_persist_pending)
-    |> persist_run_start(running, version)
+    Process.demonitor(ref, [:flush])
+    state = Map.delete(state, :lifecycle_pending)
+
+    case {resolving?, result} do
+      {false, :ok} ->
+        resume_lifecycle(state, retry)
+
+      {true, {:committed, _}} ->
+        resume_lifecycle(state, retry)
+
+      {_, {:retry_command, next}} ->
+        persist_lifecycle(state, next)
+
+      {_, {kind, run}} when kind in [:terminal, :failed] ->
+        stop_normally(state, run)
+
+      {_, {:error, :fenced}} ->
+        stop_on_fenced_write(state, retry.run, retry.event_type)
+
+      {_, {:error, :cancellation_race}} when retry.resume == :terminal ->
+        next = PersistenceRetry.rejected(retry, :cancellation_race)
+
+        if PersistenceRetry.exhausted?(next),
+          do: stop_for_cancellation_recovery(state, retry.run),
+          else: persist_lifecycle(state, next, :cancellation)
+
+      {_, {:error, reason}} when reason in [:external_cancel, :cancellation_race] ->
+        stop_for_cancellation_recovery(state, retry.run)
+
+      {true, {:error, reason}} ->
+        {:stop, {:shutdown, {:lifecycle_persistence_unconfirmed, reason}}, state}
+
+      {mode, {:error, reason}} when mode in [false, :cancellation] ->
+        retry = PersistenceRetry.rejected(retry, reason)
+
+        if PersistenceRetry.transition_retryable?(reason) and
+             not PersistenceRetry.exhausted?(retry) do
+          token = make_ref()
+
+          Process.send_after(
+            self(),
+            {:retry_lifecycle_persist, token},
+            execution_persist_retry_ms()
+          )
+
+          {:noreply, Map.put(state, :lifecycle_pending, %{token: token, retry: retry})}
+        else
+          persist_lifecycle(state, retry, true)
+        end
+    end
   end
+
+  def handle_info({:DOWN, ref, :process, _, reason}, %{lifecycle_pending: %{ref: ref}} = state),
+    do: {:stop, {:shutdown, {:lifecycle_persistence_unconfirmed, reason}}, state}
 
   def handle_info(
         {:retry_execution_persist, token},
@@ -414,19 +488,13 @@ defmodule FavnOrchestrator.RunServer do
     do: handle_execution_event(state, {:execution_admission_wakeup, waiter_id, generation})
 
   def handle_info(
-        {:retry_terminal_persist, token},
-        %{terminal_persist_pending: %{token: token} = pending} = state
-      ) do
-    retry_terminal_persist(state, pending)
-  end
-
-  def handle_info(
         {:favn_run_cancel_requested, _reason} = message,
         %{execution_persist_pending: %{retry: %PersistenceRetry{event_type: event_type}}} =
           state
       )
       when event_type in [
              :resource_outcomes,
+             :step_running,
              :step_finished,
              :step_failed,
              :step_timed_out,
@@ -441,7 +509,6 @@ defmodule FavnOrchestrator.RunServer do
         %{execution_state: %RunExecutionState{} = execution_state} = state
       ) do
     state = cancel_pending_execution_resume(state)
-    execution_state = %{execution_state | run: latest_run_snapshot(execution_state.run)}
 
     execution_state =
       if execution_state.stage_state,
@@ -470,30 +537,96 @@ defmodule FavnOrchestrator.RunServer do
 
   def handle_info(_message, state), do: {:noreply, state}
 
-  defp persist_run_start(state, %RunState{} = running, %Version{} = version) do
-    case Persistence.persist_run_step(running, :run_started, %{status: running.status}) do
+  defp persist_run_start(state, running, version) do
+    retry =
+      PersistenceRetry.new(running, :run_started, %{status: running.status}, {:start, version})
+
+    persist_lifecycle(state, retry)
+  end
+
+  defp persist_lifecycle(state, retry, resolving? \\ false) do
+    resolving? = if PersistenceRetry.exhausted?(retry), do: true, else: resolving?
+
+    case account_helper_memory(state, retry.run, {retry, retry}) do
       :ok ->
-        start_execution(state, running, version)
+        task =
+          FavnOrchestrator.RunHelper.async(retry.run, fn ->
+            result =
+              case resolving? do
+                true -> PersistenceRetry.resolve(retry)
+                :cancellation -> PersistenceRetry.after_cancellation(retry)
+                false -> PersistenceRetry.persist(retry)
+              end
 
-      {:error, :external_cancel} ->
-        :ok = RunExecutionCleanup.release_admission(running)
-        stop_normally(state, Snapshots.cancelled_snapshot(running))
+            terminal =
+              case result do
+                :ok when retry.resume == :terminal -> retry.run
+                _ -> nil
+              end
 
-      {:error, :cancellation_race} ->
-        stop_for_cancellation_recovery(state, running)
+            if terminal && not FailureCleanup.pending?(terminal) &&
+                 FavnOrchestrator.RunServer.Execution.ActiveTaskSet.active_runner_task_ids(
+                   terminal
+                 ) ==
+                   [] do
+              case FavnOrchestrator.ExecutionAdmission.release_run(terminal) do
+                :ok -> result
+                error -> error
+              end
+            else
+              result
+            end
+          end)
 
-      {:error, :fenced} ->
-        stop_on_fenced_write(state, running, :run_started)
+        {:noreply,
+         state
+         |> Map.put(:run_state, retry.run)
+         |> Map.put(:lifecycle_pending, %{ref: task.ref, retry: retry, resolving?: resolving?})}
 
       {:error, reason} ->
-        schedule_run_start_persist_retry(state, running, version, reason)
+        {:stop, {:shutdown, {:execution_memory_limit, reason}}, state}
     end
   end
+
+  defp resume_lifecycle(state, %{resume: {:start, version}, run: run}),
+    do: start_execution(state, run, version)
+
+  defp resume_lifecycle(state, %{resume: :terminal, run: run}), do: stop_normally(state, run)
 
   defp start_execution(state, %RunState{} = running, %Version{} = version) do
     running = RunState.with_snapshot_hash(running)
 
-    case Execution.start_state(running, version) do
+    start_operation(state, running, version, {:execution, running}, fn ->
+      result = Execution.start_state(running, version)
+
+      case result do
+        {:recovery_required, reason} ->
+          FavnOrchestrator.RunServer.RecoveryAttention.record(
+            running,
+            {:restore_execution_inputs, reason}
+          )
+
+        _ ->
+          :ok
+      end
+
+      result
+    end)
+  end
+
+  defp start_operation(state, run, version, resume, operation) do
+    case account_helper_memory(state, run, {run, version, run, version}) do
+      :ok ->
+        task = FavnOrchestrator.RunHelper.async(run, operation)
+        {:noreply, Map.put(state, :startup_operation, %{ref: task.ref, resume: resume})}
+
+      {:error, reason} ->
+        {:stop, {:shutdown, {:execution_memory_limit, reason}}, state}
+    end
+  end
+
+  defp resume_execution_start(state, running, result) do
+    case result do
       {:ok, execution_state} ->
         case resize_execution_memory(state, running, execution_state) do
           :ok ->
@@ -517,12 +650,7 @@ defmodule FavnOrchestrator.RunServer do
             {:stop, {:shutdown, reason}, state}
         end
 
-      {:recovery_required, reason} ->
-        FavnOrchestrator.RunServer.RecoveryAttention.record(
-          running,
-          {:restore_execution_inputs, reason}
-        )
-
+      {:recovery_required, _reason} ->
         {:stop, {:shutdown, :run_execution_recovery_required},
          Map.put(state, :run_state, running)}
 
@@ -561,28 +689,6 @@ defmodule FavnOrchestrator.RunServer do
        do: RunManager.resize_active_run_memory(run, execution_state)
 
   defp resize_execution_memory(_state, %RunState{}, %RunExecutionState{}), do: :ok
-
-  defp schedule_run_start_persist_retry(state, running, version, reason) do
-    token = make_ref()
-    Process.send_after(self(), {:retry_run_start_persist, token}, execution_persist_retry_ms())
-
-    OperationalEvents.emit(
-      :run_start_persist_retry_scheduled,
-      %{},
-      %{run_id: running.id, reason: reason},
-      level: :warning
-    )
-
-    {:noreply,
-     state
-     |> Map.put(:run_state, running)
-     |> Map.put(:run_start_persist_pending, %{
-       token: token,
-       run: running,
-       version: version,
-       reason: reason
-     })}
-  end
 
   defp continue_execution(%{execution_state: nil} = state), do: {:noreply, state}
 
@@ -649,6 +755,14 @@ defmodule FavnOrchestrator.RunServer do
       {:noreply, next}
     end
   end
+
+  defp handle_execution_result(state, {:durable_terminal, run}),
+    do: stop_normally(stop_post_step_workers(state), run)
+
+  defp handle_execution_result(state, {:unconfirmed_transition, execution, reason}),
+    do:
+      {:stop, {:shutdown, {:lifecycle_persistence_unconfirmed, reason}},
+       Map.put(state, :execution_state, Execution.stop_for_recovery(execution))}
 
   defp handle_execution_result(state, {:terminal, %RunState{} = terminal}) do
     finalize_terminal(state, terminal)
@@ -746,160 +860,23 @@ defmodule FavnOrchestrator.RunServer do
 
   defp finalize_terminal(state, %RunState{} = terminal) do
     state = stop_post_step_workers(state)
-
-    cond do
-      terminal.status == :cancelled and persisted_cancelled?(terminal) ->
-        :ok = RunExecutionCleanup.release_admission(terminal)
-        stop_normally(state, terminal)
-
-      terminal.status != :cancelled and persisted_cancelled?(terminal) ->
-        :ok = RunExecutionCleanup.release_admission(terminal)
-        stop_normally(state, terminal)
-
-      true ->
-        terminal_event_type = Persistence.terminal_event_type(terminal)
-
-        finalized =
-          RunState.transition(terminal,
-            metadata: Map.put(terminal.metadata, :terminal_event_type, terminal_event_type)
-          )
-
-        persist_terminal_or_retry(state, finalized, terminal_event_type)
-    end
-  end
-
-  defp persist_terminal_or_retry(state, %RunState{} = finalized, terminal_event_type) do
-    data = %{status: finalized.status, error: finalized.error}
-
-    case Persistence.persist_run_step(finalized, terminal_event_type, data) do
-      :ok ->
-        :ok = RunExecutionCleanup.release_admission(finalized)
-
-        stop_normally(state, finalized)
-
-      {:error, :external_cancel} ->
-        cancelled = Snapshots.cancelled_snapshot(finalized)
-        :ok = RunExecutionCleanup.release_admission(cancelled)
-
-        stop_normally(state, cancelled)
-
-      {:error, :cancellation_race} ->
-        refresh_terminal_after_cancellation(state, finalized)
-
-      {:error, :fenced} ->
-        stop_on_fenced_write(state, finalized, terminal_event_type)
-
-      {:error, reason} ->
-        schedule_terminal_persist_retry(state, finalized, terminal_event_type, data, reason, 1)
-    end
-  end
-
-  defp retry_terminal_persist(state, pending) do
-    finalized = pending.terminal
-
-    case Persistence.persist_run_step(finalized, pending.event_type, pending.data) do
-      :ok ->
-        :ok = RunExecutionCleanup.release_admission(finalized)
-
-        state
-        |> Map.delete(:terminal_persist_pending)
-        |> stop_normally(finalized)
-
-      {:error, :external_cancel} ->
-        cancelled = Snapshots.cancelled_snapshot(finalized)
-        :ok = RunExecutionCleanup.release_admission(cancelled)
-
-        state
-        |> Map.delete(:terminal_persist_pending)
-        |> stop_normally(cancelled)
-
-      {:error, :cancellation_race} ->
-        refresh_terminal_after_cancellation(state, finalized)
-
-      {:error, :fenced} ->
-        state
-        |> Map.delete(:terminal_persist_pending)
-        |> stop_on_fenced_write(finalized, pending.event_type)
-
-      {:error, reason} ->
-        schedule_terminal_persist_retry(
-          state,
-          finalized,
-          pending.event_type,
-          pending.data,
-          reason,
-          pending.attempt + 1
-        )
-    end
-  end
-
-  defp schedule_terminal_persist_retry(
-         state,
-         %RunState{} = terminal,
-         event_type,
-         data,
-         reason,
-         attempt
-       ) do
-    token = make_ref()
-    Process.send_after(self(), {:retry_terminal_persist, token}, @terminal_persist_retry_ms)
-
-    OperationalEvents.emit(
-      :run_terminal_persist_retry_scheduled,
-      %{},
-      %{run_id: terminal.id, event_type: event_type, attempt: attempt, reason: reason},
-      level: :warning
-    )
-
-    {:noreply,
-     state
-     |> Map.put(:run_state, terminal)
-     |> Map.put(:execution_state, nil)
-     |> Map.put(:terminal_persist_pending, %{
-       token: token,
-       terminal: terminal,
-       event_type: event_type,
-       data: data,
-       reason: reason,
-       attempt: attempt
-     })}
-  end
-
-  # A fenced write proves a newer owner exists. Retrying could never succeed and
-  # would only delay recovery, so the process stops the way a failed renewal does.
-  defp refresh_terminal_after_cancellation(state, terminal) do
-    context = SystemContext.workspace(terminal.workspace_id, :run_worker)
+    terminal = copy_storage_fence(terminal, state.run_state)
     event_type = Persistence.terminal_event_type(terminal)
 
-    case Runs.get(context, terminal.id) do
-      {:ok, latest} ->
-        if RunState.terminal_status?(latest.status) do
-          :ok = RunExecutionCleanup.release_admission(terminal)
-          stop_normally(state, latest)
-        else
-          refreshed =
-            latest
-            |> copy_storage_fence(terminal)
-            |> RunState.transition(
-              status: terminal.status,
-              error: terminal.error,
-              result: terminal.result,
-              metadata: Map.merge(terminal.metadata, latest.metadata)
-            )
+    finalized =
+      RunState.transition(terminal,
+        metadata: Map.put(terminal.metadata, :terminal_event_type, event_type)
+      )
 
-          persist_terminal_or_retry(state, refreshed, event_type)
-        end
+    retry =
+      PersistenceRetry.new(
+        finalized,
+        event_type,
+        %{status: finalized.status, error: finalized.error},
+        :terminal
+      )
 
-      {:error, reason} ->
-        schedule_terminal_persist_retry(
-          state,
-          terminal,
-          event_type,
-          %{status: terminal.status, error: terminal.error},
-          reason,
-          1
-        )
-    end
+    persist_lifecycle(Map.put(state, :execution_state, nil), retry)
   end
 
   defp stop_for_cancellation_recovery(state, run) do
@@ -942,29 +919,6 @@ defmodule FavnOrchestrator.RunServer do
 
   defp current_run_id(%{run_state: %RunState{id: run_id}}), do: run_id
   defp current_run_id(_state), do: nil
-
-  defp persisted_cancelled?(%RunState{workspace_id: workspace_id, id: run_id})
-       when is_binary(workspace_id) do
-    context = SystemContext.workspace(workspace_id, :run_worker)
-    match?({:ok, %RunState{status: :cancelled}}, Runs.get(context, run_id))
-  end
-
-  defp persisted_cancelled?(%RunState{}), do: false
-
-  defp latest_run_snapshot(%RunState{workspace_id: workspace_id, id: run_id} = fallback)
-       when is_binary(workspace_id) do
-    context = SystemContext.workspace(workspace_id, :run_worker)
-
-    case Runs.get(context, run_id) do
-      {:ok, %RunState{} = run} ->
-        run |> Map.put(:result, fallback.result) |> copy_storage_fence(fallback)
-
-      _ ->
-        fallback
-    end
-  end
-
-  defp latest_run_snapshot(%RunState{} = fallback), do: fallback
 
   defp defer_execution_event(state, message) do
     queue = Map.get(state, :deferred_execution_events, [])

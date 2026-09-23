@@ -683,7 +683,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     [{ref, _continuation}] = Map.to_list(pending.post_step_continuations)
     worker_monitor = Process.monitor(worker)
 
-    assert {:terminal, cancelled} = Execution.cancel(pending, :operator)
+    Application.put_env(:favn_orchestrator, :post_step_continuation_test_run, pending.run)
+    assert {:terminal, cancelled} = ExecutionDriver.cancel(pending, :operator)
 
     assert cancelled.status == :cancelled
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}

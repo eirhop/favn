@@ -185,7 +185,8 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
 
   test "run-transition query work is independent of ten thousand group siblings", fixture do
     small = create_run!(fixture)
-    {small_result, small_queries} = measure_queries(fn -> transition(fixture, small) end)
+    {small_result, statements} = capture_queries(fn -> transition(fixture, small) end)
+    small_queries = length(statements)
     assert {:ok, _committed} = small_result
 
     large = create_run!(fixture)
@@ -196,9 +197,10 @@ defmodule FavnStoragePostgres.StorageV2.PerformanceContractTest do
     assert {:ok, _committed} = large_result
 
     assert large_queries == small_queries
-    # Includes retirement checks and SET LOCAL transaction_timeout at the outer
-    # boundary; sibling count still adds no queries.
-    assert large_queries <= 13
+    # Includes root cancellation authority resolution and serialization, retirement
+    # checks and SET LOCAL transaction_timeout. Sibling count adds no queries.
+    # The three added queries resolve submission/run ownership and lock its root.
+    assert large_queries <= 16
 
     plan =
       explain(

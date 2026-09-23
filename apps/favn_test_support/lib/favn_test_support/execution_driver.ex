@@ -10,6 +10,8 @@ defmodule FavnTestSupport.ExecutionDriver do
   def resume_persisted_retry(state, retry),
     do: drain(apply(@execution, :resume_persisted_retry, [state, retry]))
 
+  def cancel(state, reason), do: drain(apply(@execution, :cancel, [state, reason]))
+
   defp drain({:operation, state, operation}) do
     result = apply(@execution, :perform_operation, [operation])
     drain(apply(@execution, :finish_operation, [state, operation, result]))
