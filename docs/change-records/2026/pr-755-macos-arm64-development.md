@@ -8,8 +8,8 @@
 | Pull request | [#755](https://github.com/eirhop/favn/pull/755) |
 | Related work | [Semantic compiler baseline](issue-718-pr-723-semantic-model.md); [production release boundary, issue 522](https://github.com/eirhop/favn/issues/522) |
 | Affected areas | `favn_local`, `favn_duckdb_adbc`, Core semantic error classification, qualification scripts and CI, public and contributor documentation |
-| Approved plan commit | Original baseline `d7c45e3246dd88aa13f83ed345c762e8c837b0ee`; independently reviewed Python-removal amendment `f43e91fd01d3a1bcdf7f11752eeb1e59f7f4717f` |
-| Last updated | 2026-09-22 |
+| Approved plan commit | Original baseline `8505dd279d2c122d251beb8b94b4e59e384c5834`; independently reviewed Python-removal amendment `2c20cc69e5165668dc4b47e3240c3244fe42608f` |
+| Last updated | 2026-09-23 |
 
 The owner requested full native semantic compilation as part of this work after
 the first independent review. This record omits the issue filename segment as
@@ -98,9 +98,9 @@ story. This revision makes that unresolved design an explicit gate.
 | Astra xhigh loopback probes on 2026-09-22 | `127.0.0.1` works; bind to `127.0.0.2` fails and wildcard-listener connection through it times out | Ephemeral TCP evidence, not a full BEAM lifecycle test |
 | [Source release verifier](../../../apps/favn_runner/lib/favn_runner/release_verifier.ex) | Darwin and arm64 source identity already exist; production requires Linux/amd64 | Target classification does not prove execution |
 | [Semantic compiler](../../../apps/favn_duckdb_adbc/lib/favn_duckdb_adbc/semantic_compiler.ex) | Linux-only prerequisite gate | No Darwin ownership implementation |
-| [Worker supervisor at baseline](https://github.com/eirhop/favn/blob/d7c45e3246dd88aa13f83ed345c762e8c837b0ee/apps/favn_duckdb_adbc/lib/favn_duckdb_adbc/semantic_compiler/worker.py) | Linux parent-death mechanism and the common cleanup defects above | Requires fault-injection regressions |
+| [Worker supervisor at baseline](https://github.com/eirhop/favn/blob/8505dd279d2c122d251beb8b94b4e59e384c5834/apps/favn_duckdb_adbc/lib/favn_duckdb_adbc/semantic_compiler/worker.py) | Linux parent-death mechanism and the common cleanup defects above | Requires fault-injection regressions |
 | Astra in-memory supervisor probes | Owner loss can report ordinary failure with cleanup unconfirmed; successful cleanup can invoke termination twice | No assertion that an unrelated real process was signaled |
-| [Existing lifecycle tests at baseline](https://github.com/eirhop/favn/blob/d7c45e3246dd88aa13f83ed345c762e8c837b0ee/apps/favn_duckdb_adbc/test/semantic_compiler_lifecycle.py) | Linux success, timeout, caller loss, and supervisor death coverage | Linux `prctl` and `/proc` assertions cannot prove Darwin behavior |
+| [Existing lifecycle tests at baseline](https://github.com/eirhop/favn/blob/8505dd279d2c122d251beb8b94b4e59e384c5834/apps/favn_duckdb_adbc/test/semantic_compiler_lifecycle.py) | Linux success, timeout, caller loss, and supervisor death coverage | Linux `prctl` and `/proc` assertions cannot prove Darwin behavior |
 | [CPython 3.9.6 loader](https://github.com/python/cpython/blob/v3.9.6/Modules/_ctypes/callproc.c#L1388) | Library loading cannot be assumed to release the GIL | Other Python versions must be inspected and qualified separately |
 | [CI](../../../.github/workflows/ci.yml) | Existing native qualification runs on Ubuntu with Linux DuckDB downloads | No Apple Silicon coverage |
 | [Local-development guide](../../../apps/favn/guides/local-development.md) | External PostgreSQL, host-native runner, no DNS or hosts-file setup | This is the intended contract, not proof that the current Mac path works |
@@ -520,7 +520,7 @@ freshly fetched `origin/main` at `3a44bc61` (RC17).
 
 ## Implementation outcome
 
-Implementation began against `d7c45e32`: the working tree contains the loopback
+Implementation began against `8505dd27`: the working tree contains the loopback
 change, partial Python cleanup fixes, and Darwin helper/build/test integration.
 Those changes are uncommitted and are not a qualified implementation. They have
 been stopped for the owner-requested Python-removal amendment. Preserve the
@@ -721,7 +721,7 @@ Add these replacement-specific gates:
   about every third-party dependency or historical document.
 
 These replace the original estimates for planning, not the preserved baseline
-numbers. Counts are the eventual diff against `d7c45e32`, excluding this record,
+numbers. Counts are the eventual diff against `8505dd27`, excluding this record,
 generated artifacts, lockfiles and vendored upstream headers. Supporting counts
 include tests, fixtures, CI and canonical docs. Treat a new large C module or
 generic transport abstraction as review pressure rather than a target to fill.
@@ -764,6 +764,8 @@ any further overrun under the same 25-percent/100-line rule.
 | 2026-09-22 | Compare exact semantic artifact bytes in CI | The artifact has a canonical JSON encoder; independent Linux and macOS jobs can publish the same fixed fixture for a byte-for-byte comparison |
 | 2026-09-22 | Keep macOS qualification separate from the umbrella fast suite | The existing full Mac suite includes Linux production-target tests and database-authentication fixtures outside the native source-development contract; the native lane instead runs the owning lifecycle, semantic and DuckLake suites |
 | 2026-09-22 | Correct the authoring portability test's macOS fixture path | The test wrote a source via the `/var` temporary-directory alias, changed cwd to the `/private/var` physical path, then compiled by the aliased absolute path; compiling the same fixture by cwd-relative path preserves the two-workspace generated-code invariant without changing production DSL normalization; macOS CI now runs it |
+| 2026-09-23 | Rebase PR #755 onto `origin/main` at `c1b4d7f2` | Main merged the DuckLake rejected-commit retry work. `git range-diff` found the four PR patches unchanged except the CI context now retains the new `rejected_commit_retry_test.exs` line; the reviewed plan and historical worker content are unchanged. |
+| 2026-09-23 | Move the macOS DuckDB path into step-level CI environment | GitHub rejected the prior workflow before any job ran because `runner.temp` is unavailable in job-level `env`. The install step now resolves the path and exports it through `GITHUB_ENV` for subsequent steps. |
 
 ## Implementation outcome for final review
 
@@ -809,7 +811,7 @@ invocations in Favn-owned paths. Production release identity remains Linux/amd64
 The Python-free architecture follows the separately approved amendment. There
 is no new public DSL, persistence backend, migration, or production target.
 `git diff --numstat` including new files, excluding this record and generated
-artifacts, reports **1,009 production lines added / 492 deleted** and **1,307
+artifacts, reports **1,009 production lines added / 492 deleted** and **1,309
 test, fixture, script, CI and canonical-documentation lines added / 293
 deleted**. All four counts are within the amended ranges. The authoring test
 correction, queued-receipt race fix and focused protocol/fault fixtures arose
@@ -841,17 +843,19 @@ unexplained overrun or retained Python implementation.
 | Native semantic, lifecycle and artifact tests | 31 passed together on macOS with pinned DuckDB 1.5.5 after the protocol/fault and malformed-option additions | Native plugin layer; Linux run awaits CI |
 | Separate-node source lifecycle | 1 acceptance test passed against restricted-role PostgreSQL 18.6 on the target Mac; start, reload, replacement, stop and restart observed | Test fixture, not every CLI command in a consumer project |
 | Native DuckLake/PostgreSQL | Temporary-directory installation of checksum-pinned DuckLake and PostgreSQL-scanner extensions; real table creation, insert and read returned `42.50` | Smoke fixture, not every catalog concurrency path |
-| Historical semantic parity | A one-time temporary probe imported the original worker from the content-identical baseline now at commit `d7c45e32` (worker SHA-256 `8d33b6d4a0a327e0b4e57a98e005d8b3b35107322285d77f8760cd892fafd283`) and called its original `native` validator directly on macOS 26.5.1 with DuckDB 1.5.5 from universal ZIP SHA-256 `7b5b8915cc382d0708636fe6385c0cdad5a61c9ff8ba2638b3e2141640783155`; the Python supervisor's Linux-only ownership was not run. Unchanged `FavnAuthoring.Semantic.Builder` and `Favn.Semantic.Artifact` produced `sm_fd4123e936c378c85114d0899074b9e8340c0ae3d8397ea930a1418957ccd7d7`, exact JSON SHA-256 `78100cda23beec7137157e95c6cefe57afd7399e080fb76fdb60badce237caea`. The replacement produced the same digest on the same fixture and now asserts both golden values in CI. No historical Python is retained in the repository. | Linux exact-byte comparison awaits CI; probe validates semantic output, not historical supervisor lifetime |
+| Historical semantic parity | A one-time temporary probe imported the original worker from the content-identical baseline now at commit `8505dd27` (worker SHA-256 `8d33b6d4a0a327e0b4e57a98e005d8b3b35107322285d77f8760cd892fafd283`) and called its original `native` validator directly on macOS 26.5.1 with DuckDB 1.5.5 from universal ZIP SHA-256 `7b5b8915cc382d0708636fe6385c0cdad5a61c9ff8ba2638b3e2141640783155`; the Python supervisor's Linux-only ownership was not run. Unchanged `FavnAuthoring.Semantic.Builder` and `Favn.Semantic.Artifact` produced `sm_fd4123e936c378c85114d0899074b9e8340c0ae3d8397ea930a1418957ccd7d7`, exact JSON SHA-256 `78100cda23beec7137157e95c6cefe57afd7399e080fb76fdb60badce237caea`. The replacement produced the same digest on the same fixture and now asserts both golden values in CI. No historical Python is retained in the repository. | Linux exact-byte comparison awaits CI; probe validates semantic output, not historical supervisor lifetime |
 | Resolver and locator tests | 8 focused tests passed, including seeding an old `127.0.0.2` resolver and verifying replacement plus idempotence; all 62 `favn_local` fast tests passed before this final extra test | Owning local layer; existing running nodes still require stop/restart |
 | Owning fast suites | `favn_duckdb_adbc`: 46 passed, 93 gated tests excluded; `favn_authoring`: 158 passed | Fast suites do not substitute for the gated native integration suite |
 | Authoring portability fixture | The failing `/var` versus `/private/var` aliased-source fixture was corrected to compile cwd-relative; owning test now passes | Test portability correction only; production DSL normalization unchanged |
 | Formatting, source checks and CI YAML | `mix format`, warning-free compile, Python guard, `git diff --check`, Ruby YAML parse and BSD date check passed before final review edits; rerun at freeze | Static checks only |
+| GitHub workflow validation after PR creation | Prior head run [35781822523](https://github.com/eirhop/favn/actions/runs/35781822523) failed before jobs because `runner.temp` was used at job-level `env`; corrected on the rebased branch by setting the driver path at step scope and exporting it for later steps | The replacement workflow and hosted Linux/macOS/parity jobs require a new run after push |
+| Rebase integration checks on macOS 26 arm64 | `mix compile --warnings-as-errors`; `favn_sql_runtime` fast 139 passed; `favn_runner` fast 287 passed; `favn_duckdb_adbc` fast 47 passed; native semantic/lifecycle/artifact 31 passed with checksum-pinned DuckDB 1.5.5; canonical artifact ID and JSON SHA-256 unchanged; formatter, Python guard, tag guard, Ruby YAML parse and diff check passed | Checks the merged main contracts locally, not hosted Linux or GitHub workflow validation |
 | Full umbrella fast suite on target Mac | Not green: Linux production-target crash fixture, PostgreSQL bootstrap authentication fixtures on a trust-authenticated disposable cluster, and storage contention assertions failed; the in-scope authoring path-portability fixture was corrected and passed; targeted changed-code suites passed | Remaining failures do not establish a regression in native development; full Mac suite is not claimed |
 | Hex package listing | Native C source, Makefile and Elixir grammar were included; build stopped on existing private-package metadata/internal-dependency constraints | Does not prove publishable Hex package |
 
 ### Not verified
 
-Hosted macOS/Linux CI, exact cross-host artifact parity, Linux worker lifecycle
+The corrected hosted macOS/Linux CI, exact cross-host artifact parity, Linux worker lifecycle
 regressions, exhaustive completion-race interleavings, complete
 consumer CLI use, production image builds, and Hex publication remain
 unverified. The native Mac source-lifecycle and DuckLake smoke paths above are
@@ -865,3 +869,4 @@ verified. Mermaid rendering on GitHub has not yet been checked.
 | Comparison required | Approved baseline, implementation, actual complexity, deviations, docs, Linux evidence and native Mac evidence |
 | Findings and recheck | Final review identified a non-blocking fast-exit race in test calls to `await_worker/4`; production had already retained the initial PID. Tests now pass captured PIDs to `await_worker/5`; 31 native tests passed again, and Astra rechecked the correction and this outcome record with no further findings. |
 | Verdict | Astra approved the implementation with no blocking findings. Hosted Linux/macOS tests and exact-byte parity must pass before merge. |
+| Post-rebase recheck | Astra xhigh independently compared the original and rebased patch stacks on 2026-09-23. Both reviewed planning blobs are byte-identical, the implementation patch is preserved apart from mainline CI context, the updated counts match `git numstat`, and the step-scoped CI driver correction is valid. No blocking findings; hosted Linux/macOS tests and exact-byte parity remain required before merge. |
