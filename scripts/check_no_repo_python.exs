@@ -1,8 +1,9 @@
-{paths, 0} = System.cmd("git", ["ls-files", "--cached", "--others", "--exclude-standard"])
+{paths, 0} = System.cmd("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"])
+
+paths = String.split(paths, "\0", trim: true)
 
 sources =
   paths
-  |> String.split("\n", trim: true)
   |> Enum.filter(&String.ends_with?(&1, [".py", ".pyi", ".pyw"]))
   |> Enum.filter(&File.regular?/1)
 
@@ -15,27 +16,25 @@ pattern =
   "(^|[[:space:]\"'/])(py" <>
     "thon([0-9]+(\\.[0-9]+)?)?|pypy([0-9]+)?)([[:space:]\"'/]|$)|worker" <> "\\.py"
 
-case System.cmd("rg", [
-       "-n",
-       pattern,
-       "apps",
-       "scripts",
-       ".github",
-       "-g",
-       "*.ex",
-       "-g",
-       "*.exs",
-       "-g",
-       "*.sh",
-       "-g",
-       "*.yml",
-       "-g",
-       "*.yaml",
-       "-g",
-       "Makefile",
-       "-g",
-       "!check_no_repo_python.exs"
-     ]) do
-  {"", 1} -> IO.puts("No repository Python sources or active invocations")
-  {output, _} -> IO.puts(:stderr, output); System.halt(1)
+pattern = Regex.compile!(pattern)
+
+invocations =
+  for path <- paths,
+      String.starts_with?(path, ["apps/", "scripts/", ".github/"]),
+      Path.basename(path) != "check_no_repo_python.exs",
+      Path.extname(path) in [".ex", ".exs", ".sh", ".yml", ".yaml"] or
+        Path.basename(path) == "Makefile",
+      File.regular?(path),
+      {line, number} <- File.stream!(path) |> Stream.with_index(1),
+      Regex.match?(pattern, line) do
+    "#{path}:#{number}:#{line}"
+  end
+
+case invocations do
+  [] ->
+    IO.puts("No repository Python sources or active invocations")
+
+  matches ->
+    IO.puts(:stderr, matches)
+    System.halt(1)
 end
