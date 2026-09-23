@@ -197,6 +197,10 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
         {:fail, :unavailable_then_cancel} ->
           {:error, Error.new(:unavailable, "temporary test failure")}
 
+        {:fail, :durable_cancel} ->
+          notify({:durable_cancel_saved, latest_run()})
+          {:error, Error.new(:conflict, "durable cancellation won")}
+
         :ok ->
           notify({:run_transition_committed, event_type})
 
@@ -235,6 +239,16 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
                run: requested,
                commit_failures: Map.delete(state.commit_failures, event_type)
            }}
+
+        :durable_cancel ->
+          cancelled =
+            FavnOrchestrator.RunState.transition(state.run,
+              status: :cancelled,
+              result: nil,
+              error: %{type: :operator_cancelled}
+            )
+
+          {{:fail, :durable_cancel}, %{state | commits: commits, run: cancelled}}
 
         :unavailable_then_cancel ->
           {{:fail, :unavailable_then_cancel},
@@ -769,6 +783,19 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
                    1_000
 
     :erlang.trace(pid, false, [:receive])
+  end
+
+  @tag store_opts: [held_task_kinds: [], commit_failures: %{run_finished: :durable_cancel}]
+  test "a saved cancellation is adopted without rewriting its outcome or timestamp", %{
+    fixture: fixture
+  } do
+    {pid, monitor} = start_run(fixture)
+    complete_asset_task(fixture)
+    assert_receive {:durable_cancel_saved, cancelled}, 5_000
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
+    assert HarnessStore.latest_run() == cancelled
+    refute Enum.any?(HarnessStore.commits(), &(&1.event_type == :run_cancelled))
+    assert Enum.count(HarnessStore.commits(), &(&1.event_type == :run_finished)) == 1
   end
 
   @tag store_opts: [

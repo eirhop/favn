@@ -88,6 +88,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           recovery: map() | nil,
           recovery_queue: :queue.queue(),
           cancel_requested: term(),
+          cancellation_dispatched?: boolean(),
           registration_retries: map(),
           paused_admission: map() | nil
         }
@@ -109,6 +110,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             registration_retries: %{},
             recovery_queue: {[], []},
             cancel_requested: nil,
+            cancellation_dispatched?: false,
             accumulated_results: [],
             sequential_refs: [],
             sequential_index: 0,

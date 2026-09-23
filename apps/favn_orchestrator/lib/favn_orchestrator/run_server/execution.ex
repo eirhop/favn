@@ -253,6 +253,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
     do: {:recovery_required, state, {:cancellation_admission_reconciliation_failed, reason}}
 
   defp apply_operation(_state, {:cancel_drain, _, _, _}, next) do
+    next = %{next | cancellation_dispatched?: true}
+
     if map_size(next.awaits) > 0,
       do: {:cont, %{next | status: :awaiting}},
       else: {:terminal, Snapshots.cancelled_terminal(next.run, accumulated_results(next))}
@@ -416,8 +418,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   # A runner reported the awaited task as started. The `:step_running` event is
-  # an advisory presence signal for read models: a persist failure is dropped
-  # rather than retried, because the attempt's terminal step event still lands.
+  # an advisory presence signal for read models, but its durable sequence must
+  # be resolved before persisting the attempt's terminal event.
   defp dispatch_event(%RunExecutionState{} = state, {:runner_task_started, task_id, _task}) do
     case Map.get(state.awaits, task_id) do
       %{started_persisted?: true} ->
@@ -797,6 +799,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
           {:cont, RunExecutionState.t()} | {:terminal, RunState.t()}
   def cancel(%RunExecutionState{recovery: recovery} = state, _reason) when is_map(recovery),
     do: state |> Restore.start() |> defer_pipeline_continue()
+
+  def cancel(%RunExecutionState{cancellation_dispatched?: true} = state, _reason) do
+    if RunExecutionState.in_flight_count(state) > 0,
+      do: {:cont, %{state | status: :awaiting}},
+      else: {:terminal, Snapshots.cancelled_terminal(state.run, accumulated_results(state))}
+  end
 
   def cancel(%RunExecutionState{} = state, reason),
     do: {:operation, state, {:cancel_reconcile, state, reason}}
