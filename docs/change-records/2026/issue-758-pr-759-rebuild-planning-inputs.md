@@ -9,6 +9,7 @@
 | Related work | Existing rebuild planning, runner tasks, and operation cancellation |
 | Affected areas | Core task contracts, Runner input resolution, Orchestrator rebuild planning, PostgreSQL task ownership, API, CLI, and View errors |
 | Approved plan commit | `bb56fb31f2c1defa53dda43209209406299447bb` |
+| Approved manual-retry amendment commit | `924a2a55818cb78bd33696d6394724fa3fe54581` |
 | Last updated | 2026-09-23 |
 
 The original approved baseline is preserved below. The
