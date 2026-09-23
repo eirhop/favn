@@ -442,7 +442,7 @@ deviations exist yet.
 | --- | --- | --- |
 | Source and incident review | Completed against RC18 | Saved Test evidence and static source; no fresh live inspection |
 | Markdown links and whitespace | Passed: all repository-relative links resolve; whitespace check is clean | Documentation only |
-| Mermaid diagrams | Both parsed and rendered successfully with Mermaid 11.12.0 in a local headless browser | Local render; GitHub rendering still requires verification before implementation |
+| Mermaid diagrams | Both parsed and rendered successfully with Mermaid 11.12.0 locally; both GitHub diagrams rendered at the approved baseline and after the PR-number rename (`5bf5b6a4`) | Browser verification of both GitHub render frames; diagrams unchanged by this evidence update |
 | Independent plan review | Approved by Astra Max after correction and recheck of four P2 findings | Design review; no implementation qualification |
 
 Not verified: implementation, concurrency regressions, retry behavior under
