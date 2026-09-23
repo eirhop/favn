@@ -135,6 +135,11 @@ history gap records a run-level reason, skips settlement from that history, and
 retains affected target protection. A missing individual outcome or detail records
 its task/sequence reason while independently proven siblings continue. Reasons are
 saved in versioned cleanup progress before advancing and survive restart.
+Previously saved results remain retained by node and attempt when a later detail
+read fails. Sequential cleanup also saves its accepted results before recording
+settlement. Cleanup advances diagnostic timestamps while the execution finish time
+continues to come from the original terminal row; cleanup neither consumes nor
+resets the execution recovery-attempt budget.
 Confirmed results and safe resources are settled under the current fence. Failure and
 new task claim/start serialize under the history lock: queued or assigned assets
 and mutating helpers cannot start after failure. Already-started work may still

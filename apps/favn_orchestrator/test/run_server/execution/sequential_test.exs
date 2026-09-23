@@ -746,6 +746,16 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
         manifest_content_hash: "sha256:mv",
         asset_ref: ref,
         target_refs: [ref],
+        plan: %Plan{
+          nodes: %{
+            {ref, nil} => %{
+              ref: ref,
+              window: nil,
+              stage: 0,
+              retry_policy: Favn.Retry.Policy.default()
+            }
+          }
+        },
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()}
       )
 
@@ -764,14 +774,21 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       asset_ref: ref,
       node_key: {ref, nil},
       window: nil,
-      asset_step_id: "step",
+      asset_step_id: FavnOrchestrator.AssetStepIdentity.asset_step_id(run.id, {ref, nil}, ref),
       task_id: "task",
       stage: 0,
       attempt: 1,
+      execution_pool: nil,
+      freshness_key: nil,
       materialization_claim: %{purpose: :ownership_only}
     }
 
-    result = %RunnerResult{run_id: run.id, status: :ok, asset_results: []}
+    result = %RunnerResult{
+      run_id: run.id,
+      status: :ok,
+      asset_results: [%Favn.Run.AssetResult{ref: ref, status: :ok, attempt_count: 1}]
+    }
+
     Process.put({FakeStore, :commit_transition}, :succeed)
 
     assert {:terminal, settled} =
@@ -782,9 +799,23 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
 
     assert settled.status == :error
     assert settled.error == :original_failure
-    assert_receive {:commit_transition, %{event: %{event_type: :step_finished}}}
+    assert [%{status: :ok, attempt_count: 1}] = settled.result.node_results
+    assert_receive {:commit_transition, %{event: %{event_type: :step_finished} = event}}
     assert_receive {:commit_transition, %{event: %{event_type: :step_settled}}}
     refute_received {:runner_admission, _}
+    assert [%{status: :ok}] = settled.result.asset_results
+    {:ok, encoded} = FavnOrchestrator.Storage.RunEventCodec.encode(event)
+    {:ok, decoded} = FavnOrchestrator.Storage.RunEventCodec.decode(encoded)
+    progress = %{result_count: 1, steps: %{entry.asset_step_id => %{node_key: entry.node_key}}}
+
+    assert {:ok, restarted} =
+             FailureCleanup.perform(
+               {:restore_results, settled, progress, [{entry.asset_step_id, decoded}]}
+             )
+
+    assert restarted.result.node_results == settled.result.node_results
+    assert restarted.result.asset_results == settled.result.asset_results
+    assert restarted.result.metadata.result_retention.node_result_count == 1
   end
 
   test "sequential confirmed-result cleanup keeps one release owner" do

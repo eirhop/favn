@@ -9665,6 +9665,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     send(pid, {:favn_run_cancel_requested, reason})
+    send(pid, {:favn_run_cancel_requested, reason})
     assert :ok = complete_asset_task(task, task.payload, false)
     :ok = :sys.resume(pid)
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
@@ -18029,7 +18030,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
   defp await_suspended_deferred_pipeline_state!(pid, options) do
     require_waiter? = Keyword.get(options, :require_waiter?, false)
-    await_suspended_deferred_pipeline_state!(pid, require_waiter?, 100)
+    await_suspended_deferred_pipeline_state!(pid, require_waiter?, 1_000)
   end
 
   defp await_suspended_deferred_pipeline_state!(_pid, _require_waiter?, 0),
@@ -18215,13 +18216,22 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       {mode, owner, ordinal} =
         Agent.get_and_update(gate, fn state ->
           if command.event.event_type == state.event and
-               (is_nil(state.command_id) or state.command_id == command.command_id) do
+               (state.mode in [:hold_before, :hold_after] or is_nil(state.command_id) or
+                  state.command_id == command.command_id) do
             {{state.mode, state.owner, state.count + 1},
              %{state | count: state.count + 1, command_id: command.command_id}}
           else
             {{:none, state.owner, 0}, state}
           end
         end)
+
+      if mode == :hold_before do
+        send(owner, {:transition_held, self(), command, :before_commit})
+
+        receive do
+          :release_transition -> :ok
+        end
+      end
 
       fault? =
         mode not in [:none] and
@@ -18245,6 +18255,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           true ->
             FavnStoragePostgres.Runs.Store.commit_transition(command)
         end
+
+      if mode == :hold_after do
+        send(owner, {:transition_held, self(), command, result})
+
+        receive do
+          :release_transition -> :ok
+        end
+      end
 
       result =
         if fault? and mode in [:lost_once, :lost_always, :lost_then_permanent] and
@@ -18284,6 +18302,81 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     Process.unlink(runtime)
     on_exit(fn -> if Process.alive?(runtime), do: GenServer.stop(runtime) end)
     gate
+  end
+
+  @tag committed_lifecycle: true
+  @tag lifecycle_takeover: true
+  test "repeated coordinator crashes before run start spend the durable recovery limit",
+       fixture do
+    {run, _} = create_continuation_pipeline_run!(fixture, 1)
+    install_transition_fault!(:run_started, :hold_before)
+    start_pipeline_runtime!()
+
+    for attempt <- 0..3 do
+      assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+      Process.unlink(pid)
+      assert_receive {:transition_held, helper, command, :before_commit}, 5_000
+      refute helper == pid
+      assert command.event.event_type == :run_started
+
+      assert %{rows: [[^attempt]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT recovery_attempts FROM favn_control.run_ownerships WHERE workspace_id=$1 AND run_id=$2",
+                 [fixture.workspace_id, run.id]
+               )
+
+      kill_run_owner!(fixture, run.id, pid)
+      assert runner_task_ids(fixture.workspace_id, run.id) == []
+    end
+
+    assert {:ok, _} =
+             FavnOrchestrator.RunManager.recover_candidate(fixture.workspace_context, run.id)
+
+    await_failed_cleanup!(fixture.workspace_id, run.id, 1_000)
+    assert {:ok, failed} = get_run(fixture, run.id)
+    assert failed.status == :error
+    assert is_nil(failed.metadata["recovery_attention"])
+    assert runner_task_ids(fixture.workspace_id, run.id) == []
+    refute_receive {:transition_held, _, _, _}, 50
+  end
+
+  @tag committed_lifecycle: true
+  @tag lifecycle_takeover: true
+  test "takeover after a committed terminal reply is lost preserves the exact outcome", fixture do
+    {run, _} = create_continuation_pipeline_run!(fixture, 1)
+    install_transition_fault!(:run_finished, :hold_after)
+    start_pipeline_runtime!()
+    assert {:ok, pid} = RunServer.start_link(%{run_state: run, version: fixture.version})
+    Process.unlink(pid)
+
+    for n <- 1..3 do
+      assert {:ok, task} = claim_asset_task(fixture, "terminal-takeover-#{n}")
+      await_runner_task_waiter!(task)
+      assert :ok = start_runner_task(task)
+      assert :ok = complete_asset_task(task, task.payload, false)
+    end
+
+    assert_receive {:transition_held, helper, command, {:ok, _}}, 5_000
+    refute helper == pid
+    assert command.event.event_type == :run_finished
+    assert {:ok, saved} = FavnOrchestrator.get_run(fixture.workspace_context, run.id)
+    original_ids = runner_task_ids(fixture.workspace_id, run.id)
+    kill_run_owner!(fixture, run.id, pid)
+
+    assert {:ok, _} =
+             FavnOrchestrator.RunManager.recover_candidate(fixture.workspace_context, run.id)
+
+    await_no_active_runs!(1_000)
+    assert {:ok, recovered} = FavnOrchestrator.get_run(fixture.workspace_context, run.id)
+
+    assert {recovered.status, recovered.result, recovered.error, recovered.finished_at,
+            recovered.event_seq} ==
+             {saved.status, saved.result, saved.error, saved.finished_at, saved.event_seq}
+
+    assert runner_task_ids(fixture.workspace_id, run.id) == original_ids
+    assert run_event_count(fixture.workspace_id, run.id, "run_finished") == 1
+    refute_receive {:transition_held, _, _, _}, 50
   end
 
   for event <- [:run_started, :step_running, :run_finished],
@@ -18336,12 +18429,14 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     end
   end
 
-  for malformed? <- [false, true] do
+  for fault <- [:history, :malformed_terminal, :missing_detail] do
     @tag committed_lifecycle: true
     @tag lifecycle_cleanup_fix: true
-    @tag malformed_terminal: malformed?
-    test "corrupt later history drains tasks and retains unknown write protection (malformed=#{malformed?})",
-         %{malformed_terminal: malformed?} do
+    @tag cleanup_fault: fault
+    test "cleanup retains results and unknown write protection after #{fault}", %{
+      cleanup_fault: fault
+    } do
+      malformed? = fault == :malformed_terminal
       alias FavnOrchestrator.RunServer.FailureCleanup
       fixture = continuation_distinct_target_fixture!()
 
@@ -18412,13 +18507,23 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           next
         end)
 
-      assert {:ok, failed} = FailureCleanup.fail(padded, :audit_history_failure)
-
       SQL.query!(
         Repo,
-        "UPDATE favn_control.run_events SET event='{}'::jsonb WHERE workspace_id=$1 AND run_id=$2 AND sequence=52",
+        "UPDATE favn_control.run_ownerships SET recovery_attempts=3 WHERE workspace_id=$1 AND run_id=$2",
         [fixture.workspace_id, run.id]
       )
+
+      assert {:ok, failed} = FailureCleanup.fail(padded, :audit_history_failure)
+      assert {:ok, failed_view} = FavnOrchestrator.get_run(fixture.workspace_context, run.id)
+      assert failed_view.finished_at == failed.updated_at
+
+      if fault != :missing_detail do
+        SQL.query!(
+          Repo,
+          "UPDATE favn_control.run_events SET event='{}'::jsonb WHERE workspace_id=$1 AND run_id=$2 AND sequence=52",
+          [fixture.workspace_id, run.id]
+        )
+      end
 
       if malformed? do
         malformed = Enum.find(tasks, &(&1.task_id != unknown.task_id))
@@ -18433,9 +18538,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
       assert {:ok, cleanup} = FailureCleanup.new(failed, fixture.version)
       assert {:tasks, _} = FailureCleanup.operation(cleanup)
-      checkpointed = checkpoint_cleanup!(cleanup, 100)
+
+      checkpointed =
+        if fault == :missing_detail,
+          do: checkpoint_settlement!(cleanup, 100),
+          else: checkpoint_cleanup!(cleanup, 100)
+
       assert {:ok, checkpointed_run} = get_run(fixture, run.id)
-      assert checkpointed_run.metadata["failure_cleanup"]["unresolved_count"] == 1
+
+      if fault != :missing_detail,
+        do: assert(checkpointed_run.metadata["failure_cleanup"]["unresolved_count"] == 1)
+
+      assert {:ok, checkpointed_view} =
+               FavnOrchestrator.get_run(fixture.workspace_context, run.id)
+
+      assert checkpointed_view.finished_at == failed_view.finished_at
 
       assert {:retry, %{kind: :unavailable}} =
                FailureCleanup.apply_result(
@@ -18451,7 +18568,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  fixture.version
                )
 
-      finished = drain_cleanup!(restarted, 100)
+      missing_id =
+        if fault == :missing_detail,
+          do: hd(checkpointed_run.result.node_results).asset_step_id
+
+      finished = drain_cleanup!(restarted, 100, missing_id)
       assert finished.run.status == :error
 
       assert FavnOrchestrator.Storage.JsonSafe.error(finished.run.error) ==
@@ -18459,13 +18580,45 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
       assert finished.run.metadata["failure_cleanup"]["state"] == "attention"
 
+      assert %{rows: [[3]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT recovery_attempts FROM favn_control.run_ownerships WHERE workspace_id=$1 AND run_id=$2",
+                 [fixture.workspace_id, run.id]
+               )
+
+      assert {:ok, finished_view} = FavnOrchestrator.get_run(fixture.workspace_context, run.id)
+      assert finished_view.finished_at == failed_view.finished_at
+
+      %{rows: [[terminal_at, updated_at]]} =
+        SQL.query!(
+          Repo,
+          "SELECT terminal_at, updated_at FROM favn_control.runs WHERE workspace_id=$1 AND run_id=$2",
+          [fixture.workspace_id, run.id]
+        )
+
+      assert DateTime.compare(terminal_at, failed_view.finished_at) == :eq
+      assert DateTime.compare(updated_at, terminal_at) == :gt
+
       codes =
         Enum.map(finished.run.metadata["failure_cleanup"]["unresolved"], & &1["reason_code"])
 
-      assert "cleanup_history_unreadable" in codes
-      if malformed?, do: assert("terminal_task_resources_unresolved" in codes)
+      if fault == :missing_detail do
+        assert "cleanup_detail_unavailable" in codes
+        assert {:ok, reloaded} = get_run(fixture, run.id)
+        assert reloaded.result.metadata["result_retention"]["node_result_count"] == 2
+        assert Enum.count(finished.run.result.node_results, &(&1.status == :ok)) == 2
 
-      assert run_event_count(fixture.workspace_id, run.id, "step_settled") == 0
+        assert Enum.count(finished.run.result.node_results, &(&1.asset_step_id == missing_id)) ==
+                 1
+
+        assert run_event_count(fixture.workspace_id, run.id, "step_settled") == 2
+      else
+        assert "cleanup_history_unreadable" in codes
+        if malformed?, do: assert("terminal_task_resources_unresolved" in codes)
+        assert run_event_count(fixture.workspace_id, run.id, "step_settled") == 0
+      end
+
       assert Enum.sort(original_ids) == Enum.sort(runner_task_ids(fixture.workspace_id, run.id))
       assert active_execution_lease_count(fixture.workspace_id, run.id) == 0
       assert_runner_demand!(fixture, queued: 0, active: 0, outstanding: 0)
@@ -18502,13 +18655,35 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     if elem(operation, 0) == :progress, do: next, else: checkpoint_cleanup!(next, remaining - 1)
   end
 
-  defp drain_cleanup!(cleanup, remaining) when remaining > 0 do
+  defp checkpoint_settlement!(cleanup, remaining) when remaining > 0 do
     operation = FavnOrchestrator.RunServer.FailureCleanup.operation(cleanup)
     result = FavnOrchestrator.RunServer.FailureCleanup.perform(operation)
 
+    applied = FavnOrchestrator.RunServer.FailureCleanup.apply_result(cleanup, operation, result)
+
+    if match?({:done, _}, applied),
+      do: flunk("cleanup finished before settlement: #{inspect(elem(applied, 1).unresolved)}")
+
+    assert {:cont, next} = applied
+
+    if next.run.result &&
+         Enum.any?(Map.get(next.run.result, :node_results, []), &(&1.status == :ok)),
+       do: next,
+       else: checkpoint_settlement!(next, remaining - 1)
+  end
+
+  defp drain_cleanup!(cleanup, remaining, missing_id) when remaining > 0 do
+    operation = FavnOrchestrator.RunServer.FailureCleanup.operation(cleanup)
+
+    result =
+      case operation do
+        {:detail, _, _, ^missing_id, _} when not is_nil(missing_id) -> {:ok, %{items: []}}
+        _ -> FavnOrchestrator.RunServer.FailureCleanup.perform(operation)
+      end
+
     case FavnOrchestrator.RunServer.FailureCleanup.apply_result(cleanup, operation, result) do
       {:cont, next} ->
-        drain_cleanup!(next, remaining - 1)
+        drain_cleanup!(next, remaining - 1, missing_id)
 
       {:done, next} ->
         next

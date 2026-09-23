@@ -114,7 +114,13 @@ defmodule FavnStoragePostgres.Runs.Decoder do
 
     case RunSnapshotCodec.decode_run(run_record, manifest_record(manifest)) do
       {:ok, run} ->
-        {:ok, %{run | workspace_id: row.workspace_id, deployment_id: row.deployment_id}}
+        {:ok,
+         %{
+           run
+           | workspace_id: row.workspace_id,
+             deployment_id: row.deployment_id,
+             terminal_at: row.terminal_at
+         }}
 
       {:error, reason} ->
         {:error,

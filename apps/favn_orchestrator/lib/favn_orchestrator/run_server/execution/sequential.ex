@@ -218,6 +218,28 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   def resume_persisted(%RunExecutionState{} = state, %{kind: :step_result} = resume) do
     settled = RunState.transition(resume.run, [])
 
+    settled =
+      if failed_cleanup?(settled) do
+        recorded =
+          ResultBuilder.record_execution(
+            settled,
+            resume.entry,
+            resume.entry.stage,
+            resume.entry.attempt,
+            resume.status,
+            resume.asset_results
+          )
+
+        assets = resume.asset_results ++ Map.get(recorded.result, :asset_results, [])
+
+        Snapshots.snapshot_update(recorded,
+          result:
+            Map.put(recorded.result, :asset_results, ResultBuilder.retain_asset_results(assets))
+        )
+      else
+        settled
+      end
+
     retryable? =
       not failed_cleanup?(settled) and resume.retryable? and
         StepAttemptLifecycle.retry_allowed?(settled, resume.entry.node_key, resume.entry.attempt)

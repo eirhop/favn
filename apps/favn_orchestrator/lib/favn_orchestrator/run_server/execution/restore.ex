@@ -304,6 +304,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Restore do
             window: node.window,
             stage: node.stage,
             status: outcome_status(event),
+            attempt_count: field(data, :attempt_count, field(event.data, :attempt, 1)),
             runner_pool: FavnOrchestrator.RunnerPoolSelection.for_node(run, step.node_key),
             execution_pool: Map.get(node, :execution_pool),
             asset_step_id: id

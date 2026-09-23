@@ -1098,25 +1098,54 @@ amendment bodies above remain the review baseline. Inventory/OOM is unchanged.
    startup attention persistence in helpers, and distinguishing known-terminal
    malformed details from unknown task status were corrected before final review.
 
-Incremental counts against audited production `3ccc56093adec1016f6920e2329614a9913dae03`
-are currently production **+566/-359**, tests/support **+667/-51** (documentation
-excluded). Production additions exceed the upper estimate by 46 lines, below its
-100-line variance threshold. Support deletions are 19 below the minimum estimate,
-exceeding its 17.5-line threshold: retained crash tests required small gate/counter
-adaptations, while new fault matrices added coverage without replacing them. This
-variance requires explicit final reviewer acceptance; removing useful tests solely
-to meet a deletion estimate would weaken qualification.
+6. **Final review corrections:** cleanup now projects the original SQL terminal
+   timestamp while its progress events keep their own timestamps. Saved successful
+   node and asset results survive a missing-detail restart, with distinct attempt
+   identities and a bounded newest slice. Sequential cleanup saves its accepted
+   result before settlement, and restored sequential details use their event's
+   attempt number. Retention metadata replaces both decoded and in-memory key
+   spellings. Cleanup settlements no longer reset the execution recovery counter.
+   These changes close demonstrated violations of the preserved baseline; they do
+   not permit settlement from missing evidence or unlock unknown writes.
+7. **Cancellation drain:** repeated hints and post-step progress now reuse the
+   completed cancellation dispatch. They wait for newly accepted result settlement
+   instead of cancelling that settlement a second time. The PostgreSQL race test
+   preserves the successful result, finishes cancelled and admits no replacement.
+8. **Integration:** main PR #759 was merged to resolve the draft PR's conflict.
+   The shared operation-task boundary retains cleanup evidence-only reads and
+   rebuild validation attempt identities. Astra reviewed the combined semantics.
+   The CI-only deadline fixture now asserts the coordinator timer directive; its
+   original deadline-expiry and no-dispatch assertions remain intact. A polling
+   fixture now allows five seconds for its exact deferred-admission checkpoint,
+   matching surrounding lifecycle assertions instead of relying on a 500ms setup.
+
+Conservative incremental accounting (pre-merge amendment changes plus subsequent
+review corrections, excluding unrelated PR #759 and this record) is production
+**+678/-366**, tests/support including canonical documentation **+985/-77**.
+Production additions exceed the upper estimate by 158 lines, beyond the 100-line
+review threshold. The extra production work fixes the final-review findings above
+using existing projection, result and cleanup boundaries; no new scheduler,
+storage schema or retry engine was introduced. Support additions exceed the upper
+estimate by 65, below its 100-line threshold. Retaining and adapting useful crash
+tests explains the low deletion count, which Astra accepted. Final complexity
+acceptance and final-source qualification remain required.
 
 ### Verification progress
 
-- Focused orchestrator/storage-codec suite: **239 passed**, three slow tests
-  excluded; the latest cancellation race correction is awaiting rerun.
+- Focused orchestrator/storage-codec suite before final review corrections:
+  **240 passed**, three slow tests excluded. Focused final-review unit regressions:
+  **54 passed**; the expanded final-source suite is running.
 - Sequential settlement and cancellation each held for **50 seconds**: **2 passed**,
   coordinator responsive and ownership renewal current beyond the real 45-second
   watchdog. No watchdog/timeouts were increased.
 - Dialyzer: **zero errors**, no suppressions added; final-source rerun pending.
 - Query growth test: **passed**, 16 statements at both history sizes.
-- PostgreSQL fault/restart/cancellation qualification, full final-head CI and the
-  fresh final Astra Max implementation review are still in progress. Intermediate
+- PostgreSQL transition matrix and existing target-authority cases: 23 of 25 passed
+  before the last cancellation/gate fixes; both remaining cases then passed. All
+  six added cleanup/restart/takeover/cancellation cases passed after review fixes;
+  final recovery-counter assertion and source reruns are in progress.
+- CI on merged commit `6f4b0911` passed slow, acceptance, quick, native and Dialyzer
+  gates; one fast-suite deadline fixture exposed the timer-directive mismatch now
+  corrected. Full final-head CI and fresh Astra Max approval are still in progress. Intermediate
   failing runs are diagnostic evidence, not qualification. This section will be
   completed with the final results before implementation approval.

@@ -1499,6 +1499,7 @@ defmodule FavnStoragePostgres.Runs.Store do
           """
           UPDATE favn_control.run_ownerships SET recovery_attempts=0, next_recovery_at=expires_at
           WHERE workspace_id=$1 AND run_id=$2 AND recovery_disposition='automatic'
+            AND claim_purpose='execution'
           """,
           [workspace, command.run.id]
         )

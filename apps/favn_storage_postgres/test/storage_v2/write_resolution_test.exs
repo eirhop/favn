@@ -275,10 +275,11 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
       )
 
     restored = %{state | run: persisted}
-    assert {:cont, waiting_again} = Sequential.resume_retry(restored, persisted_retry)
-    [second_timer] = Map.values(waiting_again.retry_timers)
-    assert second_timer.payload.admission_deadline_ms == retry.admission_deadline_ms
-    RunExecutionState.cancel_timers(waiting_again)
+
+    assert {:retry_timer, waiting_again, scheduled_retry} =
+             Sequential.resume_retry(restored, persisted_retry)
+
+    assert scheduled_retry.admission_deadline_ms == retry.admission_deadline_ms
     # Wait on the same UTC clock as the runtime deadline guard. A monotonic
     # sleep does not prove a wall-clock deadline expired after clock correction.
     assert Enum.any?(1..200, fn _ ->

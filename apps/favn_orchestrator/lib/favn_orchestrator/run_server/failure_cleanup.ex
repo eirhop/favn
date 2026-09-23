@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
     PipelineFreshnessCheckpoint,
     RecoveredTask,
     RecoveryProgress,
+    ResultBuilder,
     Restore,
     RunExecutionState,
     Sequential,
@@ -93,6 +94,8 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
             |> Map.put(:terminal_event_type, :run_failed)
             |> Map.put("failure_cleanup", cleanup)
         )
+
+      failed = %{failed | terminal_at: failed.updated_at}
 
       case Persistence.persist_run_step(failed, :run_failed, %{
              status: :error,
@@ -230,8 +233,55 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   def perform({:detail, context, run_id, _id, seq}),
     do: Runs.page_events(context, run_id, after_sequence: seq - 1, limit: 1)
 
-  def perform({:restore_results, run, progress, details}),
-    do: {:ok, Restore.restore_results(run, progress, details)}
+  def perform({:restore_results, run, progress, details}) do
+    restored = Restore.restore_results(run, progress, details)
+    saved = run.result || %{}
+
+    results =
+      (Map.get(saved, :node_results, []) ++ restored.result.node_results)
+      |> Enum.uniq_by(
+        &{Map.get(&1, :asset_step_id) || Map.get(&1, :node_key), Map.get(&1, :attempt_count)}
+      )
+      |> Enum.sort_by(
+        fn result ->
+          timestamp =
+            case Map.get(result, :finished_at) do
+              %DateTime{} = at -> DateTime.to_unix(at, :microsecond)
+              _ -> 0
+            end
+
+          {timestamp, Map.get(result, :attempt_count) || 1}
+        end,
+        :desc
+      )
+      |> Enum.take(128)
+
+    count =
+      max(progress.result_count, ResultBuilder.node_result_count(run)) |> max(length(results))
+
+    retention = %{
+      node_result_count: count,
+      retained_node_result_count: length(results),
+      truncated: count > length(results)
+    }
+
+    metadata =
+      saved
+      |> Map.get(:metadata, %{})
+      |> Map.drop([:result_retention, "result_retention"])
+      |> Map.put(:result_retention, retention)
+
+    {:ok,
+     %{
+       restored
+       | result:
+           Map.merge(saved, %{
+             node_results: results,
+             asset_results: Map.get(saved, :asset_results, []),
+             metadata: metadata
+           })
+     }}
+  end
 
   def perform({:checkpoint, run, index}) do
     if RunState.execution_mode(run) == :sequential,

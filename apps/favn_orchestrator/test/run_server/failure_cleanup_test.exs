@@ -253,6 +253,29 @@ defmodule FavnOrchestrator.RunServer.FailureCleanupTest do
     assert state.unresolved_count == 1
   end
 
+  test "missing detail on restart retains a previously saved successful result" do
+    success = %Favn.Run.NodeResult{asset_step_id: "saved", attempt_count: 2, status: :ok}
+    assets = [%{ref: {MyApp.Asset, :asset}, status: :ok}]
+    previous = %{success | attempt_count: 1, status: :error}
+
+    run = %RunState{
+      result: %{
+        node_results: [success, previous],
+        asset_results: assets,
+        metadata: %{result_retention: %{node_result_count: 1}}
+      }
+    }
+
+    progress = %{steps: %{}, result_count: 1}
+
+    assert {:ok, restored} = FailureCleanup.perform({:restore_results, run, progress, []})
+    assert restored.result.node_results == [success, previous]
+    assert restored.result.asset_results == assets
+    assert restored.result.metadata.result_retention.retained_node_result_count == 2
+    assert {:ok, again} = FailureCleanup.perform({:restore_results, restored, progress, []})
+    assert again.result == restored.result
+  end
+
   test "missing outcome skips that settlement while a transient read retains its place" do
     state = %FailureCleanup{
       run: %RunState{},

@@ -216,7 +216,9 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
   defp retention_key(key), do: key
 
   defp put_retention_metadata(metadata, retention) do
-    Map.put(metadata, :result_retention, retention)
+    metadata
+    |> Map.drop([:result_retention, "result_retention"])
+    |> Map.put(:result_retention, retention)
   end
 
   defp node_result_field(nil, _field), do: nil
