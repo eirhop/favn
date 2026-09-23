@@ -5,10 +5,10 @@
 | Status | Plan reviewed |
 | Type | Bug fix |
 | Primary issue | [#758](https://github.com/eirhop/favn/issues/758) |
-| Pull request | Pending |
+| Pull request | [#759](https://github.com/eirhop/favn/pull/759) |
 | Related work | Existing rebuild planning, runner tasks, and operation cancellation |
 | Affected areas | Core task contracts, Runner input resolution, Orchestrator rebuild planning, PostgreSQL task ownership, API, CLI, and View errors |
-| Approved plan commit | To be recorded in the immediate PR-number update |
+| Approved plan commit | `bb56fb31f2c1defa53dda43209209406299447bb` |
 | Last updated | 2026-09-23 |
 
 ## One-minute summary
@@ -446,7 +446,7 @@ budget first.
 ## Implementation outcome
 
 Implementation has not started. This request prepares and reviews the plan only.
-The draft PR will hold the reviewed baseline; status stays `Plan reviewed` until
+The draft PR holds the reviewed baseline; status stays `Plan reviewed` until
 the implementation stage is requested.
 
 ## Deviations from the approved plan
@@ -461,8 +461,8 @@ recording subsequent implementation decisions and deviations.
 | Original ownership failure | Reproduced on real PostgreSQL; identical task accepted after saving a run | Temporary diagnostic probe, not committed regression or full runner execution |
 | Missing finalization fence | Reproduced on real PostgreSQL after ownership takeover | Temporary diagnostic probe, not a live incident |
 | Existing rebuild/planning worker unit tests | 13 passed on baseline | Fake task persistence does not cover the reported guard |
-| Record links and diff whitespace | All 16 links checked; local targets exist; `git diff --check` clean | Documentation validation only |
-| Mermaid diagrams | Both parsed, rendered with Mermaid 11, and visually inspected before the planning commit | Browser rendering; published GitHub rendering is checked during the PR-number update |
+| Record links and diff whitespace | All repository-relative link targets exist; `git diff --check` clean | Documentation validation only |
+| Mermaid diagrams | Both parsed, rendered with Mermaid 11, and visually inspected before the planning commit; both also rendered with GitHub's live Mermaid renderer from the pushed baseline | Documentation rendering only; no diagram changes after approval |
 
 ### Not verified
 
