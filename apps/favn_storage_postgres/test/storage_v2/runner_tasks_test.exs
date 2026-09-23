@@ -2817,7 +2817,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     previous_wait =
       Application.get_env(:favn_orchestrator, :runner_task_cancellation_ack_wait_ms)
 
-    Application.put_env(:favn_orchestrator, :runner_task_cancellation_ack_wait_ms, 40)
+    Application.put_env(:favn_orchestrator, :runner_task_cancellation_ack_wait_ms, 1_000)
 
     on_exit(fn ->
       if is_nil(previous_wait) do
@@ -2873,7 +2873,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     {cancelled, remaining} = ActiveTaskSet.cancel_all(run, work_set, :operator_request)
 
-    assert_receive {:runner_observed_cancellation, ^task_id}
+    assert_receive {:runner_observed_cancellation, ^task_id}, 1_000
     assert ActiveTaskSet.task_ids(remaining) == []
     assert [%{status: status}] = cancelled.metadata.cancel_outcomes
     assert status in [:acknowledged, :already_completed]
@@ -2883,6 +2883,8 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
                workspace_context: fixture.workspace_context,
                task_id: queued.task_id
              })
+
+    Application.put_env(:favn_orchestrator, :runner_task_cancellation_ack_wait_ms, 40)
 
     assert {:ok, queued_timeout} = Store.enqueue(enqueue_command(fixture, "dynamic-timeout"))
     timeout_task_id = queued_timeout.task_id
@@ -2919,7 +2921,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     {timed_out, retained} =
       ActiveTaskSet.cancel_all(timeout_run, timeout_work_set, :operator_request)
 
-    assert_receive {:runner_ignored_cancellation, ^timeout_task_id}
+    assert_receive {:runner_ignored_cancellation, ^timeout_task_id}, 1_000
     assert ActiveTaskSet.task_ids(retained) == [queued_timeout.task_id]
     assert [%{status: :requested}] = timed_out.metadata.cancel_outcomes
 
