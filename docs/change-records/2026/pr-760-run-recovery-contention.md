@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | None. On 2026-09-23 the maintainer explicitly requested this record without a GitHub issue. |
 | Pull request | [#760](https://github.com/eirhop/favn/pull/760) |
@@ -11,7 +11,7 @@
 | Approved plan commit | [9ebf481ef21edd600a0e1add6dcf6ef3309d363b](https://github.com/eirhop/favn/commit/9ebf481ef21edd600a0e1add6dcf6ef3309d363b) |
 | Approved amendment commit | [95a73af4](https://github.com/eirhop/favn/commit/95a73af4) |
 | Approved follow-up amendment commit | [89229b26](https://github.com/eirhop/favn/commit/89229b26c2b6319a5ee3f0d7883bc317d8cf5aed) |
-| Follow-up amendment | Approved by Astra Max on 2026-09-23; implementation and qualification outstanding |
+| Follow-up amendment | Implemented; Astra Max source review approved on 2026-09-23; exact-head CI is the release gate |
 | Last updated | 2026-09-23 |
 
 ## One-minute summary
@@ -1040,7 +1040,7 @@ budget expiry and to keep transient history-read failures in pending cleanup.
 | Document verification | Both earlier approved baselines remain unchanged; local links and `git diff --check` pass; both new Mermaid diagrams parsed and rendered locally. |
 | Approval boundary | Plan only. Code corrections, required fault tests, green final-head CI and a new independent implementation review remain outstanding. |
 
-## Follow-up implementation outcome (in qualification)
+## Follow-up implementation outcome
 
 Implemented against the independently approved follow-up amendment at
 `89229b26c2b6319a5ee3f0d7883bc317d8cf5aed`. The preserved baseline and both
@@ -1121,31 +1121,41 @@ amendment bodies above remain the review baseline. Inventory/OOM is unchanged.
 
 Conservative incremental accounting (pre-merge amendment changes plus subsequent
 review corrections, excluding unrelated PR #759 and this record) is production
-**+678/-366**, tests/support including canonical documentation **+985/-77**.
+**+678/-366**, tests/support including canonical documentation **+987/-77**.
 Production additions exceed the upper estimate by 158 lines, beyond the 100-line
 review threshold. The extra production work fixes the final-review findings above
 using existing projection, result and cleanup boundaries; no new scheduler,
 storage schema or retry engine was introduced. Support additions exceed the upper
-estimate by 65, below its 100-line threshold. Retaining and adapting useful crash
-tests explains the low deletion count, which Astra accepted. Final complexity
-acceptance and final-source qualification remain required.
+estimate by 67, below its 100-line threshold. Retaining and adapting useful crash
+tests explains the low deletion count, which Astra accepted. Astra Max explicitly accepted the production variance and retained-test rationale;
+release qualification still requires green exact-head checks.
 
-### Verification progress
+### Verification and independent implementation review
 
-- Focused orchestrator/storage-codec suite before final review corrections:
-  **240 passed**, three slow tests excluded. Focused final-review unit regressions:
-  **54 passed**; the expanded final-source suite is running.
-- Sequential settlement and cancellation each held for **50 seconds**: **2 passed**,
-  coordinator responsive and ownership renewal current beyond the real 45-second
-  watchdog. No watchdog/timeouts were increased.
-- Dialyzer: **zero errors**, no suppressions added; final-source rerun pending.
-- Query growth test: **passed**, 16 statements at both history sizes.
-- PostgreSQL transition matrix and existing target-authority cases: 23 of 25 passed
-  before the last cancellation/gate fixes; both remaining cases then passed. All
-  six added cleanup/restart/takeover/cancellation cases passed after review fixes;
-  final recovery-counter assertion and source reruns are in progress.
-- CI on merged commit `6f4b0911` passed slow, acceptance, quick, native and Dialyzer
-  gates; one fast-suite deadline fixture exposed the timer-directive mismatch now
-  corrected. Full final-head CI and fresh Astra Max approval are still in progress. Intermediate
-  failing runs are diagnostic evidence, not qualification. This section will be
-  completed with the final results before implementation approval.
+| Check | Evidence |
+| --- | --- |
+| Expanded final-source orchestrator, codec, projection, sequential and operation/rebuild integration tests | 263 passed; three slow tests excluded. |
+| Final-review unit regressions | 54 passed, including sequential success and restart result retention. |
+| PostgreSQL cleanup, crash/takeover, cancellation and original-deadline regression selection | 7 passed. Cleanup counter remains 3 across settlement; original terminal timestamp and unknown-write guards retained. |
+| Additional PostgreSQL reload assertion |Checks the decoded result-retention count after missing-detail recovery; covered by the exact-head regression suite. |
+| Sequential and cancellation responsiveness |Both 50-second delays passed beyond the unchanged 45-second watchdog. The full slow tier also passed CI on merged code 6f4b0911. |
+| Transition query cost | 16 statements for both small history and 10,000 siblings; Astra Max explicitly approved this constant bound. |
+| Compile / static checks |Warnings-as-errors compilation, formatting and test-tier checks pass. Credo/Sobelow and Dialyzer pass on merged code; exact-head checks qualify the final corrections. No suppression added. |
+| Documentation |Reviewed plan/amendment bodies preserved; local links and whitespace checks pass. |
+| Final CI authority |[PR #760 checks](https://github.com/eirhop/favn/pull/760/checks) qualify the current head. Earlier runs are diagnostic history, not substitutes for the current head. |
+
+Astra Max independently reviewed the full implementation against the three
+preserved approved baselines, then rechecked its findings and the PR #759 integration.
+The reviewer verified 54 unit and six PostgreSQL regressions before the final
+counter/deadline selection passed seven. Final verdict: **Approve, conditional on
+final qualification**. No remaining actionable source findings. The reviewer
+explicitly accepted production **+678/-366**, the 158-line addition variance,
+the support/test expansion and the 16-statement constant query bound.
+
+The final review corrected original-finish-time projection, saved-result retention
+across missing-detail restart, sequential cleanup result retention, duplicate
+retention metadata keys, actual retry-attempt identity and cleanup counter reset.
+The repeated-start-crash and committed-terminal-reply-loss tests close the
+previously missing takeover proof. Final qualification is the current-head CI gate
+linked above; the PR remains draft until those checks pass. No merge, deployment,
+production retry or inventory/OOM change is included.
