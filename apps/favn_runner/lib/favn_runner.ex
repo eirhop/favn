@@ -248,7 +248,8 @@ defmodule FavnRunner do
              manifest,
              relation_by_module,
              work,
-             context
+             context,
+             :input_resolution
            ),
          {:ok, resolution} <-
            RuntimeInputResolver.resolve(

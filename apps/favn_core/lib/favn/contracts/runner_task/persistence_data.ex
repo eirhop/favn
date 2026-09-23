@@ -14,6 +14,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     DateTime,
     Decimal,
     Favn.Contracts.RunnerWork,
+    Favn.Contracts.RuntimeInputResolutionRequest,
+    Favn.Contracts.RuntimeInputExpectation,
     Favn.RuntimeCatalog.Publication,
     Favn.Contracts.RunnerResult,
     Favn.Contracts.RunnerAssetEvidence,

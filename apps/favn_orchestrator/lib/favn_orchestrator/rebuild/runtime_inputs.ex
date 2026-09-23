@@ -4,15 +4,12 @@ defmodule FavnOrchestrator.Rebuild.RuntimeInputs do
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
-  alias Favn.RuntimeInput.Pin
-  alias FavnOrchestrator.AssetRunnerTasks
   alias FavnOrchestrator.ExecutionPackages
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.RunManager.Submission
   alias FavnOrchestrator.RunManager.SubmissionBuilder
   alias FavnOrchestrator.RunServer.Execution.StepAttemptLifecycle
-  alias FavnOrchestrator.Runs
 
   @spec freeze(
           WorkspaceContext.t(),
@@ -81,9 +78,7 @@ defmodule FavnOrchestrator.Rebuild.RuntimeInputs do
          {:ok, expectation} <-
            resolve_expectation(
              context,
-             run,
-             node_key,
-             Map.get(node, :stage, 0),
+             version,
              work,
              spec
            ) do
@@ -96,40 +91,32 @@ defmodule FavnOrchestrator.Rebuild.RuntimeInputs do
 
   defp resolve_expectation(
          _context,
-         _run,
-         _node_key,
-         _stage,
+         _version,
          %{execution_package: %ExecutionPackage{sql_execution: %{runtime_inputs: nil}}},
          _spec
        ),
        do: {:ok, nil}
 
-  defp resolve_expectation(context, run, node_key, stage, work, spec) do
-    metadata = Map.put(work.metadata, :runner_task_mode, :runtime_input_resolution)
-    work = %{work | metadata: metadata}
-
-    continuation = %{
-      rebuild_operation_id: spec.rebuild.operation_id,
-      rebuild_action_id: spec.rebuild.action_id,
-      rebuild_item_id: spec.rebuild.item_id,
-      purpose: :runtime_input_resolution
+  defp resolve_expectation(context, version, work, spec) do
+    request = %Favn.Contracts.RuntimeInputResolutionRequest{
+      work: %{work | deadline_at: spec.validation.deadline_at}
     }
 
-    with {:ok, task, _work} <-
-           AssetRunnerTasks.enqueue(run, work, node_key, stage, 1, continuation),
-         {:ok, _result} <-
-           OperationRunnerTasks.await(context, task.task_id),
-         {:ok, [%Pin{} = pin]} <- Runs.get_runtime_inputs(context, run.id, [node_key]) do
-      {:ok,
-       %{
-         resolver: Atom.to_string(pin.resolver),
-         input_identity: pin.input_identity,
-         payload_fingerprint: pin.payload_fingerprint
-       }}
-    else
-      {:ok, []} -> {:error, :rebuild_runtime_input_resolution_missing}
-      {:error, _reason} = error -> error
-      invalid -> {:error, {:invalid_rebuild_runtime_input_resolution, invalid}}
+    with {:ok, %Favn.Contracts.RuntimeInputExpectation{} = expectation} <-
+           OperationRunnerTasks.ensure_and_await(
+             context,
+             version,
+             spec.asset.ref,
+             :runtime_input_resolution,
+             request,
+             {:rebuild_inputs, spec.rebuild.operation_id, spec.rebuild.action_id,
+              spec.rebuild.item_id},
+             operation_id: spec.rebuild.operation_id,
+             rebuild_operation_id: spec.rebuild.operation_id,
+             validation: spec.validation,
+             runner_binding: spec.runner_binding
+           ) do
+      {:ok, Map.from_struct(expectation)}
     end
   end
 

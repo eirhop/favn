@@ -174,7 +174,8 @@ defmodule FavnOrchestrator.Operator.Rebuilds do
         admin? and
           operation.state not in [:succeeded, :cancelled] and operation.cancel_requested != true,
       retry:
-        admin? and operation.state == :failed and operation.cleanup_state == :not_started and
+        admin? and operation.state == :failed and operation.action_count > 0 and
+          operation.cleanup_state == :not_started and
           empty?(operation.unknown_outcome),
       reconcile:
         admin? and

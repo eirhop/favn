@@ -30,6 +30,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   @terminal_statuses [:succeeded, :failed, :cancelled, :unknown]
 
   @capabilities %{
+    runtime_input_resolution: "runtime_input_resolution",
     relation_inspection: "relation_inspection",
     generation_capabilities: "generation_capabilities",
     generation_marker_read: "generation_marker_read",
@@ -92,6 +93,19 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   end
 
   defp ensure_task(context, version, asset_ref, task_kind, payload, domain_identity, opts) do
+    validation = Keyword.get(opts, :validation)
+
+    {domain_identity, opts} =
+      if validation do
+        {{domain_identity, validation.attempt_id},
+         Keyword.merge(opts,
+           orchestration_context: FavnOrchestrator.Rebuild.Validation.task_context(validation),
+           deadline_at: validation.deadline_at
+         )}
+      else
+        {domain_identity, opts}
+      end
+
     task_id = task_id(context.workspace_id, task_kind, domain_identity, version)
 
     with {:ok, existing_task} <- existing_task(context, task_id),
@@ -112,7 +126,9 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
              PersistenceCodec.encode_payload(task_kind, payload),
            {:ok, orchestration_context} <-
              RunnerTaskContext.encode(Keyword.get(opts, :orchestration_context, %{})),
-           {:ok, required_capability} <- Map.fetch(@capabilities, task_kind) do
+           {:ok, required_capability} <- Map.fetch(@capabilities, task_kind),
+           :ok <-
+             validate_resolution_support(task_kind, runner_pool, release_id, required_capability) do
         command = %EnqueueRunnerTask{
           workspace_context: context,
           platform_context: Keyword.get(opts, :platform_context),
@@ -141,7 +157,7 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
 
         with {:ok, task} <- ensure_persisted(context, existing_task, command),
              do:
-               if(Keyword.get(opts, :reconcile_only?, false),
+               if(validation || Keyword.get(opts, :reconcile_only?, false),
                  do: {:ok, task},
                  else: maybe_retry_safe(context, task)
                )
@@ -165,6 +181,22 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
       :ok
     end
   end
+
+  defp validate_resolution_support(:runtime_input_resolution = kind, pool, release, capability) do
+    if Process.whereis(FavnOrchestrator.RunnerRegistry) &&
+         FavnOrchestrator.RunnerRegistry.task_support(pool, release, kind, capability) ==
+           :unsupported,
+       do:
+         {:error,
+          FavnOrchestrator.Persistence.Error.new(
+            :invalid,
+            "The pinned runner release does not support rebuild input checks",
+            details: %{reason_code: "rebuild_input_resolution_unsupported"}
+          )},
+       else: :ok
+  end
+
+  defp validate_resolution_support(_, _, _, _), do: :ok
 
   defp ensure_persisted(context, nil, command) do
     with {:ok, authority} <-
@@ -276,7 +308,14 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   @spec await(WorkspaceContext.t(), String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def await(%WorkspaceContext{} = context, task_id, opts \\ [])
       when is_binary(task_id) and is_list(opts) do
-    timeout_ms = Keyword.get(opts, :timeout, @default_timeout_ms)
+    timeout_ms =
+      case Keyword.get(opts, :validation) do
+        nil ->
+          Keyword.get(opts, :timeout, @default_timeout_ms)
+
+        validation ->
+          max(DateTime.diff(validation.deadline_at, DateTime.utc_now(), :millisecond), 1)
+      end
 
     with :ok <- validate_timeout(timeout_ms),
          {:ok, task} <- fetch(context, task_id) do

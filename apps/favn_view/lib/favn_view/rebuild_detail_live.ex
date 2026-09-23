@@ -289,5 +289,16 @@ defmodule FavnView.RebuildDetailLive do
   defp configured(key, default), do: Application.get_env(:favn_view, key, default)
 
   defp error_label(:forbidden), do: "Administrator access is required."
+
+  defp error_label(%{
+         details: %{reason_code: "rebuild_input_resolution_unsupported", operation_id: id}
+       }),
+       do:
+         "Rebuild #{id} needs an upgraded runner release. Activate an upgraded release and create a new plan."
+
+  defp error_label(%{details: %{reason_code: code, operation_id: id}})
+       when code in ["rebuild_planning_failed", "rebuild_validation_failed"] and is_binary(id),
+       do: "Rebuild input checks failed for #{id}. Retry manually."
+
   defp error_label(_failure), do: "The rebuild request could not be completed."
 end

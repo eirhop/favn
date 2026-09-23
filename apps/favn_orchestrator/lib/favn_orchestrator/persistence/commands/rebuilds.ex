@@ -98,6 +98,7 @@ defmodule FavnOrchestrator.Persistence.Commands.BeginRebuildPlan do
     :occurred_at
   ]
   defstruct [
+    :validation,
     :workspace_context,
     :command_id,
     :operation_id,
@@ -116,6 +117,7 @@ defmodule FavnOrchestrator.Persistence.Commands.BeginRebuildPlan do
   ]
 
   @type t :: %__MODULE__{
+          validation: FavnOrchestrator.Rebuild.Validation.t() | nil,
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           operation_id: String.t(),
@@ -160,6 +162,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateRebuildPlan do
     :occurred_at
   ]
   defstruct [
+    :validation,
     :workspace_context,
     :command_id,
     :operation_id,
@@ -184,6 +187,7 @@ defmodule FavnOrchestrator.Persistence.Commands.CreateRebuildPlan do
   ]
 
   @type t :: %__MODULE__{
+          validation: FavnOrchestrator.Rebuild.Validation.t() | nil,
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           operation_id: String.t(),
@@ -246,9 +250,11 @@ defmodule FavnOrchestrator.Persistence.Commands.StartRebuildOperation do
     :expected_version,
     :occurred_at
   ]
-  defstruct @enforce_keys ++ [:idempotency]
+  defstruct @enforce_keys ++ [:idempotency, :validation, :binding_versions]
 
   @type t :: %__MODULE__{
+          binding_versions: map() | nil,
+          validation: FavnOrchestrator.Rebuild.Validation.t() | nil,
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           operation_id: String.t(),
@@ -300,9 +306,11 @@ defmodule FavnOrchestrator.Persistence.Commands.RetryRebuildOperation do
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.CommandIdempotency
   @enforce_keys [:workspace_context, :command_id, :operation_id, :plan_hash, :occurred_at]
-  defstruct @enforce_keys ++ [:idempotency]
+  defstruct @enforce_keys ++ [:idempotency, :validation, :binding_versions]
 
   @type t :: %__MODULE__{
+          binding_versions: map() | nil,
+          validation: FavnOrchestrator.Rebuild.Validation.t() | nil,
           workspace_context: WorkspaceContext.t(),
           command_id: String.t(),
           operation_id: String.t(),
@@ -765,6 +773,7 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
   alias FavnOrchestrator.Persistence.Results.{RebuildLease, RebuildTimestamps}
 
   defstruct [
+    :validation,
     :workspace_id,
     :operation_id,
     :root_target_id,
@@ -801,6 +810,7 @@ defmodule FavnOrchestrator.Persistence.Results.RebuildOperation do
   ]
 
   @type t :: %__MODULE__{
+          validation: FavnOrchestrator.Rebuild.Validation.t() | nil,
           workspace_id: String.t(),
           operation_id: String.t(),
           root_target_id: String.t(),
@@ -975,5 +985,52 @@ defmodule FavnOrchestrator.Persistence.Results.TargetOperationLock do
           version: pos_integer(),
           inserted_at: DateTime.t(),
           updated_at: DateTime.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.BeginRebuildValidation do
+  @moduledoc "Records an explicitly authorized start or retry check before dispatch."
+  @enforce_keys [:workspace_context, :validation, :plan_hash]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          validation: FavnOrchestrator.Rebuild.Validation.t(),
+          plan_hash: String.t()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Commands.CloseRebuildValidation do
+  @moduledoc "Stops an unaccepted validation attempt without changing prior write evidence."
+  @enforce_keys [:workspace_context, :validation]
+  defstruct @enforce_keys ++ [reason: "rebuild_validation_interrupted", expired_only: false]
+
+  @type t :: %__MODULE__{
+          workspace_context: FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          validation: FavnOrchestrator.Rebuild.Validation.t(),
+          reason: String.t() | FavnOrchestrator.Persistence.Error.t(),
+          expired_only: boolean()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.ExpireRebuildValidations do
+  @moduledoc "Closes a bounded batch of expired checks without resuming their work."
+  @enforce_keys [:workspace_context]
+  defstruct @enforce_keys ++ [limit: 50]
+
+  @type t :: %__MODULE__{
+          workspace_context: FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          limit: pos_integer()
+        }
+end
+
+defmodule FavnOrchestrator.Persistence.Queries.GetRebuildValidation do
+  @moduledoc "Reads the immutable outcome of one rebuild validation request."
+  @enforce_keys [:workspace_context, :validation]
+  defstruct @enforce_keys
+
+  @type t :: %__MODULE__{
+          workspace_context: FavnOrchestrator.Persistence.WorkspaceContext.t(),
+          validation: FavnOrchestrator.Rebuild.Validation.t()
         }
 end

@@ -1,24 +1,14 @@
 defmodule FavnOrchestrator.RebuildPlanningWorker do
-  @moduledoc """
-  Owns one durable rebuild-planning continuation and its dispatcher lease.
-
-  The registry identity is process-local advisory state. PostgreSQL remains the
-  authority, and the dispatcher fence prevents a stale worker from finalizing.
-  """
-
+  @moduledoc "Owns one live rebuild validation attempt. Process or lease loss requires manual retry."
   use GenServer
 
   alias FavnOrchestrator.Persistence
-  alias FavnOrchestrator.Persistence.Commands.ClaimRebuildOperation
-  alias FavnOrchestrator.Persistence.Commands.TransitionRebuildOperation
+  alias FavnOrchestrator.Persistence.Commands.CloseRebuildValidation
+  alias FavnOrchestrator.Persistence.Commands.RenewRebuildOperationLease
   alias FavnOrchestrator.Persistence.Error
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
   alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Rebuilds
-  alias FavnOrchestrator.RuntimeConfig
-
-  @default_lease_ms 30_000
-  @default_timeout_ms 300_000
 
   def child_spec(opts) do
     operation = Keyword.fetch!(opts, :operation)
@@ -37,88 +27,78 @@ defmodule FavnOrchestrator.RebuildPlanningWorker do
     operation = Keyword.fetch!(opts, :operation)
 
     GenServer.start_link(__MODULE__, opts,
-      name: via(context.workspace_id, operation.operation_id)
+      name: via(context.workspace_id, operation.operation_id, operation.validation.attempt_id)
     )
   end
 
-  @doc "Starts one unique planning worker, or returns the already-running worker."
+  @doc "Starts the worker only for a newly admitted attempt."
   def ensure(%WorkspaceContext{} = context, %RebuildOperation{} = operation, opts \\ []) do
-    child =
+    DynamicSupervisor.start_child(
+      FavnOrchestrator.RebuildPlanningSupervisor,
       {__MODULE__,
        [
          context: context,
          operation: operation,
-         owner_id: Keyword.get(opts, :owner_id),
-         lease_duration_ms: Keyword.get(opts, :lease_duration_ms, @default_lease_ms),
          resume: Keyword.get(opts, :resume, &Rebuilds.resume_planning/2)
        ]}
-
-    case DynamicSupervisor.start_child(FavnOrchestrator.RebuildPlanningSupervisor, child) do
-      {:ok, pid} -> {:ok, pid}
+    )
+    |> case do
       {:error, {:already_started, pid}} -> {:ok, pid}
-      {:error, reason} -> {:error, {:rebuild_planning_worker_start_failed, reason}}
+      result -> result
     end
   end
 
-  @doc "Ensures the unique worker and waits for its durable planning outcome."
-  def ensure_and_await(
-        %WorkspaceContext{} = context,
-        %RebuildOperation{} = operation,
-        opts \\ []
-      ) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
+  @doc "Starts a newly admitted attempt and waits within its fixed deadline."
+  def ensure_and_await(context, operation, opts \\ []) do
+    with {:ok, pid} <- ensure(context, operation, opts), do: await(pid, context, operation)
+  end
 
-    with {:ok, pid} <- ensure(context, operation, opts) do
-      GenServer.call(pid, :await, timeout)
+  @doc "Observes a replay without ever starting a replacement worker."
+  def await_existing(_context, %{validation: nil} = operation),
+    do: {:error, FavnOrchestrator.Rebuild.Validation.failure(operation.operation_id, :plan)}
+
+  def await_existing(context, operation) do
+    case Registry.lookup(
+           FavnOrchestrator.RebuildPlanningRegistry,
+           {context.workspace_id, operation.operation_id, operation.validation.attempt_id}
+         ) do
+      [{pid, _}] -> await(pid, context, operation)
+      [] -> settled(context, operation)
     end
-  catch
-    :exit, reason -> {:error, {:rebuild_planning_worker_stopped, reason}}
   end
 
-  @doc "Returns process-local planning continuations to exclude from generic claims."
-  def active_operation_ids(workspace_id) when is_binary(workspace_id) do
-    Registry.select(FavnOrchestrator.RebuildPlanningRegistry, [
-      {{{workspace_id, :"$1"}, :_, :_}, [], [:"$1"]}
-    ])
-  end
+  @doc "Lists process-local workers; durable leases remain authoritative."
+  def active_operation_ids(workspace_id),
+    do:
+      Registry.select(FavnOrchestrator.RebuildPlanningRegistry, [
+        {{{workspace_id, :"$1", :_}, :_, :_}, [], [:"$1"]}
+      ])
 
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
-    operation = Keyword.fetch!(opts, :operation)
-
-    owner_id =
-      Keyword.get(opts, :owner_id) || operation.dispatcher.owner || planning_owner_id()
 
     state = %{
       context: Keyword.fetch!(opts, :context),
-      operation: operation,
-      owner_id: owner_id,
-      lease_ms: Keyword.fetch!(opts, :lease_duration_ms),
-      resume: Keyword.fetch!(opts, :resume),
+      operation: Keyword.fetch!(opts, :operation),
+      execute: Keyword.fetch!(opts, :resume),
       task: nil,
       waiters: [],
-      renew_timer: nil
+      timer: nil
     }
 
-    {:ok, state, {:continue, :claim_and_resume}}
+    {:ok, state, {:continue, :start}}
   end
 
   @impl true
-  def handle_continue(:claim_and_resume, state) do
-    case claim(state) do
-      {:ok, %RebuildOperation{state: :planning} = operation} ->
-        task = Task.async(fn -> state.resume.(state.context, operation) end)
-        {:noreply, schedule_renewal(%{state | operation: operation, task: task})}
+  def handle_continue(:start, state) do
+    case renew(state) do
+      :ok ->
+        task = Task.async(fn -> state.execute.(state.context, state.operation) end)
+        {:noreply, schedule(%{state | task: task})}
 
-      {:ok, %RebuildOperation{} = operation} ->
-        finish({:error, {:rebuild_planning_not_runnable, operation.state}}, state)
-
-      {:ok, nil} ->
-        finish({:error, :rebuild_planning_not_found}, state)
-
-      {:error, reason} ->
-        finish({:error, reason}, state)
+      _ ->
+        finish({:error, failure(state.operation)}, state)
     end
   end
 
@@ -128,127 +108,172 @@ defmodule FavnOrchestrator.RebuildPlanningWorker do
   @impl true
   def handle_info({ref, result}, %{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
-    result = maybe_terminalize_permanent_failure(result, state)
     finish(result, %{state | task: nil})
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %Task{ref: ref}} = state) do
-    finish({:error, {:rebuild_planning_task_stopped, reason}}, %{state | task: nil})
-  end
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{task: %Task{ref: ref}} = state),
+    do: finish({:error, failure(state.operation)}, %{state | task: nil})
+
+  def handle_info({:EXIT, _, _}, state), do: {:noreply, state}
 
   def handle_info(:renew, state) do
-    case claim(state) do
-      {:ok,
-       %RebuildOperation{
-         state: :planning,
-         dispatcher: %{fencing_token: fencing_token}
-       } = operation}
-      when fencing_token == state.operation.dispatcher.fencing_token ->
-        {:noreply, schedule_renewal(%{state | operation: operation, renew_timer: nil})}
-
-      {:ok, %RebuildOperation{state: state_name}} when state_name in [:cancelling, :cancelled] ->
-        {:noreply, %{state | renew_timer: nil}}
-
-      {:ok, nil} ->
-        {:noreply, %{state | renew_timer: nil}}
-
-      _fenced_or_unavailable ->
-        stop_task(state.task)
-        finish({:error, :rebuild_planning_fenced}, %{state | task: nil, renew_timer: nil})
-    end
+    if renew(state) == :ok,
+      do: {:noreply, schedule(state)},
+      else: finish({:error, failure(state.operation)}, state)
   end
 
-  def handle_info({:EXIT, pid, _reason}, %{task: %Task{pid: pid}} = state),
-    do: {:noreply, state}
-
   @impl true
-  def terminate(_reason, state) do
-    if state.renew_timer, do: Process.cancel_timer(state.renew_timer)
-    stop_task(state.task)
+  def terminate(_, state) do
+    if state.timer, do: Process.cancel_timer(state.timer)
+    if state.task, do: Task.shutdown(state.task, :brutal_kill)
     :ok
   end
 
-  defp claim(state) do
-    Persistence.stores().rebuilds.claim_operation(%ClaimRebuildOperation{
-      workspace_context: state.context,
-      command_id:
-        command_id(
-          "planning-claim",
-          state.operation.operation_id <>
-            ":" <> Integer.to_string(System.unique_integer([:positive, :monotonic]))
-        ),
-      owner_id: state.owner_id,
-      lease_duration_ms: state.lease_ms,
-      operation_id: state.operation.operation_id
-    })
-  end
+  defp renew(%{operation: %{validation: nil}}), do: {:error, :validation_required}
 
-  defp schedule_renewal(state) do
-    if state.renew_timer, do: Process.cancel_timer(state.renew_timer)
-    delay = max(div(state.lease_ms, 3), 100)
-    %{state | renew_timer: Process.send_after(self(), :renew, delay)}
-  end
+  defp renew(state) do
+    v = state.operation.validation
 
-  defp maybe_terminalize_permanent_failure({:error, %Error{kind: kind} = error}, state)
-       when kind in [:conflict, :invalid, :not_found] do
-    operation = refresh_claim(state)
-
-    case operation do
-      %RebuildOperation{state: :planning} = operation ->
-        case Persistence.stores().rebuilds.transition_operation(%TransitionRebuildOperation{
-               workspace_context: state.context,
-               command_id: command_id("planning-failed", operation.operation_id),
-               operation_id: operation.operation_id,
-               owner_id: state.owner_id,
-               fencing_token: operation.dispatcher.fencing_token,
-               expected_version: operation.version,
-               expected_states: [:planning],
-               state: :failed,
-               phase: :terminal,
-               terminal_error: %{
-                 outcome: "safe_failure",
-                 reason: "rebuild_planning_snapshot_unavailable",
-                 detail: error.message
-               },
-               occurred_at: DateTime.utc_now()
-             }) do
-          {:ok, _failed} -> {:error, error}
-          {:error, transition_error} -> {:error, transition_error}
-        end
-
-      _other ->
-        {:error, error}
+    if v.status == "active" and DateTime.compare(v.deadline_at, DateTime.utc_now()) == :gt do
+      Persistence.stores().rebuilds.renew_operation_lease(%RenewRebuildOperationLease{
+        workspace_context: state.context,
+        command_id:
+          "validation-renew:" <>
+            v.attempt_id <> ":" <> Integer.to_string(System.unique_integer([:positive])),
+        operation_id: v.operation_id,
+        owner_id: v.owner_id,
+        fencing_token: v.fencing_token,
+        lease_duration_ms: 30_000,
+        occurred_at: DateTime.utc_now()
+      })
+    else
+      {:error, :validation_interrupted}
     end
   end
 
-  defp maybe_terminalize_permanent_failure(result, _state), do: result
-
-  defp refresh_claim(state) do
-    case claim(state) do
-      {:ok, operation} -> operation
-      _other -> nil
-    end
-  end
+  defp schedule(state), do: %{state | timer: Process.send_after(self(), :renew, 10_000)}
 
   defp finish(result, state) do
+    result =
+      case result do
+        {:error, %Error{details: %{reason_code: "rebuild_input_resolution_unsupported"}}} ->
+          {:error,
+           %{
+             failure(state.operation)
+             | details: %{
+                 reason_code: "rebuild_input_resolution_unsupported",
+                 operation_id: state.operation.operation_id
+               },
+               message:
+                 "The pinned runner release does not support rebuild input checks. Activate an upgraded release and create a new plan."
+           }}
+
+        {:error, %Error{kind: kind} = error} when kind in [:conflict, :fenced] ->
+          {:error,
+           Error.new(kind, "Rebuild checks are no longer current. Retry manually.",
+             details: %{
+               reason_code:
+                 if(error.details[:reason_code] == "rebuild_plan_stale",
+                   do: "rebuild_plan_stale",
+                   else: "rebuild_validation_interrupted"
+                 ),
+               operation_id: state.operation.operation_id
+             }
+           )}
+
+        {:error, _} ->
+          {:error, failure(state.operation)}
+
+        _ ->
+          result
+      end
+
+    result =
+      if match?({:error, _}, result) and state.operation.validation do
+        case Persistence.stores().rebuilds.close_validation(%CloseRebuildValidation{
+               workspace_context: state.context,
+               validation: state.operation.validation,
+               reason: elem(result, 1)
+             }) do
+          {:ok, operation} -> terminal_result(operation)
+          _ -> {:error, unavailable()}
+        end
+      else
+        result
+      end
+
     Enum.each(state.waiters, &GenServer.reply(&1, result))
     {:stop, :normal, state}
   end
 
-  defp stop_task(nil), do: :ok
-  defp stop_task(%Task{} = task), do: Task.shutdown(task, :brutal_kill)
-
-  defp via(workspace_id, operation_id),
-    do: {:via, Registry, {FavnOrchestrator.RebuildPlanningRegistry, {workspace_id, operation_id}}}
-
-  defp planning_owner_id do
-    instance = RuntimeConfig.instance_id() |> String.slice(0, 160)
-    suffix = System.unique_integer([:positive, :monotonic])
-    "#{instance}:rebuild-planning:#{suffix}"
+  defp await(pid, context, operation) do
+    GenServer.call(pid, :await, 305_000)
+  catch
+    :exit, _ -> settled(context, operation)
   end
 
-  defp command_id(prefix, operation_id) do
-    digest = :crypto.hash(:sha256, operation_id) |> Base.url_encode64(padding: false)
-    "#{prefix}:#{String.slice(digest, 0, 40)}"
+  defp settled(context, operation) do
+    case Persistence.stores().rebuilds.get_validation(
+           %FavnOrchestrator.Persistence.Queries.GetRebuildValidation{
+             workspace_context: context,
+             validation: operation.validation
+           }
+         ) do
+      {:ok, %{validation: %{status: "active"}} = current} ->
+        now = DateTime.utc_now()
+
+        expired =
+          DateTime.compare(current.validation.deadline_at, now) != :gt or
+            (current.dispatcher.expires_at &&
+               DateTime.compare(current.dispatcher.expires_at, now) != :gt)
+
+        if expired do
+          case Persistence.stores().rebuilds.close_validation(%CloseRebuildValidation{
+                 workspace_context: context,
+                 validation: operation.validation,
+                 expired_only: true
+               }) do
+            {:ok, closed} -> terminal_result(closed)
+            _ -> {:error, unavailable()}
+          end
+        else
+          Process.sleep(100)
+          settled(context, operation)
+        end
+
+      {:ok, current} ->
+        terminal_result(current)
+
+      {:error, %Error{kind: kind}} = error when kind in [:invalid, :conflict, :fenced] ->
+        error
+
+      _ ->
+        {:error, unavailable()}
+    end
   end
+
+  defp terminal_result(%{validation: %{status: "accepted"}} = operation), do: {:ok, operation}
+
+  defp terminal_result(%{validation: %{status: "failed", failure: failure}}) when is_map(failure),
+    do: {:error, FavnOrchestrator.Rebuild.Validation.decode_error(failure)}
+
+  defp terminal_result(_), do: {:error, unavailable()}
+
+  defp unavailable,
+    do:
+      Error.new(:unavailable, "Rebuild request outcome is not yet known. Retry the same request.",
+        retryable?: true
+      )
+
+  defp failure(operation),
+    do:
+      FavnOrchestrator.Rebuild.Validation.failure(
+        operation.operation_id,
+        operation.validation.purpose
+      )
+
+  defp via(workspace, operation, attempt),
+    do:
+      {:via, Registry,
+       {FavnOrchestrator.RebuildPlanningRegistry, {workspace, operation, attempt}}}
 end

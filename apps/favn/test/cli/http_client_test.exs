@@ -100,6 +100,23 @@ defmodule Favn.CLI.HttpClientTest do
     Task.await(error_server)
   end
 
+  test "keeps only the bounded rebuild identifier from a planning failure" do
+    body =
+      JSON.encode!(%{
+        error: %{
+          code: "rebuild_planning_failed",
+          message: "secret-value",
+          details: %{operation_id: "rebuild-758", params: "secret-value"}
+        }
+      })
+
+    {url, server} = start_server(422, [], body)
+    assert {:error, {:http_error, 422, summary}} = HttpClient.request(:post, url, [], "{}")
+    assert summary.operation_id == "rebuild-758"
+    refute inspect(summary) =~ "secret-value"
+    Task.await(server)
+  end
+
   test "starts the TLS application before an HTTPS connection" do
     assert {:error, {:connect_failed, _reason}} =
              HttpClient.request(:get, "https://127.0.0.1:#{unused_port()}/", [], nil,

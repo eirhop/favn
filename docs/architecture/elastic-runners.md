@@ -1170,10 +1170,11 @@ The live runner retains and resends the same resolved payload until
 acknowledged. A control-plane restart reads an existing pin and returns the same
 ack. A stale assignment cannot overwrite a pin.
 
-Refactor rebuild runtime-input freezing through the typed task gateway. Its
-deterministic task ID must include the rebuild operation/action/item identity so
-dispatcher restart observes the existing result rather than executing a second
-resolution.
+Rebuild runtime-input freezing uses the typed read-only task gateway. Its task
+identity includes the rebuild operation, item, and validation attempt. Interrupted
+pre-write checks require explicit manual retry as described in
+[the rebuild contract](target-generations-and-rebuilds.md); they do not resume
+through a successor dispatcher.
 
 ### 8. Install manifests per assigned runner
 
@@ -2160,8 +2161,9 @@ retry versus explicit uncertainty.
 - Reject cross-pool aggregate work unless decomposed into pinned per-target
   tasks.
 
-Exit gate: rebuilds use no legacy RPC and each phase resumes safely after
-process/control-plane loss.
+Exit gate: rebuilds use no legacy RPC. Accepted execution resumes through its
+existing recovery checkpoints; interrupted pre-write checks follow the
+[manual-retry contract](target-generations-and-rebuilds.md).
 
 #### Phase 6: Operations and infrastructure deployment
 

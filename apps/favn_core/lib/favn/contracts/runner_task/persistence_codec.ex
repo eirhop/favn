@@ -6,6 +6,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   alias Favn.Contracts.RunnerTask.PersistenceSchema
   alias Favn.Contracts.RunnerTask.PersistenceResult
   alias Favn.Contracts.RunnerTask.PersistenceData
+  alias Favn.Contracts.RuntimeInputResolutionRequest
   alias Favn.Contracts.RunnerWork
   alias Favn.Manifest.ExecutionPackage
   alias Favn.Manifest.Serializer
@@ -38,6 +39,10 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
       {:ok, hash} = payload_hash(envelope)
       {:ok, envelope, hash}
     end
+  end
+
+  defp normalize_work_metadata(%RuntimeInputResolutionRequest{work: work} = request) do
+    with {:ok, work} <- normalize_work_metadata(work), do: {:ok, %{request | work: work}}
   end
 
   defp normalize_work_metadata(%RunnerWork{metadata: metadata} = work) when is_map(metadata) do
@@ -126,7 +131,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
       is_nil(hash) ->
         {:ok, nil}
 
-      kind == "asset_attempt" and is_binary(hash) and byte_size(hash) == 64 and
+      kind in ["asset_attempt", "runtime_input_resolution"] and is_binary(hash) and
+        byte_size(hash) == 64 and
           Regex.match?(~r/\A[0-9a-f]{64}\z/, hash) ->
         {:ok, hash}
 
@@ -137,6 +143,10 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
 
   def package_hash(_), do: {:error, :invalid_runner_task_package_reference}
 
+  defp strip_package(%RuntimeInputResolutionRequest{work: work} = request) do
+    with {:ok, work, hash} <- strip_package(work), do: {:ok, %{request | work: work}, hash}
+  end
+
   defp strip_package(%RunnerWork{execution_package: %ExecutionPackage{} = package} = work) do
     if RunnerWork.asset_ref(work) == package.asset_ref,
       do: {:ok, %{work | execution_package: nil}, package.content_hash},
@@ -144,6 +154,10 @@ defmodule Favn.Contracts.RunnerTask.PersistenceCodec do
   end
 
   defp strip_package(value), do: {:ok, value, nil}
+
+  defp restore_package(%RuntimeInputResolutionRequest{work: work} = request, hash, packages) do
+    with {:ok, work} <- restore_package(work, hash, packages), do: {:ok, %{request | work: work}}
+  end
 
   defp restore_package(%RunnerWork{execution_package: nil} = work, hash, [
          %ExecutionPackage{content_hash: hash} = package

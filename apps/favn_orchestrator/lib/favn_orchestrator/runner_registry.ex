@@ -52,6 +52,12 @@ defmodule FavnOrchestrator.RunnerRegistry do
   def list, do: GenServer.call(__MODULE__, :list)
   def snapshot, do: GenServer.call(__MODULE__, :snapshot)
 
+  @doc "Reports whether registered runners for an exact release support one task kind."
+  @spec task_support(String.t(), String.t(), atom(), String.t()) ::
+          :supported | :unregistered | :unsupported
+  def task_support(pool, release, kind, capability),
+    do: GenServer.call(__MODULE__, {:task_support, pool, release, kind, capability})
+
   def count(runner_pool, required_runner_release_id),
     do: GenServer.call(__MODULE__, {:count, runner_pool, required_runner_release_id})
 
@@ -99,6 +105,28 @@ defmodule FavnOrchestrator.RunnerRegistry do
       {:ok, session} -> {:reply, {:ok, session}, state}
       :error -> {:reply, {:error, :runner_session_not_found}, state}
     end
+  end
+
+  def handle_call({:task_support, pool, release, kind, capability}, _from, state) do
+    sessions =
+      Enum.filter(
+        Map.values(state.sessions),
+        &(&1.runner_pool == pool and &1.required_runner_release_id == release)
+      )
+
+    result =
+      cond do
+        sessions == [] ->
+          :unregistered
+
+        Enum.any?(sessions, &(kind in &1.supported_task_kinds and capability in &1.capabilities)) ->
+          :supported
+
+        true ->
+          :unsupported
+      end
+
+    {:reply, result, state}
   end
 
   def handle_call(:list, _from, state), do: {:reply, Map.values(state.sessions), state}

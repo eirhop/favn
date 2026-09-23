@@ -510,7 +510,10 @@ defmodule Favn.Contracts.RunnerTaskTest do
         RunnerError.new(outcome: outcome, retryable?: retryable?)
       end
 
-    for kind <- Favn.Contracts.RunnerTask.task_kinds(), error <- errors do
+    for kind <- Favn.Contracts.RunnerTask.task_kinds(),
+        error <- errors,
+        kind != :runtime_input_resolution or error.outcome == :cancelled or
+          (error.outcome == :safe_failure and not error.retryable?) do
       {outcome, retry_class} = Favn.Contracts.RunnerTask.classify_failure(kind, error)
 
       assert :ok ==
