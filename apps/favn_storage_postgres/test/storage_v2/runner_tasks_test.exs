@@ -94,6 +94,599 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
      now: now}
   end
 
+  @tag rebuild_validation: true
+  test "rebuild resolution persists without a future run or parameter pin", fixture do
+    {operation, command, request, version} = rebuild_resolution(fixture)
+    assert {:ok, queued} = Store.enqueue(command)
+    assert queued.run_id == nil
+    assert queued.operation_id == operation.operation_id
+    assert queued.write_target_id == nil
+
+    assert {:ok, nil} =
+             Store.claim(
+               claim_command(fixture, "old-resolution", "old-runner",
+                 required_runner_release_id: FavnTestSupport.runner_release_id()
+               )
+             )
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "resolve", "resolver",
+                 required_runner_release_id: FavnTestSupport.runner_release_id(),
+                 supported_task_kinds: [:runtime_input_resolution],
+                 capabilities: ["runtime_input_resolution"]
+               )
+             )
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "resolve-start", :running))
+
+    expectation = %Favn.Contracts.RuntimeInputExpectation{
+      resolver: Atom.to_string(__MODULE__),
+      input_identity: "input-v1",
+      payload_fingerprint: String.duplicate("a", 64)
+    }
+
+    assert {:ok, result} = Codec.encode_result(:runtime_input_resolution, :succeeded, expectation)
+
+    assert {:ok, done} =
+             Store.complete(complete_command(fixture, running, "resolve-done", result))
+
+    assert {:ok, %{result: ^expectation}} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: done.task_id
+             })
+
+    assert {:ok, decoded} =
+             Codec.decode_payload(:runtime_input_resolution, command.payload, version, [
+               request.work.execution_package
+             ])
+
+    assert decoded == request
+
+    assert [[0]] =
+             SQL.query!(Repo, "SELECT count(*) FROM favn_control.runs WHERE workspace_id=$1", [
+               fixture.workspace_id
+             ]).rows
+
+    assert [[0]] =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.runtime_input_pins WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             ).rows
+  end
+
+  @tag rebuild_validation: true
+  test "expired validation blocks old enqueue and assignment then cleans up without resumption",
+       fixture do
+    {operation, command, _, _} = rebuild_resolution(fixture)
+    assert {:ok, _} = Store.enqueue(command)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET dispatcher_expires_at=clock_timestamp()-interval '1 second' WHERE workspace_id=$1",
+      [fixture.workspace_id]
+    )
+
+    assert {:error, %{kind: :fenced}} = Store.enqueue(%{command | command_id: "late-enqueue"})
+
+    assert {:ok, nil} =
+             Store.claim(
+               claim_command(fixture, "expired-resolution", "resolver",
+                 required_runner_release_id: FavnTestSupport.runner_release_id(),
+                 supported_task_kinds: [:runtime_input_resolution],
+                 capabilities: ["runtime_input_resolution"]
+               )
+             )
+
+    assert {:ok, 1} =
+             FavnStoragePostgres.Rebuilds.Store.expire_validations(%Q.ExpireRebuildValidations{
+               workspace_context: fixture.workspace_context
+             })
+
+    assert {:ok, failed} =
+             FavnStoragePostgres.Rebuilds.Store.get(%Q.GetRebuild{
+               workspace_context: fixture.workspace_context,
+               operation_id: operation.operation_id
+             })
+
+    assert failed.state == :failed
+    assert failed.validation.failure["details"]["reason_code"] == "rebuild_planning_failed"
+
+    assert {:ok, cancelled} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: command.task_id
+             })
+
+    assert cancelled.status == :cancelled
+  end
+
+  @tag rebuild_validation: true
+  test "a lost started resolution settles as failed, with no automatic retry or unknown write",
+       fixture do
+    {_, command, _, _} = rebuild_resolution(fixture)
+    assert {:ok, _} = Store.enqueue(command)
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "lost-resolution", "resolver",
+                 required_runner_release_id: FavnTestSupport.runner_release_id(),
+                 supported_task_kinds: [:runtime_input_resolution],
+                 capabilities: ["runtime_input_resolution"]
+               )
+             )
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "lost-start", :running))
+
+    assert {:ok, failed} =
+             Store.release(
+               release_command(
+                 fixture,
+                 running,
+                 "lost-release",
+                 :unknown,
+                 RunnerError.new(outcome: :unknown, type: "lost")
+               )
+             )
+
+    assert failed.status == :failed
+    assert failed.retry_class == :terminal
+    assert failed.error["outcome"] == "safe_failure"
+    assert failed.error["retryable?"] == false
+
+    assert {:ok, nil} =
+             Store.claim(
+               claim_command(fixture, "lost-again", "resolver-2",
+                 required_runner_release_id: FavnTestSupport.runner_release_id(),
+                 supported_task_kinds: [:runtime_input_resolution],
+                 capabilities: ["runtime_input_resolution"]
+               )
+             )
+  end
+
+  @tag rebuild_validation: true
+  test "resolution rejects mutation authority and late success after attempt closure", fixture do
+    {operation, command, _, _} = rebuild_resolution(fixture)
+    assert {:error, _} = Store.enqueue(%{command | write_target_id: "forged-write"})
+    assert {:ok, _} = Store.enqueue(command)
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "close-resolution", "resolver",
+                 required_runner_release_id: FavnTestSupport.runner_release_id(),
+                 supported_task_kinds: [:runtime_input_resolution],
+                 capabilities: ["runtime_input_resolution"]
+               )
+             )
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "close-start", :running))
+
+    assert {:ok, _} =
+             FavnStoragePostgres.Rebuilds.Store.close_validation(%C.CloseRebuildValidation{
+               workspace_context: fixture.workspace_context,
+               validation: operation.validation
+             })
+
+    assert {:error, %{kind: :fenced}} =
+             Store.complete(complete_command(fixture, running, "late-result", nil))
+  end
+
+  @tag rebuild_validation: true
+  test "failed request replay cannot create or join a later validation", fixture do
+    {operation, _, _, _} = rebuild_resolution(fixture)
+    planned_for_validation(fixture, operation)
+    first = validation_command(fixture, operation, "first")
+    assert {:ok, admitted} = FavnStoragePostgres.Rebuilds.Store.begin_validation(first)
+    assert {:ok, replay} = FavnStoragePostgres.Rebuilds.Store.begin_validation(first)
+    assert replay.validation == admitted.validation
+    assert replay.idempotency_replay?
+
+    assert {:ok, _} =
+             FavnStoragePostgres.Rebuilds.Store.close_validation(%C.CloseRebuildValidation{
+               workspace_context: fixture.workspace_context,
+               validation: admitted.validation
+             })
+
+    assert {:error, original_error} = FavnStoragePostgres.Rebuilds.Store.begin_validation(first)
+    second = validation_command(fixture, operation, "second")
+    assert {:ok, fresh} = FavnStoragePostgres.Rebuilds.Store.begin_validation(second)
+    refute fresh.validation.attempt_id == admitted.validation.attempt_id
+    assert {:error, ^original_error} = FavnStoragePostgres.Rebuilds.Store.begin_validation(first)
+
+    assert {:ok, current} =
+             FavnStoragePostgres.Rebuilds.Store.get(%Q.GetRebuild{
+               workspace_context: fixture.workspace_context,
+               operation_id: operation.operation_id
+             })
+
+    assert current.validation == fresh.validation
+  end
+
+  @tag rebuild_validation: true
+  test "busy rejection is stable after the active request ends", fixture do
+    {operation, _, _, _} = rebuild_resolution(fixture)
+    planned_for_validation(fixture, operation)
+
+    assert {:ok, active} =
+             FavnStoragePostgres.Rebuilds.Store.begin_validation(
+               validation_command(fixture, operation, "active")
+             )
+
+    rejected = validation_command(fixture, operation, "busy")
+    assert {:error, error} = FavnStoragePostgres.Rebuilds.Store.begin_validation(rejected)
+    assert error.kind == :conflict
+
+    assert {:ok, _} =
+             FavnStoragePostgres.Rebuilds.Store.close_validation(%C.CloseRebuildValidation{
+               workspace_context: fixture.workspace_context,
+               validation: active.validation
+             })
+
+    assert {:error, ^error} = FavnStoragePostgres.Rebuilds.Store.begin_validation(rejected)
+  end
+
+  @tag rebuild_validation: true
+  test "validation context cannot authorize asset work", fixture do
+    {operation, command, request, _} = rebuild_resolution(fixture)
+    {:ok, payload, hash} = Codec.encode_payload(:asset_attempt, request.work)
+
+    assert {:error, _} =
+             Store.enqueue(%{
+               command
+               | task_kind: :asset_attempt,
+                 payload: payload,
+                 payload_hash: hash
+             })
+
+    context = FavnOrchestrator.Rebuild.Validation.task_context(operation.validation)
+
+    refute FavnOrchestrator.RunnerTaskContext.matches_task?(context, %{
+             command
+             | task_kind: :asset_attempt
+           })
+  end
+
+  @tag rebuild_validation: true
+  test "a corrupted context cannot prevent diagnostic release of a read-only resolution",
+       fixture do
+    {_, command, _, _} = rebuild_resolution(fixture)
+    assert {:ok, _} = Store.enqueue(command)
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "corrupt-resolution", "resolver",
+                 required_runner_release_id: FavnTestSupport.runner_release_id(),
+                 supported_task_kinds: [:runtime_input_resolution],
+                 capabilities: ["runtime_input_resolution"]
+               )
+             )
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "corrupt-start", :running))
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.runner_tasks SET orchestration_context=$3 WHERE workspace_id=$1 AND task_id=$2",
+      [fixture.workspace_id, command.task_id, %{"corrupt" => true}]
+    )
+
+    assert {:ok, released} =
+             Store.release(
+               release_command(fixture, running, "corrupt-release", :unknown, :runner_lost)
+             )
+
+    assert released.status == :failed
+    assert released.retry_class == :terminal
+  end
+
+  @tag rebuild_validation: true
+  test "a validation task cannot omit or extend its attempt deadline", fixture do
+    {_, command, _, _} = rebuild_resolution(fixture)
+    assert {:error, %{kind: :fenced}} = Store.enqueue(%{command | deadline_at: nil})
+
+    assert {:error, %{kind: :fenced}} =
+             Store.enqueue(%{
+               command
+               | deadline_at: DateTime.add(command.deadline_at, 60, :second)
+             })
+  end
+
+  @tag rebuild_validation: true
+  test "an observer cannot expire a validation whose owner renewed", fixture do
+    {operation, _, _, _} = rebuild_resolution(fixture)
+
+    assert :ok =
+             FavnStoragePostgres.Rebuilds.Store.renew_operation_lease(
+               %C.RenewRebuildOperationLease{
+                 workspace_context: fixture.workspace_context,
+                 command_id: "renew-live",
+                 operation_id: operation.operation_id,
+                 owner_id: operation.validation.owner_id,
+                 fencing_token: operation.validation.fencing_token,
+                 lease_duration_ms: 30_000,
+                 occurred_at: DateTime.utc_now()
+               }
+             )
+
+    assert {:ok, current} =
+             FavnStoragePostgres.Rebuilds.Store.close_validation(%C.CloseRebuildValidation{
+               workspace_context: fixture.workspace_context,
+               validation: operation.validation,
+               expired_only: true
+             })
+
+    assert current.validation.status == "active"
+    assert current.state == :planning
+  end
+
+  @tag rebuild_validation: true
+  test "approval that waits on a target lock past its deadline rolls back", fixture do
+    alias FavnStoragePostgres.Rebuilds.Store, as: RebuildStore
+    {operation, resolution_command, request, version} = rebuild_resolution(fixture)
+    planned_for_validation(fixture, operation)
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET plan_payload=jsonb_set(plan_payload, '{capabilities}', $2::jsonb) WHERE workspace_id=$1",
+      [fixture.workspace_id, %{operation.root_target_id => %{}}]
+    )
+
+    parent = self()
+    lock_key = "favn:target-operation:" <> fixture.workspace_id <> ":" <> operation.root_target_id
+
+    holder =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          SQL.query!(Repo, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [lock_key])
+          send(parent, {:lock_held, self()})
+
+          receive do
+            :release -> :ok
+          after
+            15_000 -> raise "lock not released"
+          end
+        end)
+      end)
+
+    assert_receive {:lock_held, holder_pid}, 5000
+    command = validation_command(fixture, operation, "blocked-approval")
+    deadline = DateTime.add(DateTime.utc_now(), 5, :second)
+    command = %{command | validation: %{command.validation | deadline_at: deadline}}
+    assert {:ok, admitted} = RebuildStore.begin_validation(command)
+
+    cap_request = %Favn.Contracts.GenerationCapabilitiesRequest{
+      manifest: %{version | manifest: nil},
+      asset_ref: request.work.asset_ref
+    }
+
+    assert {:ok, cap_payload, cap_hash} =
+             Codec.encode_payload(:generation_capabilities, cap_request)
+
+    assert {:ok, cap_context} =
+             Codec.encode_orchestration_context(
+               FavnOrchestrator.Rebuild.Validation.task_context(admitted.validation)
+             )
+
+    cap_id =
+      OperationRunnerTasks.task_id(
+        fixture.workspace_id,
+        :generation_capabilities,
+        {{:rebuild_capabilities, operation.operation_id, operation.root_target_id},
+         admitted.validation.attempt_id},
+        version
+      )
+
+    assert {:ok, _} =
+             Store.enqueue(%{
+               resolution_command
+               | task_id: cap_id,
+                 task_kind: :generation_capabilities,
+                 retry_class: :safe_to_retry,
+                 payload: cap_payload,
+                 payload_hash: cap_hash,
+                 orchestration_context: cap_context,
+                 required_capability: "generation_capabilities",
+                 deadline_at: deadline
+             })
+
+    assert {:ok, assigned} =
+             Store.claim(
+               claim_command(fixture, "approve-capability", "resolver",
+                 required_runner_release_id: FavnTestSupport.runner_release_id(),
+                 supported_task_kinds: [:generation_capabilities],
+                 capabilities: ["generation_capabilities"]
+               )
+             )
+
+    assert {:ok, running} =
+             Store.transition(transition_command(fixture, assigned, "cap-start", :running))
+
+    assert {:ok, result} =
+             Codec.encode_result(
+               :generation_capabilities,
+               :succeeded,
+               %Favn.Contracts.GenerationCapabilitiesResult{capabilities: %{}}
+             )
+
+    assert {:ok, _} = Store.complete(complete_command(fixture, running, "cap-done", result))
+
+    approval = %C.StartRebuildOperation{
+      workspace_context: fixture.workspace_context,
+      command_id: "blocked-start",
+      operation_id: operation.operation_id,
+      plan_hash: operation.plan_hash,
+      expected_version: admitted.version,
+      validation: admitted.validation,
+      binding_versions: %{},
+      occurred_at: DateTime.utc_now(),
+      idempotency: command.validation.receipt
+    }
+
+    waiter =
+      Task.async(fn ->
+        Repo.checkout(fn ->
+          [[pid]] = SQL.query!(Repo, "SELECT pg_backend_pid()", []).rows
+          [[lock_timeout]] = SQL.query!(Repo, "SHOW lock_timeout", []).rows
+          SQL.query!(Repo, "SELECT set_config('lock_timeout', '10s', false)", [])
+          send(parent, {:approval_connection, pid})
+
+          try do
+            RebuildStore.start_operation(approval)
+          after
+            SQL.query!(Repo, "SELECT set_config('lock_timeout', $1, false)", [lock_timeout])
+          end
+        end)
+      end)
+
+    assert_receive {:approval_connection, pid}, 5000
+    assert Task.yield(waiter, 100) == nil
+
+    assert_eventually(fn ->
+      SQL.query!(Repo, "SELECT cardinality(pg_blocking_pids($1)) > 0", [pid]).rows == [[true]]
+    end)
+
+    SQL.query!(
+      Repo,
+      "SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz - clock_timestamp()))) + 0.05)",
+      [deadline]
+    )
+
+    send(holder_pid, :release)
+    assert {:ok, :ok} = Task.await(holder, 10_000)
+    assert {:error, %{kind: :fenced}} = Task.await(waiter, 10_000)
+
+    assert [["planned"]] =
+             SQL.query!(
+               Repo,
+               "SELECT state FROM favn_control.rebuild_operations WHERE workspace_id=$1 AND operation_id=$2",
+               [fixture.workspace_id, operation.operation_id]
+             ).rows
+
+    assert [[0]] =
+             SQL.query!(
+               Repo,
+               "SELECT count(*) FROM favn_control.target_operation_locks WHERE workspace_id=$1",
+               [fixture.workspace_id]
+             ).rows
+  end
+
+  defp planned_for_validation(fixture, operation) do
+    payload = %{
+      "expires_at" => DateTime.to_iso8601(DateTime.add(DateTime.utc_now(), 600, :second)),
+      "capabilities" => %{},
+      "binding_snapshot" => %{},
+      "write_target_ids" => [operation.root_target_id]
+    }
+
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET state='planned', phase='planned', action_count=1, window_count=1, candidate_generation_id=(SELECT target_generation_id FROM favn_control.asset_target_generations WHERE workspace_id=$1 LIMIT 1), validation_request=NULL, dispatcher_owner=NULL, dispatcher_expires_at=NULL, plan_payload=$2 WHERE workspace_id=$1",
+      [fixture.workspace_id, payload]
+    )
+
+    operation
+  end
+
+  defp validation_command(fixture, operation, key) do
+    alias FavnOrchestrator.Persistence.CommandIdempotency
+    alias FavnOrchestrator.Rebuild.Validation
+    now = DateTime.utc_now()
+
+    {:ok, receipt} =
+      CommandIdempotency.new(
+        "rebuild.start",
+        :actor,
+        fixture.workspace_context.principal_id,
+        :crypto.hash(:sha256, key),
+        :crypto.hash(:sha256, operation.plan_hash),
+        DateTime.add(now, 3600, :second)
+      )
+
+    %C.BeginRebuildValidation{
+      workspace_context: fixture.workspace_context,
+      plan_hash: operation.plan_hash,
+      validation: %{Validation.new(operation.operation_id, :start, key, now) | receipt: receipt}
+    }
+  end
+
+  defp rebuild_resolution(fixture) do
+    alias FavnOrchestrator.Rebuild.Validation
+    alias FavnStoragePostgres.Rebuilds.Store, as: RebuildStore
+
+    {version, work} =
+      FavnStoragePostgres.TestSupport.TaskManifest.sql_work(fixture, :resolution_test, __MODULE__)
+
+    id = "rebuild-" <> fixture.workspace_id
+    validation = Validation.new(id, :plan, id, DateTime.utc_now())
+
+    payload = %{
+      schema_version: 1,
+      status: :planning,
+      operation_id: id,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash
+    }
+
+    assert {:ok, operation} =
+             RebuildStore.begin_plan(%C.BeginRebuildPlan{
+               workspace_context: fixture.workspace_context,
+               command_id: "begin-" <> id,
+               operation_id: id,
+               root_target_id: work.logical_target_id,
+               manifest_version_id: version.manifest_version_id,
+               planning_hash: FavnOrchestrator.Rebuild.Plan.hash(payload),
+               planning_payload: payload,
+               actor_id: fixture.workspace_context.principal_id,
+               reason: "input checks",
+               idempotency_key: id,
+               evaluated_at: fixture.now,
+               occurred_at: fixture.now,
+               validation: validation
+             })
+
+    work = %{
+      work
+      | deadline_at: operation.validation.deadline_at,
+        rebuild_operation_id: id,
+        rebuild_action_id: "action",
+        rebuild_item_id: "item"
+    }
+
+    request = %Favn.Contracts.RuntimeInputResolutionRequest{work: work}
+    assert {:ok, payload, hash} = Codec.encode_payload(:runtime_input_resolution, request)
+
+    assert {:ok, context} =
+             Codec.encode_orchestration_context(Validation.task_context(operation.validation))
+
+    command = %C.EnqueueRunnerTask{
+      workspace_context: fixture.workspace_context,
+      command_id: "enqueue-resolution-" <> id,
+      task_id: "rt_" <> random_id(),
+      domain_identity: "resolution-" <> id,
+      task_kind: :runtime_input_resolution,
+      manifest_version_id: version.manifest_version_id,
+      manifest_content_hash: version.content_hash,
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      required_capability: "runtime_input_resolution",
+      retry_class: :unknown_do_not_retry,
+      payload: payload,
+      payload_hash: hash,
+      orchestration_context: context,
+      operation_id: id,
+      deadline_at: operation.validation.deadline_at,
+      issued_at: fixture.now,
+      occurred_at: fixture.now
+    }
+
+    {operation, command, request, version}
+  end
+
   @tag jsonb_diagnostics: true
   test "task error projection normalizes diagnostics without truncating resource outcomes",
        fixture do

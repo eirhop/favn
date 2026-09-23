@@ -45,6 +45,14 @@ defmodule FavnStoragePostgres.TargetOperationLocks.Store do
     end
   end
 
+  @doc false
+  def acquire_for_rebuild!(%AcquireTargetOperationLocks{} = command) do
+    case validate_acquire(command) do
+      :ok -> acquire_many!(command)
+      {:error, error} -> Repo.rollback(error)
+    end
+  end
+
   defp acquire_many!(command) do
     if command.operation_type in [:rebuild, :target_recovery],
       do:

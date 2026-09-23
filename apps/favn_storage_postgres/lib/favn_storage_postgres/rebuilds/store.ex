@@ -38,6 +38,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Idempotency.Transaction, as: IdempotencyTransaction
   alias FavnStoragePostgres.Payload
+  alias FavnStoragePostgres.Rebuilds.Validation
+  alias FavnOrchestrator.Rebuild.Validation, as: ValidationAttempt
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Store, as: RunnerTaskStore
   alias FavnStoragePostgres.Schemas.AssetTargetBinding
@@ -99,6 +101,109 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   @item_statuses ~w(planned ready claimed running succeeded failed cancelled outcome_unknown)a
 
   @impl true
+  def begin_validation(command) do
+    transaction(fn ->
+      operation =
+        Validation.lock!(command.workspace_context.workspace_id, command.validation.operation_id)
+
+      {outcome, result} =
+        FavnStoragePostgres.Rebuilds.ValidationReceipt.admit!(operation, command.validation, fn ->
+          case Validation.begin!(operation, command.validation, command.plan_hash) do
+            {:ok, row} ->
+              {:ok, FavnOrchestrator.Rebuild.Validation.decode(row.validation_request)}
+
+            {:error, error} ->
+              {:error, error}
+          end
+        end)
+
+      case result do
+        {:ok, attempt} ->
+          current = Validation.lock!(operation.workspace_id, operation.operation_id)
+
+          %{
+            operation_result(current, load_actions(current), progress(current))
+            | validation: attempt,
+              idempotency_replay?: outcome == :replay
+          }
+
+        {:accepted, id} when id == operation.operation_id ->
+          %{
+            operation_result(operation, load_actions(operation), progress(operation))
+            | validation: %{command.validation | status: "accepted"},
+              idempotency_replay?: true
+          }
+
+        {:error, error} ->
+          {:validation_error, error}
+      end
+    end)
+  end
+
+  @impl true
+  def get_validation(query) do
+    transaction(fn ->
+      operation =
+        Validation.lock!(query.workspace_context.workspace_id, query.validation.operation_id)
+
+      validation_result(operation, query.validation)
+    end)
+  end
+
+  defp validation_result(operation, attempt) do
+    case FavnStoragePostgres.Rebuilds.ValidationReceipt.read!(operation, attempt) do
+      {:ok, %{status: "active"} = validation} ->
+        %{operation_result(operation, [], %{}) | validation: validation}
+
+      {:ok, validation} ->
+        %{
+          operation_result(operation, load_actions(operation), progress(operation))
+          | validation: validation
+        }
+
+      {:accepted, id} when id == operation.operation_id ->
+        %{
+          operation_result(operation, load_actions(operation), progress(operation))
+          | validation: %{attempt | status: "accepted"}
+        }
+
+      {:error, error} ->
+        {:validation_error, error}
+    end
+  end
+
+  @impl true
+  def close_validation(command) do
+    transaction(fn ->
+      operation =
+        Validation.lock!(command.workspace_context.workspace_id, command.validation.operation_id)
+
+      operation =
+        Validation.close!(operation, command.validation, command.reason, command.expired_only)
+
+      case validation_result(operation, command.validation) do
+        {:validation_error, error} when error.kind in [:invalid, :conflict, :fenced] ->
+          %{
+            operation_result(operation, load_actions(operation), progress(operation))
+            | validation: %{
+                command.validation
+                | status: "failed",
+                  failure: ValidationAttempt.encode_error(error)
+              }
+          }
+
+        result ->
+          result
+      end
+    end)
+  end
+
+  @impl true
+  def expire_validations(query) do
+    transaction(fn -> Validation.expire!(query.workspace_context.workspace_id, query.limit) end)
+  end
+
+  @impl true
   def begin_plan(%BeginRebuildPlan{} = command) do
     with :ok <- validate_begin(command) do
       idempotent_transaction(command, fn -> begin_plan!(command) end)
@@ -115,7 +220,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   @impl true
   def start_operation(%StartRebuildOperation{} = command) do
     with :ok <- validate_start(command) do
-      idempotent_transaction(command, fn -> start_operation!(command) end)
+      validation_transaction(command, fn -> start_operation!(command) end)
     end
   end
 
@@ -136,7 +241,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   @impl true
   def retry_operation(%RetryRebuildOperation{} = command) do
     with :ok <- validate_retry(command) do
-      idempotent_transaction(command, fn -> retry_operation!(command) end)
+      validation_transaction(command, fn -> retry_operation!(command) end)
     end
   end
 
@@ -364,7 +469,10 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
     cond do
       existing && exact_begin_replay?(existing, command) ->
-        operation_result(existing, load_actions(existing), progress(existing))
+        %{
+          operation_result(existing, load_actions(existing), progress(existing))
+          | idempotency_replay?: true
+        }
 
       existing ->
         Repo.rollback(Error.new(:conflict, "rebuild plan identity has different content"))
@@ -376,7 +484,18 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
   defp insert_planning_continuation!(command) do
     workspace_id = command.workspace_context.workspace_id
-    now = database_datetime(command.occurred_at)
+    now = Validation.now!()
+
+    deadline =
+      Enum.min_by(
+        [command.validation.deadline_at, DateTime.add(now, 300, :second)],
+        &DateTime.to_unix(&1, :microsecond)
+      )
+
+    if DateTime.compare(deadline, now) != :gt,
+      do: Repo.rollback(Error.new(:invalid, "rebuild validation deadline expired"))
+
+    attempt = %{command.validation | fencing_token: 1, deadline_at: deadline}
 
     operation =
       %RebuildOperation{
@@ -403,7 +522,10 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         phase: "planning",
         cleanup_state: "not_started",
         last_command_id: command.command_id,
-        dispatcher_fencing_token: 0,
+        validation_request: ValidationAttempt.encode(attempt),
+        dispatcher_owner: command.validation.owner_id,
+        dispatcher_expires_at: DateTime.add(now, 30, :second),
+        dispatcher_fencing_token: 1,
         cancel_requested: false,
         version: 1,
         inserted_at: now,
@@ -415,6 +537,17 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
   end
 
   defp finalize_plan!(operation, command) do
+    accepted =
+      Validation.accepted!(operation, command.validation, command.plan_payload, command.items)
+
+    validate_binding_versions!(
+      operation,
+      Map.new(canonical_map(command.plan_payload)["binding_snapshot"], fn {id, binding} ->
+        {id, binding["version"]}
+      end)
+    )
+
+    Validation.guard!(operation, command.validation)
     now = database_datetime(command.occurred_at)
 
     insert_candidate_generations!(command, now)
@@ -435,6 +568,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         window_count: length(command.items),
         state: "planned",
         phase: "planned",
+        validation_request: accepted,
         last_command_id: command.command_id,
         dispatcher_owner: nil,
         dispatcher_expires_at: nil,
@@ -560,6 +694,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         )
 
       true ->
+        accepted = accept_validation!(operation, command)
+
         from(item in RebuildWindow,
           where:
             item.workspace_id == ^operation.workspace_id and
@@ -571,6 +707,9 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         |> Ecto.Changeset.change(%{
           state: "queued",
           phase: "locking",
+          validation_request: accepted,
+          dispatcher_owner: nil,
+          dispatcher_expires_at: nil,
           last_command_id: command.command_id,
           version: operation.version + 1,
           started_at: now,
@@ -699,6 +838,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         )
 
       true ->
+        accepted = accept_validation!(operation, command)
         reset_safe_items!(operation, now)
         reset_failed_generations!(operation, now)
         reset_failed_actions!(operation, now)
@@ -708,6 +848,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
           state: "queued",
           phase: "locking",
           terminal_error: nil,
+          validation_request: accepted,
           validation_result: nil,
           cancel_requested: false,
           last_command_id: command.command_id,
@@ -721,6 +862,65 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
         |> then(&operation_result(&1, load_actions(&1), progress(&1)))
     end
   end
+
+  defp accept_validation!(operation, command) do
+    items =
+      Repo.all(
+        from(item in RebuildWindow,
+          where:
+            item.workspace_id == ^operation.workspace_id and
+              item.operation_id == ^operation.operation_id
+        )
+      )
+
+    accepted = Validation.accepted!(operation, command.validation, operation.plan_payload, items)
+
+    targets =
+      operation.plan_payload["write_target_ids"] ||
+        load_actions(operation)
+        |> Enum.filter(&(&1.action in [:rebuild, :backfill]))
+        |> Enum.map(& &1.target_id)
+
+    FavnStoragePostgres.TargetOperationLocks.Store.acquire_for_rebuild!(
+      %FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks{
+        workspace_context: command.workspace_context,
+        command_id: command.command_id <> ":locks",
+        target_ids: Enum.sort(targets),
+        operation_id: operation.operation_id,
+        operation_type: :rebuild,
+        lease_owner: operation.operation_id,
+        lease_duration_ms: 30_000,
+        occurred_at: DateTime.utc_now()
+      }
+    )
+
+    validate_binding_versions!(operation, command.binding_versions)
+    Validation.guard!(operation, command.validation)
+    accepted
+  end
+
+  defp validate_binding_versions!(operation, versions) when is_map(versions) do
+    targets = Map.keys(versions) |> Enum.sort()
+    frozen = operation.plan_payload["binding_snapshot"]
+
+    if is_map(frozen) and Enum.sort(Map.keys(frozen)) != targets,
+      do: Repo.rollback(stale_plan_error())
+
+    bindings =
+      Repo.all(
+        from(b in AssetTargetBinding,
+          where: b.workspace_id == ^operation.workspace_id and b.target_id in ^targets,
+          order_by: b.target_id,
+          lock: "FOR UPDATE"
+        )
+      )
+
+    unless length(bindings) == length(targets) and
+             Enum.all?(bindings, &(&1.version == Map.fetch!(versions, &1.target_id))),
+           do: Repo.rollback(stale_plan_error())
+  end
+
+  defp validate_binding_versions!(_, _), do: Repo.rollback(stale_plan_error())
 
   defp reset_safe_items!(operation, now) do
     from(item in RebuildWindow,
@@ -782,6 +982,8 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       from(operation in RebuildOperation,
         where:
           operation.workspace_id == ^command.workspace_context.workspace_id and
+            operation.state != "planning" and
+            fragment("COALESCE(?->>'status', '') <> 'active'", operation.validation_request) and
             (operation.state in ^Enum.map(@claimable_states, &Atom.to_string/1) or
                (operation.state in ["succeeded", "failed", "cancelled"] and
                   operation.cleanup_state in ["pending", "failed"])) and
@@ -832,6 +1034,9 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
              DateTime.compare(operation.dispatcher_expires_at, now) == :gt do
       Repo.rollback(Error.new(:fenced, "rebuild dispatcher fence is stale"))
     end
+
+    if operation.validation_request && operation.validation_request["status"] == "active",
+      do: Validation.guard!(operation, ValidationAttempt.decode(operation.validation_request))
 
     {1, _} =
       Repo.update_all(
@@ -1365,6 +1570,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
       activation_token: operation.activation_token,
       result_marker: operation.result_marker,
       unknown_outcome: operation.unknown_outcome,
+      validation: ValidationAttempt.decode(operation.validation_request),
       validation_result: operation.validation_result,
       terminal_error: operation.terminal_error,
       cleanup_state: String.to_existing_atom(operation.cleanup_state),
@@ -1709,6 +1915,12 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
   defp validate_begin(command) do
     if valid_context?(command.workspace_context) and
+         match?(
+           %ValidationAttempt{purpose: :plan, status: "active", fencing_token: 0},
+           command.validation
+         ) and
+         command.validation.operation_id == command.operation_id and
+         match?(%DateTime{}, command.validation.deadline_at) and
          Enum.all?(
            [
              command.command_id,
@@ -2079,6 +2291,51 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
     now
   end
 
+  defp validation_transaction(%{validation: %{receipt: receipt}} = command, mutation)
+       when not is_nil(receipt) do
+    transaction(fn ->
+      current = Validation.lock!(command.workspace_context.workspace_id, command.operation_id)
+
+      {_, replay} =
+        FavnStoragePostgres.Rebuilds.ValidationReceipt.admit!(current, command.validation, fn ->
+          Repo.rollback(Error.new(:fenced, "Rebuild validation was not admitted"))
+        end)
+
+      case replay do
+        {:accepted, id} when id == command.operation_id ->
+          %{
+            operation_result(current, load_actions(current), progress(current))
+            | idempotency_replay?: true
+          }
+
+        {:ok, %{status: "accepted"}} ->
+          %{
+            operation_result(current, load_actions(current), progress(current))
+            | idempotency_replay?: true
+          }
+
+        {:ok, %{status: "active", attempt_id: id}} when id == command.validation.attempt_id ->
+          operation = mutation.()
+
+          FavnStoragePostgres.Rebuilds.ValidationReceipt.finish!(
+            operation,
+            command.validation,
+            {:ok, %{command.validation | status: "accepted"}}
+          )
+
+          operation
+
+        {:error, error} ->
+          {:validation_error, error}
+
+        _ ->
+          Repo.rollback(Error.new(:fenced, "Rebuild validation is no longer current"))
+      end
+    end)
+  end
+
+  defp validation_transaction(command, mutation), do: idempotent_transaction(command, mutation)
+
   defp idempotent_transaction(command, mutation) do
     transaction(fn ->
       {outcome, operation} =
@@ -2122,6 +2379,7 @@ defmodule FavnStoragePostgres.Rebuilds.Store do
 
   defp transaction(fun) do
     case Repo.transaction(fun) do
+      {:ok, {:validation_error, error}} -> {:error, error}
       {:ok, result} -> {:ok, result}
       {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, ErrorMapper.map(reason)}

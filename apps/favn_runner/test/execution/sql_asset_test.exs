@@ -266,11 +266,48 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
         asset_ref: ref,
         execution_package: execution_package_for(version),
         params: %{submitted: 7},
-        metadata: %{runner_task_mode: :runtime_input_resolution}
+        rebuild_operation_id: "rebuild-native-input-check",
+        rebuild_action_id: "native",
+        rebuild_item_id: "native-item",
+        deadline_at: DateTime.add(DateTime.utc_now(), 60, :second)
       }
       |> generation_work(version, ref)
 
-    assert {:ok, _resolution} = FavnRunner.resolve_runtime_inputs(work)
+    request = %Favn.Contracts.RuntimeInputResolutionRequest{work: work}
+    assert :ok = Favn.Contracts.RuntimeInputResolutionRequest.validate(request)
+
+    assignment = %Favn.Contracts.RunnerTask.Assignment{
+      command_id: "claim-input-check",
+      workspace_id: "workspace-input-check",
+      task_id: "rt_input_check",
+      task_kind: :runtime_input_resolution,
+      runner_instance_id: "runner-input-check",
+      runner_session_generation: 1,
+      assignment_generation: 1,
+      runner_pool: "default",
+      required_runner_release_id: FavnTestSupport.runner_release_id(),
+      assigned_at: DateTime.utc_now(),
+      lease_expires_at: DateTime.add(DateTime.utc_now(), 30, :second),
+      retry_class: :unknown_do_not_retry,
+      payload: request
+    }
+
+    assert {:ok, executor} =
+             FavnRunner.TaskExecutor.start_link(
+               assignment: assignment,
+               payload: request,
+               owner: self()
+             )
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %FavnRunner.TaskExecutor.Result{
+                      outcome: :succeeded,
+                      result: %Favn.Contracts.RuntimeInputExpectation{} = expectation
+                    }},
+                   5000
+
+    refute Map.has_key?(expectation, :params)
+    refute Map.has_key?(expectation, :metadata)
     assert_received {:runtime_inputs_context, _context}
     refute_received {:connect_after_runtime_inputs, _}
 

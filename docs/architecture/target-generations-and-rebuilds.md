@@ -141,6 +141,20 @@ the orchestrator revalidates every pinned input and acquires sorted,
 workspace-scoped target locks. Changed inputs return a conflict; Favn never
 silently replaces the reviewed plan.
 
+Each planning, start, or retry request owns one read-only validation attempt
+with an absolute five-minute deadline. Start validation also ends when the
+reviewed plan expires. Input resolution uses a dedicated runner task linked to
+the rebuild, without creating a run or storing resolved parameter values. The
+pinned runner release must support `runtime_input_resolution`.
+
+Interrupted checks do not resume automatically. Create a new plan after a
+planning failure; after a start or retry validation failure, submit a new
+request for the same reviewed plan. Repeating the same request key observes its
+saved outcome. A lost response with an unknown outcome must be retried with the
+same key. Acceptance commits target locks, queueing, and the request receipt in
+one transaction; expired or cancelled checks cannot authorize execution.
+Existing accepted rebuild execution still uses its durable checkpoints.
+
 Windowed rebuild planning combines adjacent expected windows by default. The
 plan still preserves their exact logical coverage, and an operator can request
 separate runs. An explicit empty rebuild creates and activates only a schema-valid

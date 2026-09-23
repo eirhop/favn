@@ -32,6 +32,30 @@ defmodule FavnStoragePostgres.StorageV2.BoundedRunRecoveryMigrationTest do
     # Reconstruct the exact predecessor schema on this disposable database.
     SQL.query!(
       Repo,
+      "ALTER TABLE favn_control.rebuild_operations DROP COLUMN validation_request",
+      []
+    )
+
+    SQL.query!(
+      Repo,
+      "ALTER TABLE favn_control.runner_tasks DROP CONSTRAINT runner_tasks_kind_valid",
+      []
+    )
+
+    SQL.query!(
+      Repo,
+      "ALTER TABLE favn_control.runner_tasks ADD CONSTRAINT runner_tasks_kind_valid CHECK (task_kind IN ('asset_attempt','relation_inspection','generation_capabilities','generation_marker_read','generation_marker_initialize','generation_activate','generation_reconcile','generation_discard'))",
+      []
+    )
+
+    SQL.query!(
+      Repo,
+      "DELETE FROM favn_control.schema_migrations WHERE version=20260923000000",
+      []
+    )
+
+    SQL.query!(
+      Repo,
       "ALTER TABLE favn_control.runner_tasks DROP COLUMN cleanup_fencing_token",
       []
     )
@@ -61,7 +85,32 @@ defmodule FavnStoragePostgres.StorageV2.BoundedRunRecoveryMigrationTest do
 
     refute old.ready?
 
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO favn_control.rebuild_operations
+        (workspace_id, operation_id, root_target_id, manifest_version_id, plan_hash,
+         plan_version, plan_payload, trigger, actor_id, reason, idempotency_key,
+         evaluated_at, action_count, window_count, state, phase, dispatcher_owner,
+         dispatcher_expires_at, inserted_at, updated_at)
+      SELECT $1, 'legacy-planning', 'legacy-target', manifest_version_id, repeat('a',64),
+         1, '{"status":"planning"}'::jsonb, 'manual', 'operator', 'legacy test', 'legacy-planning',
+         clock_timestamp(), 0, 0, 'planning', 'planning', 'old-owner',
+         clock_timestamp() + interval '30 seconds', clock_timestamp(), clock_timestamp()
+      FROM favn_control.manifest_versions LIMIT 1
+      """,
+      [context.workspace_id]
+    )
+
     :ok = Migrations.migrate!(Repo)
+
+    assert [["failed", "terminal", nil, nil, "rebuild_planning_failed", 0]] =
+             SQL.query!(
+               Repo,
+               "SELECT state,phase,dispatcher_owner,dispatcher_expires_at,terminal_error->>'reason_code',action_count FROM favn_control.rebuild_operations WHERE workspace_id=$1 AND operation_id='legacy-planning'",
+               [context.workspace_id]
+             ).rows
+
     assert {:ok, %{ready?: true}} = Migrations.diagnostics(Repo)
 
     assert SQL.query!(

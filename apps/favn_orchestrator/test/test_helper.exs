@@ -214,6 +214,10 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
   defp execute(command, runner, opts, payload) do
     result =
       case {command.task_kind, payload} do
+        {:runtime_input_resolution, %Favn.Contracts.RuntimeInputResolutionRequest{work: work}} ->
+          with {:ok, resolution} <- runner.resolve_runtime_inputs(work, opts),
+               do: {:ok, Favn.Contracts.RuntimeInputExpectation.from_resolution(resolution)}
+
         {:asset_attempt, %RunnerWork{} = work} ->
           case runner.resolve_runtime_inputs(work, opts) do
             {:ok, %Resolution{} = resolution} ->

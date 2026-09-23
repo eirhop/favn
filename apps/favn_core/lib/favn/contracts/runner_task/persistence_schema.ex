@@ -14,6 +14,9 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
   @work_ids ~w(run_id asset_step_id manifest_lease_id logical_target_id
     target_descriptor_hash target_generation_id rebuild_operation_id rebuild_action_id rebuild_item_id)a
 
+  def payload(:runtime_input_resolution, request),
+    do: Contracts.RuntimeInputResolutionRequest.validate(request)
+
   def payload(:asset_attempt, %RunnerWork{} = work) do
     with true <- identity?(work.manifest_version_id) and hash?(work.manifest_content_hash),
          :ok <- RunnerWork.validate_release_binding(work),
@@ -197,6 +200,14 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
          result.marker.target_id == Favn.TargetIdentity.for_asset(request.asset_ref),
        do: :ok,
        else: {:error, :runner_task_result_identity_mismatch}
+  end
+
+  def completion(:runtime_input_resolution, request, result, :succeeded) do
+    resolver = request.work.execution_package.sql_execution.runtime_inputs.module
+
+    if result.resolver == Atom.to_string(resolver),
+      do: Contracts.RuntimeInputExpectation.validate(result),
+      else: {:error, :runner_task_result_identity_mismatch}
   end
 
   def completion(:generation_capabilities, _request, _result, _outcome), do: :ok

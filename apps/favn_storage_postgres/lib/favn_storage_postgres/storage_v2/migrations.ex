@@ -112,7 +112,8 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     {20_260_915_010_000, AddRetentionV2},
     {20_260_918_000_000, FavnStoragePostgres.Migrations.OwnDeploymentInspectionsV2},
     {20_260_921_000_000, QualifyRunnerTargetClaimsV2},
-    {20_260_922_000_000, FavnStoragePostgres.Migrations.AddBoundedRunRecoveryV2}
+    {20_260_922_000_000, FavnStoragePostgres.Migrations.AddBoundedRunRecoveryV2},
+    {20_260_923_000_000, FavnStoragePostgres.Migrations.AddRebuildValidationV2}
   ]
   @required_tables ~w(
     retention_floors
@@ -303,6 +304,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     asset_target_bindings_status_idx
     rebuild_operations_idempotency_uidx
     rebuild_operations_recovery_idx
+    rebuild_validation_expiry
     rebuild_operations_page_idx
     rebuild_operations_state_page_idx
     rebuild_windows_operation_page_idx
@@ -469,7 +471,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     "resource_recovery_candidates" =>
       ~w(workspace_id candidate_id source_run_id node_key resource_kind resource_name reason status expires_at claim_owner claim_expires_at recovery_run_id inserted_at updated_at),
     "rebuild_operations" =>
-      ~w(retiring workspace_id operation_id root_target_id manifest_version_id active_generation_id candidate_generation_id plan_hash plan_version plan_payload trigger actor_id session_id reason idempotency_key evaluated_at coverage_start coverage_end action_count window_count state phase activation_token dispatched_at result_marker unknown_outcome validation_result terminal_error cleanup_state last_command_id dispatcher_owner dispatcher_fencing_token dispatcher_expires_at cancel_requested version started_at completed_at cancelled_at inserted_at updated_at),
+      ~w(retiring workspace_id operation_id root_target_id manifest_version_id active_generation_id candidate_generation_id plan_hash plan_version plan_payload trigger actor_id session_id reason idempotency_key evaluated_at coverage_start coverage_end action_count window_count state phase activation_token dispatched_at result_marker unknown_outcome validation_request validation_result terminal_error cleanup_state last_command_id dispatcher_owner dispatcher_fencing_token dispatcher_expires_at cancel_requested version started_at completed_at cancelled_at inserted_at updated_at),
     "rebuild_plan_actions" =>
       ~w(workspace_id operation_id target_id ordinal action reason upstream_impact mapping_proof pinned_input_generation_ids runner_pool required_runner_release_id candidate_generation_id status child_operation_id child_run_id activation_intent validation_result terminal_error cleanup_state activated_at last_command_id version inserted_at updated_at),
     "rebuild_windows" =>
@@ -527,6 +529,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
     manifest_versions_runner_releases_valid execution_packages_hash_valid
     runner_tasks_manifest_pin_fk runner_tasks_persistence_failure_valid runner_tasks_cleanup_authority_valid
     materialization_claims_effect_state_valid target_operation_locks_effect_state_valid
+    rebuild_validation_bounded
     runner_tasks_status_valid runner_tasks_kind_valid runner_tasks_retry_class_valid
     runner_tasks_identity_valid runner_tasks_assignment_valid runner_tasks_payload_valid
     runner_tasks_state_shape_valid runner_tasks_time_valid runner_tasks_runtime_inputs_valid
@@ -631,7 +634,7 @@ defmodule FavnStoragePostgres.StorageV2.Migrations do
                           Enum.map(@identifier_constraint_tables, &"#{&1}_identifier_lengths_v2") ++
                           Enum.map(@payload_constraint_tables, &"#{&1}_payload_bounds_v2")
   @expected_versions Enum.map(@migrations, fn {version, _module} -> version end)
-  @expected_definition_fingerprint "66ae87606aafc81b7a720a0164127012cbe9671be0f8f4660b539ac88308c6ae"
+  @expected_definition_fingerprint "c82ead0762bff2854c574c2808d2fe98ec84e3162e1dfe842fb3cb8203fe776e"
 
   @doc "Creates the V2 namespace for development/tests and applies every known migration."
   @spec migrate!(module()) :: :ok

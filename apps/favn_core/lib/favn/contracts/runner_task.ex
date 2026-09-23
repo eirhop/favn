@@ -9,6 +9,7 @@ defmodule Favn.Contracts.RunnerTask do
   @version 15
   @task_kinds [
     :asset_attempt,
+    :runtime_input_resolution,
     :relation_inspection,
     :generation_capabilities,
     :generation_marker_read,
@@ -53,6 +54,8 @@ defmodule Favn.Contracts.RunnerTask do
            ],
       do: :reconcile_before_retry
 
+  def default_retry_class(:runtime_input_resolution), do: :unknown_do_not_retry
+
   def default_retry_class(:asset_attempt), do: :unknown_do_not_retry
 
   @doc false
@@ -73,6 +76,17 @@ defmodule Favn.Contracts.RunnerTask do
         %Favn.Contracts.RunnerError{outcome: :cancelled} = error
       ),
       do: Favn.Contracts.RunnerError.validate(error)
+
+  def validate_terminal_retry(
+        :runtime_input_resolution,
+        :failed,
+        :terminal,
+        %Favn.Contracts.RunnerError{outcome: :safe_failure, retryable?: false} = error
+      ),
+      do: Favn.Contracts.RunnerError.validate(error)
+
+  def validate_terminal_retry(:runtime_input_resolution, outcome, retry_class, _error),
+    do: {:error, {:invalid_resolution_retry_classification, outcome, retry_class}}
 
   def validate_terminal_retry(
         _kind,
@@ -115,9 +129,10 @@ defmodule Favn.Contracts.RunnerTask do
   Maps a normalized runner error to the one `{outcome, retry_class}` pair that
   `validate_terminal_retry/4` accepts for it.
 
-  Total over every `Favn.Contracts.RunnerError` outcome, so a runner that
-  classifies failure results through this function always produces a result
-  the control plane can accept. The pair follows the error envelope:
+  Runtime-input resolution callers must first normalize interrupted reads to
+  non-retryable `:safe_failure`; that dedicated task cannot report an unknown
+  write or authorize automatic retries. For other task kinds this accepts every
+  `Favn.Contracts.RunnerError` outcome. The pair follows the error envelope:
 
     * a `:cancelled` error reports a cancelled task
     * a retryable `:safe_failure` may be retried safely
@@ -140,6 +155,9 @@ defmodule Favn.Contracts.RunnerTask do
 
   @doc false
   @spec validate_payload(atom(), term()) :: :ok | {:error, term()}
+  def validate_payload(:runtime_input_resolution, request),
+    do: Favn.Contracts.RuntimeInputResolutionRequest.validate(request)
+
   def validate_payload(:asset_attempt, %Favn.Contracts.RunnerWork{}), do: :ok
 
   def validate_payload(:relation_inspection, %Favn.Contracts.RelationInspectionRequest{}),
@@ -178,6 +196,9 @@ defmodule Favn.Contracts.RunnerTask do
   @spec validate_result(atom(), atom(), term()) :: :ok | {:error, term()}
   def validate_result(_kind, outcome, nil) when outcome in [:failed, :cancelled, :unknown],
     do: :ok
+
+  def validate_result(:runtime_input_resolution, :succeeded, result),
+    do: Favn.Contracts.RuntimeInputExpectation.validate(result)
 
   def validate_result(:asset_attempt, outcome, %Favn.Contracts.RunnerResult{})
       when outcome in @terminal_outcomes,

@@ -339,6 +339,13 @@ defmodule Mix.Tasks.Favn.Rebuild do
 
   def error_message(%{
         operation: _operation,
+        reason: {:http_error, 422, %{error_code: "rebuild_input_resolution_unsupported"}}
+      }),
+      do:
+        "the pinned runner release does not support rebuild input checks; activate an upgraded release and create a new plan"
+
+  def error_message(%{
+        operation: _operation,
         reason: {:http_error, 422, %{error_code: "invalid_rebuild_plan_hash"}}
       }),
       do: "rebuild plan hash is invalid; pass the exact hash printed by mix favn.rebuild plan"
@@ -348,6 +355,16 @@ defmodule Mix.Tasks.Favn.Rebuild do
         reason: {:http_error, 404, %{error_code: "not_found"}}
       }),
       do: "rebuild plan or operation was not found in this workspace"
+
+  def error_message(%{
+        operation: _operation,
+        reason: {:http_error, 422, %{error_code: code} = details}
+      })
+      when code in ["rebuild_planning_failed", "rebuild_validation_failed"],
+      do:
+        "rebuild input checks failed" <>
+          if(details[:operation_id], do: " for #{details.operation_id}", else: "") <>
+          "; retry manually"
 
   def error_message(%{operation: _operation} = reason),
     do:

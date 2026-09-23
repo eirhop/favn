@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#758](https://github.com/eirhop/favn/issues/758) |
 | Pull request | [#759](https://github.com/eirhop/favn/pull/759) |
@@ -15,7 +15,8 @@
 The original approved baseline is preserved below. The
 [manual-retry amendment](#manual-retry-amendment-2026-09-23) changes only pre-write
 validation recovery and its budget; where they differ, the approved amendment
-takes precedence. Implementation has not started.
+takes precedence. The implementation outcome and verification below describe the
+current change; the approved plan remains unchanged.
 
 ## One-minute summary
 
@@ -627,37 +628,92 @@ have not begun.
 
 ## Implementation outcome
 
-Implementation has not started. This request prepares and reviews the plan only.
-The draft PR holds the original reviewed baseline and the manual-retry amendment.
-Both are independently approved; implementation remains separate work.
+Rebuild input checks now use a dedicated read-only runner task owned by the saved
+rebuild operation. The runner receives the pinned package and evaluation context,
+and returns only the resolver name, input identity, and payload fingerprint.
+No future run or encrypted execution pin is created during these checks. Normal
+execution still creates its own encrypted pin and performs the existing expected-input
+comparison before writing.
+
+Initial planning, start, and retry share one durable validation attempt with a
+fixed deadline and renewable owner lease. A live worker can renew its own lease;
+an interrupted worker cannot be reconstructed. Expiration closes its scoped read
+tasks and records a stable failure. A fresh manual request obtains a new attempt.
+The original request key always replays its saved outcome, including after later
+attempts. Initial planning failures require a new plan; failed start/retry checks
+leave the reviewed operation available for a fresh explicit request.
+
+Approval checks the exact successful task evidence, locks the sorted write targets,
+compares observed binding versions, and rechecks database time before committing
+acceptance and its idempotency receipt together. Waiting for a target lock cannot
+extend the validation deadline. Legacy unfinished planning is failed by the
+migration under the documented stop/drain rollout procedure; retained task evidence
+is not reclassified or deleted. Unsupported pinned runner releases produce fixed
+upgrade-and-new-plan guidance in API, CLI, and View.
+
+The manual-retry amendment diagram still describes the final behavior. No additional
+scheduler, successor worker, run type, input-pin table, or automatic rebuild retry
+was added. Accepted rebuild execution recovery remains unchanged.
 
 ## Deviations from the approved plan
 
-| Planned | Amended | Reason | Reviewer verdict |
+| Planned | Implemented | Reason | Reviewer verdict |
 | --- | --- | --- | --- |
-| Resume pre-write validation after worker/node restart | Close interrupted checks and require a fresh manual request; retain expiration/cancellation cleanup | Operator explicitly accepts manual retry for rebuilds; removes successor validation/recovery machinery | Approved by Astra xhigh |
-| Acquire start locks before acceptance and release on rejection | Acquire locks in the acceptance transaction; remove caller-side release | Fewer cleanup paths and no accidental release after a committed start loses its reply | Approved by Astra xhigh |
+| Resume pre-write validation after worker/node restart | Close interrupted checks and require a fresh manual request | Operator explicitly accepts manual retry; removes successor validation/recovery machinery | Approved amendment, Astra xhigh |
+| Acquire start locks before acceptance and release on rejection | Acquire locks inside acceptance; remove caller-side release | Fewer cleanup paths; a lost reply cannot release a committed start's locks | Approved amendment, Astra xhigh |
+| Durable saved result for each original validation request | Reuse command-idempotency rows with bounded active/terminal envelopes; no second reservation or receipt table | A newer attempt must not overwrite an older request's outcome; internal callers also receive a durable request identity | Astra review found the retained request namespace and replay checks appropriate |
+| Single live worker, no automatic restart | Registry-absent callers poll the saved attempt until its bounded deadline; only expiration closure can mutate it | Remote callers and lost replies need the saved result without creating a successor worker | Reviewed; active polling avoids loading actions and progress repeatedly |
+| Legacy interrupted plans fail explicitly | Migration settles only legacy pre-write planning parents and retains task evidence | Avoid permanently stranded planning rows without reinterpreting old asset tasks | Astra accepted under stop/drain rollout |
+| Estimated +550–950 production lines | Approximately +1,900/-410 production lines | Original estimate omitted much of the receipt, fencing, and storage integration required by its own invariants | Astra found no removable second lifecycle; compressing back to the estimate would drop guarantees |
 
-Implementation has not started. The original approved plan and budget above
-remain preserved for comparison with this amendment and eventual implementation.
+### Actual complexity
+
+Counts include new files and exclude this record, dependency symlinks, generated
+files, and locks. Slices 2 and 3 share storage and orchestrator functions, so they
+are measured together rather than assigning the same lines twice.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| 1: typed read task and runner execution | 208 | 44 | 204 | 11 |
+| 2 + 3: manual validation, receipts, atomic acceptance | 1,635 | 363 | 1,030 | 88 |
+| 4: errors and canonical guidance | 69 | 3 | 85 | 0 |
+| Total at review | 1,912 | 410 | 1,319 | 99 |
+
+Slices 2+3 exceed the combined +600 estimate substantially. The largest additions
+are storage validation/evidence enforcement (about 400 lines), existing-store
+integration (about 260), request receipts (about 150), and the typed attempt/codec
+(about 150). The previous estimate understated implementation cost; these are
+required guarantees already present in the approved amendment, not new product
+scope. Production deletions exceed the estimate because the old recovery worker
+and caller-side lock handling were removed. Slice 4 removes fewer lines because
+the generic error paths remain necessary for unrelated rebuild errors; two narrow
+safe error variants were added. Supporting code below the slice 4 estimate reflects
+small text changes rather than a new UI flow.
 
 ## Verification evidence
 
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
-| Original ownership failure | Reproduced on real PostgreSQL; identical task accepted after saving a run | Temporary diagnostic probe, not committed regression or full runner execution |
-| Missing finalization fence | Reproduced on real PostgreSQL after ownership takeover | Temporary diagnostic probe, not a live incident |
-| Existing rebuild/planning worker unit tests | 13 passed on baseline | Fake task persistence does not cover the reported guard |
-| Record links and diff whitespace | All repository-relative link targets exist; `git diff --check` clean | Documentation validation only |
-| Mermaid diagrams | Both parsed, rendered with Mermaid 11, and visually inspected before the planning commit; both also rendered with GitHub's live Mermaid renderer from the pushed baseline | Documentation rendering only; no diagram changes after approval |
+| Original ownership failure | Reproduced before implementation on real PostgreSQL | Diagnostic reproduction recorded with the approved plan |
+| Core compact contract | Dedicated request/result round-trip, package reference, malformed resolver and terminal classification checks pass | Unit/codec tests |
+| Native runner path | Dedicated TaskExecutor resolves inputs; customer execution/session/materialization remain untouched; normal execution still requires publication | Real TaskExecutor with a test adapter, not live DuckLake |
+| Orchestrator/API focused checks | 28 tests passed before the final safe-guidance clause; includes remote accepted-plan replay, stable saved conflict, lost reply and unavailable closure | Application tests with persistence doubles |
+| PostgreSQL task ownership and receipts | Saved-operation ownership without future run/pin, terminal read failure, fencing, manual fresh request, old-request replay, and busy-result replay pass | Real disposable PostgreSQL 18 database |
+| Full fast suite, first pass | Exposed stale schema fingerprint, predecessor fixture, retention/error compatibility, View fixture and two obsolete contract assertions; corrected in this change | Final reruns recorded below; this first run was not green |
+| Compile | Development compile with warnings as errors passed | Local compilation |
+| Record diagrams | Original and amended diagrams rendered before implementation; final semantics unchanged | Documentation rendering; no new diagram syntax |
 
 ### Not verified
 
-No fix, migration, new runner contract, full rebuild, cancellation-race repair,
-customer deployment, or production load has been qualified. The implementation
-checks above remain required work for the subsequent implementation.
+No customer deployment or live Azure rebuild has been performed. Local native
+runner tests use a test adapter; they do not establish a complete live DuckLake
+rebuild or production load behavior. Verification of the final edited tree and
+independent final review are still in progress.
 
 ## Final review
 
-Not requested yet. Independent implementation review must compare code, tests,
-canonical docs, actual complexity, and every deviation with the approved baseline.
+Astra xhigh independently compared implementation with the approved baseline and
+manual-retry amendment. Its findings covered stale ownership, acceptance after lock
+waits, exact saved outcomes, historical evaluation times, legacy upgrade settlement,
+and fixed capability guidance. These findings have been addressed; the final
+recheck will include the completed verification and complexity accounting.

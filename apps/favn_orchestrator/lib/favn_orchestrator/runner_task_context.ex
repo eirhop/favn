@@ -11,7 +11,7 @@ defmodule FavnOrchestrator.RunnerTaskContext do
   alias FavnOrchestrator.RunServer.Execution.PipelineTaskContinuation
 
   @limit 4 * 1_048_576
-  @atoms ~w(runtime_input_resolution rebuild_operation_id rebuild_action_id rebuild_item_id purpose ownership_only released kind sequential pipeline decision freshness_checkpoint freshness_key
+  @atoms ~w(rebuild_validation attempt_id runtime_input_resolution rebuild_operation_id rebuild_action_id rebuild_item_id purpose ownership_only released kind sequential pipeline decision freshness_checkpoint freshness_key
     materialization_claim resource_circuit_permits claim_key fencing_token
     workspace_id deployment_id run_id asset_step_id node_key asset_ref_module
     asset_ref_name input_fingerprint input_versions input_generations
@@ -95,6 +95,14 @@ defmodule FavnOrchestrator.RunnerTaskContext do
   end
 
   defp valid?(context) when context == %{}, do: true
+
+  defp valid?(
+         %{kind: :rebuild_validation, attempt_id: id, owner_id: owner, fencing_token: fence} =
+           context
+       ),
+       do:
+         map_size(context) == 4 and identifier?(id) and identifier?(owner) and is_integer(fence) and
+           fence > 0
 
   defp valid?(%{kind: :sequential, materialization_claim: claim} = context),
     do: map_size(context) == 2 and valid_claim?(claim)
@@ -194,6 +202,27 @@ defmodule FavnOrchestrator.RunnerTaskContext do
     do:
       command.task_kind == :asset_attempt and is_nil(command.write_claim_key) and
         is_nil(command.write_target_id)
+
+  def matches_task?(%{kind: :rebuild_validation}, command),
+    do:
+      command.task_kind in [
+        :runtime_input_resolution,
+        :generation_capabilities,
+        :generation_marker_read,
+        :relation_inspection
+      ] and
+        is_binary(command.operation_id) and
+        Enum.all?(
+          [
+            :run_id,
+            :write_claim_key,
+            :write_claim_fence,
+            :write_target_id,
+            :write_operation_id,
+            :write_lock_fence
+          ],
+          &is_nil(Map.get(command, &1))
+        )
 
   def matches_task?(_context, _command), do: false
 

@@ -229,7 +229,7 @@ defmodule Favn.CLI.HttpClient do
   defp decode_response(_response), do: {:error, {:invalid_response, :missing_status}}
 
   defp error_summary(body) do
-    {code, outcome, retry_with_same_idempotency_key} =
+    {code, outcome, retry_with_same_idempotency_key, operation_id} =
       case JSON.decode(body) do
         {:ok, %{"error" => error}} when is_map(error) ->
           details = Map.get(error, "details", %{})
@@ -237,11 +237,12 @@ defmodule Favn.CLI.HttpClient do
           {
             bounded_error_code(Map.get(error, "code")),
             bounded_outcome(Map.get(details, "outcome")),
-            Map.get(details, "retry_with_same_idempotency_key") == true
+            Map.get(details, "retry_with_same_idempotency_key") == true,
+            rebuild_error_id(error["code"], details["operation_id"])
           }
 
         _other ->
-          {nil, nil, false}
+          {nil, nil, false, nil}
       end
 
     %{
@@ -250,7 +251,21 @@ defmodule Favn.CLI.HttpClient do
       outcome: outcome,
       retry_with_same_idempotency_key: retry_with_same_idempotency_key
     }
+    |> then(fn summary ->
+      if operation_id, do: Map.put(summary, :operation_id, operation_id), else: summary
+    end)
   end
+
+  defp rebuild_error_id(code, id)
+       when code in [
+              "rebuild_planning_failed",
+              "rebuild_validation_failed",
+              "rebuild_input_resolution_unsupported"
+            ] and is_binary(id) and
+              byte_size(id) in 1..255,
+       do: id
+
+  defp rebuild_error_id(_, _), do: nil
 
   defp bounded_error_code(value) when is_binary(value) and byte_size(value) <= 100, do: value
   defp bounded_error_code(_value), do: nil

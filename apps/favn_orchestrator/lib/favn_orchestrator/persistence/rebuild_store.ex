@@ -24,6 +24,16 @@ defmodule FavnOrchestrator.Persistence.RebuildStore do
   alias FavnOrchestrator.Persistence.Results.RebuildItem
   alias FavnOrchestrator.Persistence.Results.RebuildOperation
 
+  @callback get_validation(FavnOrchestrator.Persistence.Queries.GetRebuildValidation.t()) ::
+              {:ok, RebuildOperation.t()} | {:error, Error.t()}
+
+  @callback begin_validation(FavnOrchestrator.Persistence.Commands.BeginRebuildValidation.t()) ::
+              {:ok, RebuildOperation.t()} | {:error, Error.t()}
+  @callback close_validation(FavnOrchestrator.Persistence.Commands.CloseRebuildValidation.t()) ::
+              {:ok, RebuildOperation.t()} | {:error, Error.t()}
+  @callback expire_validations(FavnOrchestrator.Persistence.Queries.ExpireRebuildValidations.t()) ::
+              {:ok, non_neg_integer()} | {:error, Error.t()}
+
   @callback begin_plan(BeginRebuildPlan.t()) ::
               {:ok, RebuildOperation.t()} | {:error, Error.t()}
   @callback create_plan(CreateRebuildPlan.t()) ::

@@ -58,7 +58,8 @@ defmodule Favn.SQLAsset.Runtime do
           ExecutionPackage.t(),
           Version.t(),
           RunnerWork.t(),
-          Context.t()
+          Context.t(),
+          :execution | :input_resolution
         ) ::
           {:ok, map()} | {:error, Error.t()} | {:error, Error.t(), map()}
   def run_manifest(
@@ -149,14 +150,15 @@ defmodule Favn.SQLAsset.Runtime do
         manifest_identity,
         relation_by_module,
         %RunnerWork{} = work,
-        %Context{} = context
+        %Context{} = context,
+        purpose \\ :execution
       )
       when (is_struct(manifest_identity, Version) or
               is_struct(manifest_identity, ManifestHandle)) and is_map(relation_by_module) do
     opts = context |> run_opts() |> Keyword.merge(runner_runtime_opts(work))
     {asset, relation_by_module} = GenerationWork.apply_overrides(asset, relation_by_module, work)
 
-    with :ok <- validate_runtime_preparation(asset, work),
+    with :ok <- validate_runtime_preparation(asset, work, purpose),
          {:ok, %Definition{} = definition} <-
            manifest_definition(asset, package, relation_by_module),
          definition <- rebuild_definition(definition, work),
@@ -166,11 +168,10 @@ defmodule Favn.SQLAsset.Runtime do
     end
   end
 
-  defp validate_runtime_preparation(asset, work) do
-    if RunnerWork.runtime_input_resolution_only?(work),
-      do: :ok,
-      else: validate_runtime_publication(asset, work)
-  end
+  defp validate_runtime_preparation(_asset, _work, :input_resolution), do: :ok
+
+  defp validate_runtime_preparation(asset, work, :execution),
+    do: validate_runtime_publication(asset, work)
 
   defp validate_runtime_publication(asset, work) do
     if Favn.RuntimeCatalog.Publication.supported?(asset.target_descriptor) do

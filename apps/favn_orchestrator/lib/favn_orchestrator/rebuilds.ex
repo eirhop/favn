@@ -24,15 +24,15 @@ defmodule FavnOrchestrator.Rebuilds do
   alias Favn.Window.Selection
   alias FavnOrchestrator.ManifestStore
   alias FavnOrchestrator.ManifestTarget
+  alias FavnOrchestrator.Rebuild.Validation
+  alias FavnOrchestrator.Persistence.Commands.BeginRebuildValidation
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.CommandIdempotency
-  alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.BeginRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanAction
   alias FavnOrchestrator.Persistence.Commands.RebuildPlanItem
-  alias FavnOrchestrator.Persistence.Commands.ReleaseTargetOperationLocks
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildCancellation
   alias FavnOrchestrator.Persistence.Commands.RequestRebuildReconciliation
   alias FavnOrchestrator.Persistence.Commands.RetryRebuildOperation
@@ -78,7 +78,7 @@ defmodule FavnOrchestrator.Rebuilds do
             {:ok, plan}
 
           {:resume, operation} ->
-            planning_worker().ensure_and_await(context, operation)
+            planning_worker().await_existing(context, operation) |> planning_result()
 
           :missing ->
             create_plan(
@@ -118,9 +118,19 @@ defmodule FavnOrchestrator.Rebuilds do
              evaluated_at,
              opts
            ) do
-      planning_worker().ensure_and_await(context, operation)
+      result =
+        if operation.idempotency_replay?,
+          do: planning_worker().await_existing(context, operation),
+          else: planning_worker().ensure_and_await(context, operation)
+
+      planning_result(result)
     end
   end
+
+  defp planning_result({:ok, %RebuildOperation{} = operation}),
+    do: {:ok, plan_from_operation(operation, operation.idempotency_replay?)}
+
+  defp planning_result(result), do: result
 
   @doc false
   @spec resume_planning(WorkspaceContext.t(), RebuildOperation.t()) ::
@@ -137,6 +147,7 @@ defmodule FavnOrchestrator.Rebuilds do
       ) do
     opts = [
       operation_id: operation.operation_id,
+      validation: operation.validation,
       idempotency_key: operation.idempotency_key,
       evaluated_at: operation.evaluated_at,
       actor_id: operation.actor_id,
@@ -158,7 +169,7 @@ defmodule FavnOrchestrator.Rebuilds do
          {:ok, root_binding} <- rebuildable_binding(bindings, operation.root_target_id),
          :ok <- exact_planning_binding(operation, root_binding),
          {:ok, capability_snapshots} <-
-           capabilities(context, version, index, refs, operation.operation_id),
+           capabilities(context, version, index, refs, operation.validation),
          :ok <-
            validate_live_bindings(
              context,
@@ -166,7 +177,7 @@ defmodule FavnOrchestrator.Rebuilds do
              index,
              refs,
              bindings,
-             operation.operation_id
+             operation.validation
            ),
          {:ok, draft} <-
            build_draft(
@@ -205,10 +216,24 @@ defmodule FavnOrchestrator.Rebuilds do
              field(operation.plan_payload, :empty, false) == Keyword.get(opts, :empty, false) and
              (is_nil(requested_evaluated_at) or
                 operation.evaluated_at == requested_evaluated_at) do
-          if operation.state == :planning do
-            {:resume, operation}
-          else
-            {:ok, plan_from_operation(operation, true)}
+          cond do
+            operation.state == :failed and is_nil(operation.validation) and
+                operation.action_count == 0 ->
+              {:error, Validation.failure(operation.operation_id, :plan)}
+
+            operation.state == :planning ->
+              {:resume, operation}
+
+            operation.validation && operation.validation.purpose == :plan &&
+                operation.validation.status == "failed" ->
+              {:error,
+               if(operation.validation.failure,
+                 do: Validation.decode_error(operation.validation.failure),
+                 else: Validation.failure(operation.operation_id, :plan)
+               )}
+
+            true ->
+              {:ok, plan_from_operation(operation, true)}
           end
         else
           {:error,
@@ -255,7 +280,10 @@ defmodule FavnOrchestrator.Rebuilds do
         empty: Keyword.get(opts, :empty, false)
       })
 
+    validation = Validation.new(operation_id, :plan, operation_id, DateTime.utc_now())
+
     store().begin_plan(%BeginRebuildPlan{
+      validation: validation,
       workspace_context: context,
       command_id: command_id("begin-plan", operation_id <> ":" <> planning.plan_hash),
       operation_id: operation_id,
@@ -341,33 +369,60 @@ defmodule FavnOrchestrator.Rebuilds do
     end
   end
 
-  defp start_or_replay(
-         context,
-         %RebuildOperation{state: state} = operation,
-         plan_hash,
-         opts
-       )
-       when state != :planned do
-    case Keyword.get(opts, :idempotency) do
-      %CommandIdempotency{} -> persist_start(context, operation, plan_hash, opts)
-      nil -> {:error, Error.new(:conflict, "rebuild operation is no longer planned")}
-    end
+  defp start_or_replay(context, operation, plan_hash, opts) do
+    validate_request(context, operation, :start, plan_hash, opts, fn context, operation ->
+      with {:ok, versions} <- revalidate_plan(context, operation),
+           do:
+             persist_start(
+               context,
+               operation,
+               plan_hash,
+               Keyword.put(opts, :binding_versions, versions)
+             )
+    end)
   end
 
-  defp start_or_replay(context, operation, plan_hash, opts) do
-    with :ok <- exact_plan(operation, plan_hash),
-         :ok <- plan_not_expired(operation),
-         :ok <- revalidate_plan(context, operation),
-         {:ok, locks} <- acquire_plan_locks(context, operation, opts) do
-      case persist_start(context, operation, plan_hash, opts) do
-        {:ok, started} -> {:ok, started}
-        {:error, reason} -> release_plan_locks(context, operation, locks, reason)
+  defp validate_request(context, operation, purpose, plan_hash, opts, execute) do
+    now = DateTime.utc_now()
+
+    request_id =
+      Keyword.get(opts, :command_id) ||
+        Base.url_encode64(:crypto.strong_rand_bytes(18), padding: false)
+
+    receipt =
+      Keyword.get(opts, :idempotency) ||
+        %CommandIdempotency{
+          operation: "rebuild." <> Atom.to_string(purpose),
+          principal_kind: :actor,
+          principal_id: context.principal_id,
+          key_hash: :crypto.hash(:sha256, request_id),
+          request_fingerprint: :crypto.hash(:sha256, operation.operation_id <> ":" <> plan_hash),
+          expires_at: DateTime.add(now, 86_400, :second)
+        }
+
+    validation = %{
+      Validation.new(operation.operation_id, purpose, Base.encode16(receipt.key_hash), now)
+      | receipt: receipt
+    }
+
+    with {:ok, admitted} <-
+           store().begin_validation(%BeginRebuildValidation{
+             workspace_context: context,
+             validation: validation,
+             plan_hash: plan_hash
+           }) do
+      cond do
+        admitted.validation.status == "accepted" -> {:ok, admitted}
+        admitted.idempotency_replay? -> planning_worker().await_existing(context, admitted)
+        true -> planning_worker().ensure_and_await(context, admitted, resume: execute)
       end
     end
   end
 
   defp persist_start(context, operation, plan_hash, opts) do
     store().start_operation(%StartRebuildOperation{
+      validation: operation.validation,
+      binding_versions: Keyword.fetch!(opts, :binding_versions),
       workspace_context: context,
       command_id: command_id("start", operation.operation_id <> ":" <> plan_hash),
       operation_id: operation.operation_id,
@@ -444,18 +499,22 @@ defmodule FavnOrchestrator.Rebuilds do
     with :ok <- authorize_admin(context),
          :ok <- validate_command_options(opts),
          {:ok, operation} <- get(context, operation_id),
-         :ok <- exact_plan(operation, plan_hash),
-         :ok <- reject_combined_append_retry(operation),
-         :ok <- revalidate_plan(context, operation) do
-      store().retry_operation(%RetryRebuildOperation{
-        workspace_context: context,
-        command_id:
-          Keyword.get(opts, :command_id, command_id("retry", operation_id <> ":" <> plan_hash)),
-        operation_id: operation_id,
-        plan_hash: plan_hash,
-        occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now()),
-        idempotency: Keyword.get(opts, :idempotency)
-      })
+         :ok <- validate_command_options(opts) do
+      validate_request(context, operation, :retry, plan_hash, opts, fn context, operation ->
+        with :ok <- reject_combined_append_retry(operation),
+             {:ok, versions} <- revalidate_plan(context, operation) do
+          store().retry_operation(%RetryRebuildOperation{
+            workspace_context: context,
+            validation: operation.validation,
+            binding_versions: versions,
+            command_id: "retry:" <> operation.validation.attempt_id,
+            operation_id: operation_id,
+            plan_hash: plan_hash,
+            occurred_at: DateTime.utc_now(),
+            idempotency: Keyword.get(opts, :idempotency)
+          })
+        end
+      end)
     end
   end
 
@@ -520,7 +579,8 @@ defmodule FavnOrchestrator.Rebuilds do
              bindings,
              capabilities,
              evaluated_at,
-             operation_id
+             operation_id,
+             Keyword.fetch!(opts, :validation)
            ) do
       payload = %{
         schema_version: 1,
@@ -877,6 +937,7 @@ defmodule FavnOrchestrator.Rebuilds do
     coverage_end = coverage_items |> List.last() |> item_boundary(:window_end)
 
     store().create_plan(%CreateRebuildPlan{
+      validation: Keyword.fetch!(opts, :validation),
       workspace_context: context,
       command_id: command_id("plan", draft.plan.plan_id <> ":" <> draft.plan.plan_hash),
       operation_id: draft.plan.plan_id,
@@ -922,7 +983,7 @@ defmodule FavnOrchestrator.Rebuilds do
              :target_bindings
            ),
          {:ok, current_capabilities} <-
-           capabilities_for_payload(context, version, payload, operation.operation_id),
+           capabilities_for_payload(context, version, payload, operation.validation),
          :ok <-
            ensure_current(
              canonical(current_capabilities) == field(payload, :capabilities),
@@ -936,7 +997,7 @@ defmodule FavnOrchestrator.Rebuilds do
              index,
              payload_refs(index, payload),
              current_bindings,
-             operation.operation_id
+             operation.validation
            ),
          {:ok, execution_index} <- ManifestIndex.build(version.manifest),
          {:ok, frozen_items} <- operation_items(context, operation.operation_id),
@@ -952,14 +1013,15 @@ defmodule FavnOrchestrator.Rebuilds do
              current_bindings,
              current_capabilities,
              operation.evaluated_at,
-             operation.operation_id
+             operation.operation_id,
+             operation.validation
            ),
          :ok <-
            ensure_current(
              ItemDigest.hash(current_items) == field(payload, :items_digest),
              :runtime_inputs
            ) do
-      :ok
+      {:ok, Map.new(current_bindings, fn {id, binding} -> {id, binding.version} end)}
     else
       {:error, {:stale_rebuild_plan, reason}} ->
         Logger.warning("rebuild plan revalidation failed: #{reason}",
@@ -980,56 +1042,25 @@ defmodule FavnOrchestrator.Rebuilds do
   defp ensure_current(true, _reason), do: :ok
   defp ensure_current(false, reason), do: {:error, {:stale_rebuild_plan, reason}}
 
-  defp acquire_plan_locks(context, operation, opts) do
-    target_ids = write_target_ids(operation.plan_payload)
-
-    lock_store().acquire_many(%AcquireTargetOperationLocks{
-      workspace_context: context,
-      command_id: command_id("locks", operation.operation_id <> ":" <> operation.plan_hash),
-      target_ids: target_ids,
-      operation_id: operation.operation_id,
-      operation_type: :rebuild,
-      lease_owner: operation.operation_id,
-      lease_duration_ms: Keyword.get(opts, :lease_duration_ms, 30_000),
-      occurred_at: Keyword.get(opts, :occurred_at, DateTime.utc_now())
-    })
-  end
-
-  defp release_plan_locks(context, operation, locks, original_error) do
-    refs = Enum.map(locks, &%{target_id: &1.target_id, fencing_token: &1.fencing_token})
-
-    _ =
-      lock_store().release_many(%ReleaseTargetOperationLocks{
-        workspace_context: context,
-        command_id: command_id("release", operation.operation_id <> ":start-failed"),
-        operation_id: operation.operation_id,
-        lease_owner: operation.operation_id,
-        locks: refs,
-        occurred_at: DateTime.utc_now()
-      })
-
-    {:error, original_error}
-  end
-
-  defp capabilities(context, version, index, refs, operation_id) do
+  defp capabilities(context, version, index, refs, validation) do
     refs
     |> Enum.filter(&(Map.fetch!(index.assets_by_ref, &1).target_descriptor != nil))
     |> Enum.reduce_while({:ok, %{}}, fn ref, {:ok, acc} ->
       asset = Map.fetch!(index.assets_by_ref, ref)
 
-      case generation_capabilities(context, version, asset, operation_id) do
+      case generation_capabilities(context, version, asset, validation) do
         {:ok, snapshot} -> {:cont, {:ok, Map.put(acc, target_id(asset), snapshot)}}
         {:error, _reason} = error -> {:halt, error}
       end
     end)
   end
 
-  defp capabilities_for_payload(context, version, payload, operation_id) do
+  defp capabilities_for_payload(context, version, payload, validation) do
     target_ids = payload |> field(:capabilities) |> Map.keys()
 
     Enum.reduce_while(target_ids, {:ok, %{}}, fn target_id, {:ok, acc} ->
       with {:ok, asset} <- ManifestTarget.resolve_asset(version, target_id),
-           {:ok, snapshot} <- generation_capabilities(context, version, asset, operation_id) do
+           {:ok, snapshot} <- generation_capabilities(context, version, asset, validation) do
         {:cont, {:ok, Map.put(acc, target_id, snapshot)}}
       else
         {:error, _reason} = error -> {:halt, error}
@@ -1037,7 +1068,12 @@ defmodule FavnOrchestrator.Rebuilds do
     end)
   end
 
-  defp generation_capabilities(context, version, asset, operation_id) do
+  defp generation_capabilities(
+         context,
+         version,
+         asset,
+         %Validation{operation_id: operation_id} = validation
+       ) do
     payload = %GenerationCapabilitiesRequest{
       manifest: Version.identity(version),
       asset_ref: asset.ref
@@ -1051,7 +1087,8 @@ defmodule FavnOrchestrator.Rebuilds do
            payload,
            {:rebuild_capabilities, operation_id, target_id(asset)},
            operation_id: operation_id,
-           rebuild_operation_id: operation_id
+           rebuild_operation_id: operation_id,
+           validation: validation
          ) do
       {:ok, %GenerationCapabilitiesResult{capabilities: capabilities}}
       when is_map(capabilities) ->
@@ -1320,7 +1357,14 @@ defmodule FavnOrchestrator.Rebuilds do
     end)
   end
 
-  defp validate_live_bindings(context, version, index, refs, bindings, operation_id) do
+  defp validate_live_bindings(
+         context,
+         version,
+         index,
+         refs,
+         bindings,
+         %Validation{operation_id: operation_id} = validation
+       ) do
     refs
     |> Enum.map(&Map.fetch!(index.assets_by_ref, &1))
     |> Enum.filter(& &1.target_descriptor)
@@ -1343,7 +1387,8 @@ defmodule FavnOrchestrator.Rebuilds do
                  payload,
                  {:rebuild_marker_read, operation_id, target_id(asset)},
                  operation_id: operation_id,
-                 rebuild_operation_id: operation_id
+                 rebuild_operation_id: operation_id,
+                 validation: validation
                ),
              :ok <- validate_live_marker(marker, binding),
              {:ok, fingerprint} <-
@@ -1352,7 +1397,7 @@ defmodule FavnOrchestrator.Rebuilds do
                  version,
                  asset,
                  binding,
-                 operation_id
+                 validation
                ),
              true <- fingerprint.fingerprint == binding.active_physical_fingerprint do
           {:cont, :ok}
@@ -1381,7 +1426,13 @@ defmodule FavnOrchestrator.Rebuilds do
 
   defp validate_live_marker(_marker, _binding), do: {:error, :active_generation_marker_missing}
 
-  defp inspect_active_fingerprint(context, version, asset, binding, operation_id) do
+  defp inspect_active_fingerprint(
+         context,
+         version,
+         asset,
+         binding,
+         %Validation{operation_id: operation_id} = validation
+       ) do
     {:ok, runner_binding} = OperationRunnerTasks.binding(version, asset.ref)
 
     with {:ok, relation} <- persisted_physical_relation(asset, binding),
@@ -1403,7 +1454,8 @@ defmodule FavnOrchestrator.Rebuilds do
              request,
              {:rebuild_active_inspection, operation_id, target_id(asset)},
              operation_id: operation_id,
-             rebuild_operation_id: operation_id
+             rebuild_operation_id: operation_id,
+             validation: validation
            ) do
       PhysicalFingerprint.from_inspection(inspection)
     end
@@ -1513,7 +1565,8 @@ defmodule FavnOrchestrator.Rebuilds do
          bindings,
          capabilities,
          evaluated_at,
-         operation_id
+         operation_id,
+         validation
        ) do
     actions_by_target = Map.new(actions, &{field(&1, :target_id), &1})
 
@@ -1532,6 +1585,7 @@ defmodule FavnOrchestrator.Rebuilds do
 
         %{
           item: item,
+          validation: validation,
           asset: asset,
           run_id:
             command_id(
@@ -1683,40 +1737,6 @@ defmodule FavnOrchestrator.Rebuilds do
   end
 
   defp snapshot_target_ids(payload), do: payload |> field(:binding_snapshot) |> Map.keys()
-
-  defp write_target_ids(payload) do
-    payload
-    |> field(:actions)
-    |> Enum.filter(&(field(&1, :action) in ["rebuild", "backfill", :rebuild, :backfill]))
-    |> Enum.map(&field(&1, :target_id))
-    |> Enum.sort()
-  end
-
-  defp exact_plan(%RebuildOperation{plan_hash: hash}, hash), do: :ok
-  defp exact_plan(_operation, _hash), do: {:error, stale_plan_error()}
-
-  defp plan_not_expired(operation) do
-    case field(operation.plan_payload, :expires_at) do
-      %DateTime{} = expires_at ->
-        if DateTime.compare(expires_at, DateTime.utc_now()) == :gt,
-          do: :ok,
-          else: {:error, stale_plan_error()}
-
-      value when is_binary(value) ->
-        case DateTime.from_iso8601(value) do
-          {:ok, expires_at, 0} ->
-            if DateTime.compare(expires_at, DateTime.utc_now()) == :gt,
-              do: :ok,
-              else: {:error, stale_plan_error()}
-
-          _invalid ->
-            {:error, stale_plan_error()}
-        end
-
-      _invalid ->
-        {:error, stale_plan_error()}
-    end
-  end
 
   defp stale_plan_error,
     do:
@@ -1881,7 +1901,6 @@ defmodule FavnOrchestrator.Rebuilds do
   end
 
   defp store, do: Persistence.stores().rebuilds
-  defp lock_store, do: Persistence.stores().target_operation_locks
 
   defp planning_worker do
     Application.get_env(

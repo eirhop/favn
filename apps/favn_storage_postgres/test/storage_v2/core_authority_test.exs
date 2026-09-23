@@ -1588,6 +1588,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     payload = %{
       schema_version: 1,
+      capabilities: %{fixture.target_id => %{}},
+      binding_snapshot: %{},
+      expires_at: DateTime.add(occurred_at, 600, :second),
       operation_id: operation_id,
       manifest_version_id: fixture.version.manifest_version_id,
       target_id: fixture.target_id,
@@ -1636,6 +1639,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     begin = %BeginRebuildPlan{
+      validation: new_validation(operation_id),
       workspace_context: fixture.workspace_context,
       command_id: "rebuild:begin:" <> fixture.workspace_id,
       operation_id: operation_id,
@@ -1646,15 +1650,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       actor_id: fixture.workspace_context.principal_id,
       reason: "test immutable rebuild",
       idempotency_key: operation_id,
-      evaluated_at: occurred_at,
-      occurred_at: occurred_at,
+      evaluated_at: DateTime.add(occurred_at, -3600, :second),
+      occurred_at: DateTime.add(occurred_at, -3600, :second),
       idempotency: plan_idempotency
     }
 
     assert {:ok, planning} = RebuildStore.begin_plan(begin)
+    assert planning.evaluated_at == begin.evaluated_at
+    assert DateTime.compare(planning.dispatcher.expires_at, DateTime.utc_now()) == :gt
     assert planning.state == :planning
     assert planning.action_count == 0
     assert planning.window_count == 0
+    create = %{create | validation: planning.validation, evaluated_at: begin.evaluated_at}
+    complete_validation_checks!(fixture, planning)
 
     planning_cancel_operation_id = "rebuild-planning-cancel:" <> fixture.workspace_id
 
@@ -1663,10 +1671,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       | operation_id: planning_cancel_operation_id
     }
 
-    assert {:ok, %{state: :planning}} =
+    assert {:ok, planning_cancel} =
              RebuildStore.begin_plan(%{
                begin
-               | command_id: "rebuild:begin-planning-cancel:" <> fixture.workspace_id,
+               | validation: new_validation(planning_cancel_operation_id),
+                 command_id: "rebuild:begin-planning-cancel:" <> fixture.workspace_id,
                  operation_id: planning_cancel_operation_id,
                  planning_hash: RebuildPlan.hash(planning_cancel_payload),
                  planning_payload: planning_cancel_payload,
@@ -1684,7 +1693,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     {:ok, planning_task_payload, planning_task_hash} =
       RunnerTaskCodec.encode_payload(:generation_capabilities, planning_request)
 
-    {:ok, planning_task_context} = RunnerTaskCodec.encode_orchestration_context(%{})
+    {:ok, planning_task_context} =
+      RunnerTaskCodec.encode_orchestration_context(
+        FavnOrchestrator.Rebuild.Validation.task_context(planning_cancel.validation)
+      )
 
     assert {:ok, %{status: :queued}} =
              RunnerTaskStore.enqueue(%EnqueueRunnerTask{
@@ -1702,6 +1714,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                payload_hash: planning_task_hash,
                orchestration_context: planning_task_context,
                operation_id: planning_cancel_operation_id,
+               deadline_at: planning_cancel.validation.deadline_at,
                required_capability: "generation_capabilities",
                issued_at: occurred_at,
                occurred_at: occurred_at
@@ -1796,7 +1809,12 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         DateTime.add(occurred_at, 3_600, :second)
       )
 
+    validation = admit_validation!(fixture, planned, :start, start_idempotency)
+    complete_validation_checks!(fixture, validation)
+
     start_command = %StartRebuildOperation{
+      validation: validation.validation,
+      binding_versions: %{},
       workspace_context: fixture.workspace_context,
       command_id: "rebuild:start:" <> fixture.workspace_id,
       operation_id: operation_id,
@@ -1821,7 +1839,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                operation_id: operation_id
              })
 
-    assert claimed_operation.dispatcher.fencing_token == 1
+    assert claimed_operation.dispatcher.fencing_token == validation.validation.fencing_token + 1
 
     claimed_row =
       Repo.get_by!(RebuildOperationRow,
@@ -2008,8 +2026,21 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                occurred_at: occurred_at
              })
 
+    # An accepted execution can fail after its original plan approval has expired.
+    SQL.query!(
+      Repo,
+      "UPDATE favn_control.rebuild_operations SET plan_payload=jsonb_set(plan_payload, '{expires_at}', to_jsonb((clock_timestamp()-interval '1 hour')::text)) WHERE workspace_id=$1 AND operation_id=$2",
+      [fixture.workspace_id, operation_id]
+    )
+
+    retry_validation = admit_validation!(fixture, failed, :retry)
+    assert DateTime.compare(retry_validation.validation.deadline_at, DateTime.utc_now()) == :gt
+    complete_validation_checks!(fixture, retry_validation)
+
     assert {:ok, retried} =
              RebuildStore.retry_operation(%RetryRebuildOperation{
+               validation: retry_validation.validation,
+               binding_versions: %{},
                workspace_context: fixture.workspace_context,
                command_id: "rebuild:retry:" <> fixture.workspace_id,
                operation_id: operation_id,
@@ -2111,6 +2142,28 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert cleaned.cleanup_state == :complete
     assert cleaned.timestamps.completed_at == succeeded.timestamps.completed_at
 
+    %{rows: held_locks} =
+      SQL.query!(
+        Repo,
+        "SELECT target_id, fencing_token FROM favn_control.target_operation_locks WHERE workspace_id=$1 AND operation_id=$2",
+        [fixture.workspace_id, operation_id]
+      )
+
+    assert held_locks != []
+
+    assert :ok =
+             TargetOperationLockStore.release_many(%ReleaseTargetOperationLocks{
+               workspace_context: fixture.workspace_context,
+               command_id: "release-completed:" <> operation_id,
+               operation_id: operation_id,
+               lease_owner: operation_id,
+               occurred_at: DateTime.utc_now(),
+               locks:
+                 Enum.map(held_locks, fn [target, fence] ->
+                   %{target_id: target, fencing_token: fence}
+                 end)
+             })
+
     cancel_operation_id = "rebuild-cancel-store:" <> fixture.workspace_id
     cancel_candidate_id = Ecto.UUID.generate()
 
@@ -2152,10 +2205,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       | operation_id: cancel_operation_id
     }
 
-    assert {:ok, %{state: :planning}} =
+    assert {:ok, cancel_planning} =
              RebuildStore.begin_plan(%{
                begin
-               | command_id: "rebuild:begin-cancel:" <> fixture.workspace_id,
+               | validation: new_validation(cancel_operation_id),
+                 command_id: "rebuild:begin-cancel:" <> fixture.workspace_id,
                  operation_id: cancel_operation_id,
                  planning_hash: RebuildPlan.hash(cancel_planning_payload),
                  planning_payload: cancel_planning_payload,
@@ -2163,11 +2217,18 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                  idempotency: nil
              })
 
+    complete_validation_checks!(fixture, cancel_planning)
+
     assert {:ok, cancel_planned} =
-             RebuildStore.create_plan(cancel_create)
+             RebuildStore.create_plan(%{cancel_create | validation: cancel_planning.validation})
+
+    cancel_validation = admit_validation!(fixture, cancel_planned, :start)
+    complete_validation_checks!(fixture, cancel_validation)
 
     assert {:ok, cancel_queued} =
              RebuildStore.start_operation(%StartRebuildOperation{
+               validation: cancel_validation.validation,
+               binding_versions: %{},
                workspace_context: fixture.workspace_context,
                command_id: "rebuild:start-cancel:" <> fixture.workspace_id,
                operation_id: cancel_operation_id,
@@ -2610,7 +2671,8 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         :generation_capabilities,
         request,
         {:parent_guard, id},
-        operation_id: parent
+        operation_id: parent,
+        validation: current_validation(fixture, parent)
       )
     end
 
@@ -2623,6 +2685,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, _} =
              RebuildStore.begin_plan(%BeginRebuildPlan{
+               validation: new_validation(id),
                workspace_context: fixture.workspace_context,
                command_id: id,
                operation_id: id,
@@ -6811,6 +6874,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
     assert {:ok, _} =
              RebuildStore.begin_plan(%BeginRebuildPlan{
+               validation: new_validation(id),
                workspace_context: fixture.workspace_context,
                command_id: id,
                operation_id: id,
@@ -6831,7 +6895,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     }
 
     {:ok, encoded, hash} = RunnerTaskCodec.encode_payload(:generation_capabilities, request)
-    {:ok, context} = RunnerTaskCodec.encode_orchestration_context(%{})
+
+    {:ok, context} =
+      RunnerTaskCodec.encode_orchestration_context(
+        FavnOrchestrator.Rebuild.Validation.task_context(current_validation(fixture, id))
+      )
 
     commands =
       for n <- 1..12 do
@@ -6850,6 +6918,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           payload_hash: hash,
           orchestration_context: context,
           operation_id: id,
+          deadline_at: current_validation(fixture, id).deadline_at,
           required_capability: "generation_capabilities",
           issued_at: now,
           occurred_at: now
@@ -16296,6 +16365,63 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       {:error, reason} ->
         flunk("relation inspection claim failed: #{inspect(reason)}")
     end
+  end
+
+  defp new_validation(id, purpose \\ :plan),
+    do: FavnOrchestrator.Rebuild.Validation.new(id, purpose, id, DateTime.utc_now())
+
+  defp current_validation(fixture, id) do
+    case RebuildStore.get(%FavnOrchestrator.Persistence.Queries.GetRebuild{
+           workspace_context: fixture.workspace_context,
+           operation_id: id
+         }) do
+      {:ok, operation} -> operation.validation
+      _ -> nil
+    end
+  end
+
+  defp admit_validation!(fixture, operation, purpose, receipt \\ nil) do
+    attempt = %{new_validation(operation.operation_id, purpose) | receipt: receipt}
+
+    assert {:ok, admitted} =
+             RebuildStore.begin_validation(
+               %FavnOrchestrator.Persistence.Commands.BeginRebuildValidation{
+                 workspace_context: fixture.workspace_context,
+                 validation: attempt,
+                 plan_hash: operation.plan_hash
+               }
+             )
+
+    admitted
+  end
+
+  defp complete_validation_checks!(fixture, operation) do
+    request = %GenerationCapabilitiesRequest{
+      manifest: %{fixture.version | manifest: nil},
+      asset_ref: {MyApp.Asset, :asset}
+    }
+
+    assert {:ok, _} =
+             FavnOrchestrator.OperationRunnerTasks.ensure(
+               fixture.workspace_context,
+               fixture.version,
+               request.asset_ref,
+               :generation_capabilities,
+               request,
+               {:rebuild_capabilities, operation.operation_id, fixture.target_id},
+               operation_id: operation.operation_id,
+               validation: operation.validation
+             )
+
+    task = claim_initial_registration_task!(fixture, :generation_capabilities)
+    assert :ok = start_runner_task(task)
+
+    assert :ok =
+             finish_runner_task(task,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: %Favn.Contracts.GenerationCapabilitiesResult{capabilities: %{}}
+             )
   end
 
   defp start_runner_task(task) do

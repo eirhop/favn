@@ -51,13 +51,9 @@ defmodule FavnOrchestrator.AssetRunnerTasks do
            write_claim_key: get_in(context, [:materialization_claim, :claim_key]),
            write_claim_fence: get_in(context, [:materialization_claim, :fencing_token]),
            write_target_id:
-             if(RunnerWork.runtime_input_resolution_only?(work),
-               do: nil,
-               else:
-                 if(context[:materialization_claim],
-                   do: Favn.TargetIdentity.for_asset(work.asset_ref),
-                   else: work.logical_target_id
-                 )
+             if(context[:materialization_claim],
+               do: Favn.TargetIdentity.for_asset(work.asset_ref),
+               else: work.logical_target_id
              ),
            runner_pool: runner_pool,
            required_runner_release_id: work.required_runner_release_id,
