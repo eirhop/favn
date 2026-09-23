@@ -2567,14 +2567,15 @@ defmodule FavnStoragePostgres.StorageV2.RunSubmissionsTest do
 
     case state do
       :preparing ->
-        assert_receive {:preparation_started, %{run_id: run_id}} when run_id == queued.run_id
+        assert_receive {:preparation_started, %{run_id: run_id}} when run_id == queued.run_id,
+                       1_000
 
       :admitting ->
-        assert_receive :admission_started
+        assert_receive :admission_started, 1_000
     end
 
     Process.exit(worker, :kill)
-    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}
+    assert_receive {:DOWN, ^monitor, :process, ^worker, :killed}, 1_000
 
     assert {:ok, interrupted} =
              Store.get(%GetRunSubmission{

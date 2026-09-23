@@ -714,7 +714,7 @@ listed release/deployment gates remain required. No production deployment is imp
 | Preserve existing administrative repair where compatible | Retire the temporary `repair_initial_registration.exs` script and its missing-marker procedure. Normal managed registration and matching-marker target recovery remain supported. | The script created run-owned mutations for a terminal run without a live lifecycle. Preserving it would need a separately authorized target-owned repair contract; adding an ownership bypass is unsafe. This is a pre-v1 breaking loss of the one-off missing-marker repair capability, not an equivalent reroute. | Astra Max assessed the existing target-recovery contract and accepted retirement as the narrow safe scope in the final review. |
 | Existing qualification harness | Normalize single/double TOML quotes in the builder policy check and run only the security probes with the validated non-root host UID/GID. | Buildx renders double quotes, and Linux bind-mounted evidence otherwise belonged to a different UID. Cache limits and container hardening remain unchanged; evidence stays private and host-readable/removable, with probe HOME/cache in private tmpfs. | Astra Max accepted both portability corrections; full harness qualification recorded below. |
 | Bounded preparation before keeper attachment | Manager enforces a 20-second initial claim deadline, then the keeper owns preparation responsiveness. | A database checkout or stalled pre-claim process otherwise held scarce preparation slots indefinitely. | Requested during final Astra Max review; regression added. |
-| Production additions estimated at 1,150–1,900; deletions 350–650 | Final production count +2,791/-903; tests, qualification harness and supporting docs +2,381/-539 (breakdown below). | Explicit target acquisition guardian, helper shutdown/registration, persisted cleanup authorization and resume barriers require more code than estimated. No second execution engine or generic framework was added. | Astra Max independently confirmed and accepted the final variance of +891 additions/+253 deletions above the production upper estimates, together with the supporting-code variance below. Approved estimates above are unchanged. |
+| Production additions estimated at 1,150–1,900; deletions 350–650 | Final production count +2,791/-903; tests, qualification harness and supporting docs +2,388/-544 (breakdown below). | Explicit target acquisition guardian, helper shutdown/registration, persisted cleanup authorization and resume barriers require more code than estimated. No second execution engine or generic framework was added. | Astra Max independently confirmed and accepted the final variance of +891 additions/+253 deletions above the production upper estimates, together with the supporting-code variance below. Approved estimates above are unchanged. |
 
 Counts use the PR diff against main `c1b4d7f2`, excluding the imported #753 work,
 this record and the generated security catalog, and include deleted code. The
@@ -728,16 +728,16 @@ not a claim that every changed line adds new behavior.
 | 1: renewal storage and transaction bounds | +58/-2 | +611/-0 |
 | 2: keeper, helpers and target maintenance | +744/-339 | +403/-94 |
 | 3: preparation and generation handoff | +690/-323 | +225/-80 |
-| 4: durable recovery and operator surface | +1,299/-129 | +329/-8 |
-| 5: qualification and canonical docs | +0/-110 | +813/-357 |
-| Total | +2,791/-903 | +2,381/-539 |
+| 4: durable recovery and operator surface | +1,299/-129 | +333/-11 |
+| 5: qualification and canonical docs | +0/-110 | +816/-359 |
+| Total | +2,791/-903 | +2,388/-544 |
 
 The total exceeds the initial estimate because cleanup authorization must remain
 valid after dispatch, target acquisition needs a separate bounded guardian, and
 resumption needs a confirmed local shutdown barrier plus a final durable
 cancellation check. The additional tests exercise those failure boundaries. Supporting additions
-exceed their 2,190-line upper estimate by 191 lines and deletions exceed 370 by
-169 lines, driven by committed race/failure coverage, private portable security
+exceed their 2,190-line upper estimate by 198 lines and deletions exceed 370 by
+174 lines, driven by committed race/failure coverage, private portable security
 qualification and removal of the obsolete repair procedure and warning filters.
 
 ## Decision log
@@ -769,6 +769,7 @@ bootstrap-owned migrator connection. No normal workspace database was used.
 | Broad fast suite | 3,933 tests passed in [CI on b9a58fc](https://github.com/eirhop/favn/actions/runs/35826758622/job/107070118920) | All umbrella owning layers; later corrections change type declarations, test/build fixtures and bounded target projection validation; the projection correction is covered by subsequent focused and full committed lifecycle qualification |
 | Acceptance | All 5 acceptance/browser-tier tests passed with the corrected synthetic owner fixture | Local source reload, runner drain/restart and View browser tier; actual restricted runtime credentials |
 | Cancellation timing regression | All 78 tests in the owning runner-task module passed with the corrected success-case timing | The ignored-cancellation case still uses 40 milliseconds and must retain its task with `:requested` outcome |
+| Asynchronous fixture synchronization | 83 tests passed across the manifest-deployment and run-submission modules | A subsequent upload waits for dispatcher and memory-slot cleanup; worker phase/termination notifications use explicit one-second waits, preserving all crash/recovery assertions |
 | Query performance | The 10,000-sibling transition regression passed with the same number of queries as the single-run case | Fixed ceiling is 13, including one new outer `SET LOCAL transaction_timeout`; index-plan assertion remains |
 | Static checks | Formatting, compilation with warnings as errors, Credo, both Sobelow scans and Dialyzer passed on `fe45b25a`; Dialyzer reports zero errors, skips and unused filters; test-tag guard passed | Final source types include both validated policy fields; test-only PLT includes ExUnit; obsolete callback warning filters were removed |
 | Full HTTP/browser security | 379/379 assertions passed on clean `b9a58fc`; a second clean run passed 379/379 on `cc9424e3`, confirming private host-owned evidence can be cleaned and recreated | Host-owned private evidence, authenticated browser/API surface, proxy/network isolation and hardening; GitHub HTTP security and control-plane image workflows also passed on b9a58fc |
@@ -782,7 +783,12 @@ passing qualification. A later full fast run exposed an existing cancellation
 test's 40-millisecond success budget and default 100-millisecond completion
 notification wait. The success case now uses the normal one-second budget; the
 ignored-cancellation case retains its 40-millisecond timeout and unchanged
-retained-task assertions. Production cancellation behavior is unchanged.
+retained-task assertions. Production cancellation behavior is unchanged. Another CI run exposed two
+existing asynchronous fixture assumptions: observing durable deployment success
+before memory-slot cleanup, and expecting a PostgreSQL-backed worker's phase
+notification within 100 milliseconds. The fixtures now wait for actual cleanup
+and use explicit one-second notification bounds; no upload is retried and no
+production admission or recovery behavior is changed.
 
 ### Not verified
 
@@ -813,7 +819,10 @@ missing-versus-nil target-lock distinction. The reviewer accepted the production
 and supporting-code overruns, missing-marker repair retirement and harness
 portability deviations. Astra Max also accepted the subsequent test-only
 cancellation timing correction; it preserves the deliberate timeout/retention
-case and does not change the reviewed production implementation.
+case and does not change the reviewed production implementation. The reviewer
+also accepted the subsequent manifest-slot and submission-notification test
+synchronization corrections, with unchanged single-upload, worker-death and
+fresh-recovery assertions.
 
 Final-head CI remains required. Approval of this implementation is not deployment
 qualification: the operational release/deployment gates listed above remain open.
