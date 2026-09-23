@@ -222,12 +222,14 @@ defmodule FavnStoragePostgres.Rebuilds.Validation do
     end
   end
 
-  def token(%{orchestration_context: context}) do
+  def token(%{orchestration_context: context}) when is_map(context) do
     case RunnerTaskContext.decode(context, nil) do
       {:ok, %{kind: :rebuild_validation} = token} -> token
       _ -> nil
     end
   end
+
+  def token(_), do: nil
 
   def lock!(workspace, operation_id) do
     operation =
@@ -238,7 +240,7 @@ defmodule FavnStoragePostgres.Rebuilds.Validation do
         )
       ) || Repo.rollback(Error.new(:not_found, "operation history not found"))
 
-    if operation.retiring, do: fail!(:expired, "rebuild_expired")
+    if operation.retiring, do: Repo.rollback(Error.new(:expired, "operation history is retiring"))
     operation
   end
 

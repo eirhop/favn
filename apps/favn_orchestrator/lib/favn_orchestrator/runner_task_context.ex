@@ -48,7 +48,7 @@ defmodule FavnOrchestrator.RunnerTaskContext do
     _invalid -> {:error, :invalid_runner_task_orchestration_context}
   end
 
-  @spec decode(map(), Version.t()) :: {:ok, map()} | {:error, atom()}
+  @spec decode(map(), Version.t() | nil) :: {:ok, map()} | {:error, atom()}
   def decode(envelope, version, packages \\ []) do
     with {:ok, context} <- PersistenceData.decode(envelope, @limit, version, @atoms, packages),
          true <- valid?(context) do

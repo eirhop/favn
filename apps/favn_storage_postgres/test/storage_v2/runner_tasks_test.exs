@@ -94,6 +94,138 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
      now: now}
   end
 
+  defmodule RebuildInputs do
+    @behaviour Favn.SQLAsset.RuntimeInputs
+    @impl true
+    def resolve(context) do
+      send(Process.whereis(__MODULE__), {:resolved_rebuild_context, context})
+
+      {:ok,
+       %Favn.SQLAsset.RuntimeInputs.Result{
+         identity: "manifest:rebuild-native",
+         params: %{secret: "input-secret-sentinel"},
+         metadata: %{secret: "metadata-secret-sentinel"},
+         sensitive_params: [:secret]
+       }}
+    end
+  end
+
+  @tag rebuild_validation: true
+  test "rebuild inputs survive real registration, claim, native execution and durable result",
+       fixture do
+    alias Favn.Contracts.RunnerTask.{Assignment, ClaimRequest, Started, Result}
+    {:ok, _} = Application.ensure_all_started(:favn_runner)
+    start_runner_registry()
+    Process.register(self(), RebuildInputs)
+    {operation, command, request, version} = rebuild_resolution(fixture, RebuildInputs)
+
+    :ok =
+      FavnRunner.ManifestStore.register_for_release(
+        version,
+        request.work.required_runner_release_id
+      )
+
+    assert {:ok, queued} = Store.enqueue(command)
+    runner = "native-rebuild-" <> random_id()
+
+    registration = %Registration{
+      runner_instance_id: runner,
+      boot_id: "native-rebuild",
+      beam_node: Atom.to_string(node()),
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: request.work.required_runner_release_id,
+      lifecycle_mode: :elastic,
+      supported_task_kinds: [:runtime_input_resolution],
+      capabilities: ["runtime_input_resolution"]
+    }
+
+    assert {:ok, ack} = RunnerRegistry.register(registration, self())
+
+    assert {:ok, assignment} =
+             RunnerTasks.claim(%ClaimRequest{
+               command_id: "native-claim",
+               issued_at: DateTime.utc_now(),
+               runner_instance_id: runner,
+               runner_session_generation: ack.runner_session_generation,
+               runner_pool: fixture.runner_pool,
+               required_runner_release_id: request.work.required_runner_release_id,
+               supported_task_kinds: [:runtime_input_resolution],
+               capabilities: ["runtime_input_resolution"]
+             })
+
+    assert assignment.task_id == queued.task_id
+    assert {:ok, wire} = Assignment.encode(assignment)
+    assert {:ok, assignment} = Assignment.decode(wire)
+    assert assignment.payload == request
+
+    assert {:ok, _} =
+             RunnerTasks.started(%Started{
+               workspace_id: fixture.workspace_id,
+               task_id: assignment.task_id,
+               runner_instance_id: runner,
+               runner_session_generation: ack.runner_session_generation,
+               assignment_generation: assignment.assignment_generation,
+               issued_at: DateTime.utc_now(),
+               occurred_at: DateTime.utc_now()
+             })
+
+    assert {:ok, executor} =
+             FavnRunner.TaskExecutor.start_link(
+               assignment: assignment,
+               payload: assignment.payload,
+               owner: self()
+             )
+
+    assert_receive {:runner_task_finished, ^executor,
+                    %{outcome: :succeeded, result: expectation}},
+                   5000
+
+    assert_receive {:resolved_rebuild_context, context}
+    assert context.run_id == request.work.run_id
+    assert expectation.input_identity == "manifest:rebuild-native"
+
+    assert {:ok, _} =
+             RunnerTasks.complete(%Result{
+               workspace_id: fixture.workspace_id,
+               task_id: assignment.task_id,
+               task_kind: :runtime_input_resolution,
+               runner_instance_id: runner,
+               runner_session_generation: ack.runner_session_generation,
+               assignment_generation: assignment.assignment_generation,
+               outcome: :succeeded,
+               retry_class: :terminal,
+               result: expectation,
+               finished_at: DateTime.utc_now()
+             })
+
+    assert {:ok, task} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: fixture.workspace_context,
+               task_id: assignment.task_id
+             })
+
+    assert task.result == expectation
+    assert task.operation_id == operation.operation_id
+    assert task.run_id == nil
+
+    assert [[0, 0, 0]] =
+             SQL.query!(
+               Repo,
+               "SELECT (SELECT count(*) FROM favn_control.runs WHERE workspace_id=$1), (SELECT count(*) FROM favn_control.runtime_input_pins WHERE workspace_id=$1), (SELECT count(*) FROM favn_control.materialization_claims WHERE workspace_id=$1)",
+               [fixture.workspace_id]
+             ).rows
+
+    [[persisted]] =
+      SQL.query!(
+        Repo,
+        "SELECT row_to_json(t)::text FROM favn_control.runner_tasks t WHERE workspace_id=$1 AND task_id=$2",
+        [fixture.workspace_id, task.task_id]
+      ).rows
+
+    refute persisted =~ "input-secret-sentinel"
+    refute persisted =~ "metadata-secret-sentinel"
+  end
+
   @tag rebuild_validation: true
   test "rebuild resolution persists without a future run or parameter pin", fixture do
     {operation, command, request, version} = rebuild_resolution(fixture)
@@ -614,12 +746,12 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     }
   end
 
-  defp rebuild_resolution(fixture) do
+  defp rebuild_resolution(fixture, resolver \\ __MODULE__) do
     alias FavnOrchestrator.Rebuild.Validation
     alias FavnStoragePostgres.Rebuilds.Store, as: RebuildStore
 
     {version, work} =
-      FavnStoragePostgres.TestSupport.TaskManifest.sql_work(fixture, :resolution_test, __MODULE__)
+      FavnStoragePostgres.TestSupport.TaskManifest.sql_work(fixture, :resolution_test, resolver)
 
     id = "rebuild-" <> fixture.workspace_id
     validation = Validation.new(id, :plan, id, DateTime.utc_now())

@@ -664,6 +664,7 @@ was added. Accepted rebuild execution recovery remains unchanged.
 | Durable saved result for each original validation request | Reuse command-idempotency rows with bounded active/terminal envelopes; no second reservation or receipt table | A newer attempt must not overwrite an older request's outcome; internal callers also receive a durable request identity | Astra review found the retained request namespace and replay checks appropriate |
 | Single live worker, no automatic restart | Registry-absent callers poll the saved attempt until its bounded deadline; only expiration closure can mutate it | Remote callers and lost replies need the saved result without creating a successor worker | Reviewed; active polling avoids loading actions and progress repeatedly |
 | Legacy interrupted plans fail explicitly | Migration settles only legacy pre-write planning parents and retains task evidence | Avoid permanently stranded planning rows without reinterpreting old asset tasks | Astra accepted under stop/drain rollout |
+| One full-stack incompatible-contract DuckLake rebuild test | Layered PostgreSQL/native-runner, input-drift, write-resolution, and adapter regressions | No existing full-stack harness covers this workflow; the added integration exercises the changed path without introducing a separate test platform | Astra xhigh accepted this explicit verification deviation |
 | Estimated +550–950 production lines | Approximately +1,900/-410 production lines | Original estimate omitted much of the receipt, fencing, and storage integration required by its own invariants | Astra found no removable second lifecycle; compressing back to the estimate would drop guarantees |
 
 ### Actual complexity
@@ -695,20 +696,24 @@ small text changes rather than a new UI flow.
 | Check | Result | Evidence boundary |
 | --- | --- | --- |
 | Original ownership failure | Reproduced before implementation on real PostgreSQL | Diagnostic reproduction recorded with the approved plan |
+| Original task path | Real PostgreSQL, runner registration/claim, wire decode, native TaskExecutor and persisted result pass; no future run, parameter pin, materialization claim, or sentinel payload leakage | Dedicated integration test, not complete rebuild execution |
 | Core compact contract | Dedicated request/result round-trip, package reference, malformed resolver and terminal classification checks pass | Unit/codec tests |
 | Native runner path | Dedicated TaskExecutor resolves inputs; customer execution/session/materialization remain untouched; normal execution still requires publication | Real TaskExecutor with a test adapter, not live DuckLake |
-| Orchestrator/API focused checks | 28 tests passed before the final safe-guidance clause; includes remote accepted-plan replay, stable saved conflict, lost reply and unavailable closure | Application tests with persistence doubles |
-| PostgreSQL task ownership and receipts | Saved-operation ownership without future run/pin, terminal read failure, fencing, manual fresh request, old-request replay, and busy-result replay pass | Real disposable PostgreSQL 18 database |
+| Orchestrator/API focused checks | 30 tests pass; includes fresh task IDs and stale409 on changed input before start, remote accepted-plan replay, stable saved conflict, lost reply, safe upgrade guidance and unavailable closure | Application tests with persistence doubles |
+| PostgreSQL task ownership and receipts | 12 focused tests pass, including native integration, same-release unsupported runner, terminal read failure, manual retry/replay, renewed-owner expiry guard, and independent-connection lock wait beyond deadline with parent/lock rollback | Real disposable PostgreSQL 18 database |
 | Full fast suite, first pass | Exposed stale schema fingerprint, predecessor fixture, retention/error compatibility, View fixture and two obsolete contract assertions; corrected in this change | Final reruns recorded below; this first run was not green |
 | Compile | Development compile with warnings as errors passed | Local compilation |
 | Record diagrams | Original and amended diagrams rendered before implementation; final semantics unchanged | Documentation rendering; no new diagram syntax |
 
 ### Not verified
 
-No customer deployment or live Azure rebuild has been performed. Local native
-runner tests use a test adapter; they do not establish a complete live DuckLake
-rebuild or production load behavior. Verification of the final edited tree and
-independent final review are still in progress.
+No customer deployment or live Azure rebuild has been performed. No single test
+proves that an incompatible-contract rebuild preserves the old DuckLake schema,
+rows, and marker through facade planning and then successfully replaces the table.
+The native task integration, no-session runner test, start-time drift rejection,
+execution-time expectation rejection, and adapter generation tests cover these
+boundaries separately. Astra accepted this narrower verification approach; it is
+not claimed as full-stack proof. Final-tree CI and final review remain in progress.
 
 ## Final review
 

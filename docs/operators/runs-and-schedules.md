@@ -364,6 +364,10 @@ operator decision first; Favn does not use rebuild as implicit adoption.
 7. Use **Retry** only when the server exposes it. Use **Reconcile** when
    activation is unknown.
 
+Input-check interruptions require a manual retry. For when to create a new plan,
+reuse a request key, or submit a fresh request, see the
+[rebuild validation contract](../architecture/target-generations-and-rebuilds.md).
+
 Planning never mutates customer data. Start returns a conflict if the manifest,
 generation, physical fingerprint, coverage selection, mapping proof, or runtime
 input expectation changed after planning. Create and review a new plan instead

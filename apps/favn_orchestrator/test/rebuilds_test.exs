@@ -245,7 +245,7 @@ defmodule FavnOrchestrator.RebuildsTest do
 
       Resolution.new(
         resolver: FavnOrchestrator.RebuildsTest.Inputs,
-        params: %{run_id: work.run_id},
+        params: %{run_id: work.run_id, revision: Process.get(:rebuild_input_revision, 1)},
         input_identity: work.run_id
       )
     end
@@ -605,6 +605,38 @@ defmodule FavnOrchestrator.RebuildsTest do
              Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
                operation_id: id
              )
+  end
+
+  test "start resolves fresh inputs and rejects changed output before acceptance", fixture do
+    {:ok, context} = WorkspaceContext.new("workspace-rebuild", "admin", [:workspace_admin])
+
+    assert {:ok, plan} =
+             Rebuilds.plan(context, fixture.root.target_descriptor.target_id, "schema changed",
+               operation_id: "input-drift"
+             )
+
+    input_tasks = fn ->
+      for {{FavnOrchestrator.TestRunnerTaskStore, id}, %{task_kind: :runtime_input_resolution}} <-
+            Process.get(),
+          do: id
+    end
+
+    planned_ids = input_tasks.()
+    assert length(planned_ids) == 2
+    previous = Process.get({:rebuild_operation, plan.plan_id}).validation.attempt_id
+    Process.put(:rebuild_input_revision, 2)
+
+    assert {:error,
+            %Error{kind: :conflict, details: %{reason_code: "rebuild_plan_stale"}} = error} =
+             Rebuilds.start(context, plan.plan_id, plan.plan_hash)
+
+    assert {409, "rebuild_plan_stale", _, _} =
+             FavnOrchestrator.API.RebuildsRouter.error_response(error)
+
+    current = Process.get({:rebuild_operation, plan.plan_id})
+    assert current.state == :planned
+    assert current.validation.attempt_id != previous
+    assert length(input_tasks.() -- planned_ids) == 2
   end
 
   test "starts when an unaffected upstream binding is still uninitialized", fixture do
