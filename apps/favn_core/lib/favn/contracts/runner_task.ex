@@ -6,14 +6,13 @@ defmodule Favn.Contracts.RunnerTask do
   wire input into new atoms.
   """
 
-  @version 15
+  @version 16
   @task_kinds [
     :asset_attempt,
     :runtime_input_resolution,
     :relation_inspection,
     :generation_capabilities,
     :generation_marker_read,
-    :generation_marker_initialize,
     :generation_activate,
     :generation_reconcile,
     :generation_discard
@@ -21,13 +20,12 @@ defmodule Favn.Contracts.RunnerTask do
   @retry_classes [:safe_to_retry, :reconcile_before_retry, :unknown_do_not_retry, :terminal]
   @terminal_outcomes [:succeeded, :failed, :cancelled, :unknown]
   @reconcilable_kinds [
-    :generation_marker_initialize,
     :generation_activate,
     :generation_reconcile,
     :generation_discard
   ]
 
-  @spec version() :: 15
+  @spec version() :: 16
   def version, do: @version
 
   @spec task_kinds() :: [atom()]
@@ -47,7 +45,6 @@ defmodule Favn.Contracts.RunnerTask do
 
   def default_retry_class(kind)
       when kind in [
-             :generation_marker_initialize,
              :generation_activate,
              :generation_reconcile,
              :generation_discard
@@ -175,12 +172,6 @@ defmodule Favn.Contracts.RunnerTask do
       ),
       do: Favn.Contracts.GenerationMarkerReadRequest.validate(request)
 
-  def validate_payload(
-        :generation_marker_initialize,
-        %Favn.Contracts.GenerationMarkerInitializationRequest{}
-      ),
-      do: :ok
-
   def validate_payload(:generation_activate, %Favn.Contracts.GenerationActivationRequest{}),
     do: :ok
 
@@ -224,13 +215,6 @@ defmodule Favn.Contracts.RunnerTask do
         %Favn.Contracts.GenerationMarkerReadResult{} = result
       ),
       do: Favn.Contracts.GenerationMarkerReadResult.validate(result)
-
-  def validate_result(
-        :generation_marker_initialize,
-        :succeeded,
-        %Favn.Contracts.GenerationMarkerInitializationResult{}
-      ),
-      do: :ok
 
   def validate_result(
         :generation_activate,
@@ -297,7 +281,7 @@ defmodule Favn.Contracts.RunnerTask.Contract do
     |> redact_value()
   end
 
-  defp exact_version(%{version: 15}), do: :ok
+  defp exact_version(%{version: 16}), do: :ok
 
   defp exact_version(fields),
     do: {:error, {:unsupported_runner_task_version, Map.get(fields, :version)}}
@@ -530,12 +514,12 @@ defmodule Favn.Contracts.RunnerTask.Codec do
       limit = Limits.wire_bytes(struct.__struct__)
 
       if byte_size(payload) <= limit,
-        do: {:ok, %{"type" => tag, "version" => 15, "payload" => payload}},
+        do: {:ok, %{"type" => tag, "version" => 16, "payload" => payload}},
         else: {:error, {:runner_task_encoded_payload_too_large, byte_size(payload), limit}}
     end
   end
 
-  def decode_for(module, tag, %{"type" => tag, "version" => 15, "payload" => payload})
+  def decode_for(module, tag, %{"type" => tag, "version" => 16, "payload" => payload})
       when is_binary(payload) do
     with true <- byte_size(payload) <= Limits.wire_bytes(module),
          {:ok, binary} <- Base.decode64(payload),
@@ -588,7 +572,7 @@ defmodule Favn.Contracts.RunnerTask.Message do
       @runner_task_session_fenced session_fenced?
       @runner_task_tag tag
       @enforce_keys required
-      defstruct [version: 15] ++ fields
+      defstruct [version: 16] ++ fields
       @type t :: %__MODULE__{}
 
       @doc false
@@ -633,7 +617,7 @@ defmodule Favn.Contracts.RunnerTask.Registration do
       beam_node: nil,
       runner_pool: nil,
       required_runner_release_id: nil,
-      protocol_version: 15,
+      protocol_version: 16,
       slots: 1,
       lifecycle_mode: :elastic,
       supported_task_kinds: [],
@@ -649,7 +633,7 @@ defmodule Favn.Contracts.RunnerTask.Registration do
       :lifecycle_mode,
       :supported_task_kinds
     ],
-    enums: [protocol_version: [15], lifecycle_mode: [:elastic, :resident]]
+    enums: [protocol_version: [16], lifecycle_mode: [:elastic, :resident]]
 
   def validate(%__MODULE__{} = registration) do
     with :ok <- super(registration),
@@ -747,6 +731,7 @@ defmodule Favn.Contracts.RunnerTask.Assignment do
       assigned_at: nil,
       lease_expires_at: nil,
       retry_class: nil,
+      generation_precondition: nil,
       payload: nil
     ],
     required: [
@@ -780,12 +765,23 @@ defmodule Favn.Contracts.RunnerTask.Assignment do
              assignment.payload
            ),
          :ok <- validate_asset_lease(assignment.task_kind, assignment.payload),
-         :ok <- validate_asset_binding(assignment) do
+         :ok <- validate_asset_binding(assignment),
+         :ok <- validate_generation_precondition(assignment) do
       :ok
     end
   end
 
   def validate(value), do: super(value)
+
+  defp validate_generation_precondition(%__MODULE__{task_kind: :asset_attempt} = assignment),
+    do:
+      Favn.Contracts.GenerationPrecondition.validate_work(
+        assignment.generation_precondition,
+        assignment.payload
+      )
+
+  defp validate_generation_precondition(%__MODULE__{generation_precondition: nil}), do: :ok
+  defp validate_generation_precondition(_), do: {:error, :unexpected_generation_precondition}
 
   defp validate_asset_lease(:asset_attempt, %Favn.Contracts.RunnerWork{manifest_lease_id: nil}),
     do: :ok

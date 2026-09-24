@@ -180,7 +180,7 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
           warehouse: %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
         },
         manifest_schema_version: 21,
-        runner_contract_version: 17
+        runner_contract_version: 18
       )
 
     {:ok, native} =
@@ -271,7 +271,6 @@ defmodule FavnStoragePostgres.StorageV2.ManifestDeploymentsTest do
     for kind <- [
           "asset_attempt",
           "generation_activate",
-          "generation_marker_initialize",
           "generation_discard"
         ] do
       assert {:error, %{details: %{reason_code: "runtime_catalog_tracking_required"}}} =

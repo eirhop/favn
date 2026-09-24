@@ -241,7 +241,7 @@ defmodule FavnView.Components.RunnersPageTest do
       runner_pool: "default",
       required_runner_release_id: "rr_9f2c",
       beam_node: "runner@node",
-      protocol_version: 15,
+      protocol_version: 16,
       lifecycle_mode: "elastic",
       registered_at: ~U[2026-08-20 14:33:24Z],
       ended_at: ~U[2026-08-20 14:36:36Z],

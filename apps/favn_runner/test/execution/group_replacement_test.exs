@@ -466,7 +466,7 @@ defmodule FavnRunner.GroupReplacementTest do
       manifest_version_id: "mv_group_test",
       content_hash: String.duplicate("a", 64),
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{}
     }
 
@@ -504,6 +504,14 @@ defmodule FavnRunner.GroupReplacementTest do
 end
 
 defmodule FavnRunner.GroupReplacementTest.FakeAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Capabilities, Column, Error, Relation, Result}
 
@@ -673,6 +681,14 @@ defmodule FavnRunner.GroupReplacementTest.FakeAdapter do
 end
 
 defmodule FavnRunner.GroupReplacementTest.CommitErrorAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.SQL.Error
 
   defdelegate connect(resolved, opts), to: FavnRunner.GroupReplacementTest.FakeAdapter

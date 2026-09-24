@@ -269,9 +269,8 @@ mix favn.inspect MyApp.Mart:orders
 mix favn.diagnostics
 ```
 
-`mix favn.backfill`, `mix favn.rebuild`, and `mix favn.recover` use the same
-connection boundary. Recovery is only for a proven interrupted Favn-owned
-initial generation; it does not adopt arbitrary tables.
+`mix favn.backfill` and `mix favn.rebuild` use the same
+connection boundary.
 Run `mix help TASK` for their exact options.
 
 Pipeline backfills use the pipeline's authored window-combination choice. Pass

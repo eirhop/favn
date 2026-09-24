@@ -4,7 +4,7 @@ defmodule Favn.Manifest.ContractVersions do
   """
 
   @manifest_schema_version 21
-  @runner_contract_version 17
+  @runner_contract_version 18
 
   @doc "Returns the only manifest schema version accepted by this release."
   @spec manifest_schema_version() :: pos_integer()

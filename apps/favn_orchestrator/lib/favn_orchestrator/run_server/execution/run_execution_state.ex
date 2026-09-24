@@ -38,24 +38,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           required(:payload) => map()
         }
 
-  @typedoc """
-  One node whose post-step reconciliation runs in a supervised worker.
-
-  The key is the worker's monitor reference. `pending` is the settlement
-  continuation `StageResult.finish_post_step/3` completes when the worker
-  replies.
-  """
-  @type post_step_continuation :: %{
-          required(:pid) => pid() | nil,
-          required(:pending) => map(),
-          optional(:retry) => FavnOrchestrator.RunServer.Execution.RegistrationRetry.t() | nil,
-          optional(:waiting?) => boolean(),
-          optional(:existing_only?) => boolean(),
-          optional(:timer_ref) => reference(),
-          optional(:deadline_token) => reference(),
-          optional(:deadline_timer) => reference() | nil
-        }
-
   @type t :: %__MODULE__{
           run: RunState.t(),
           version: Version.t(),
@@ -70,7 +52,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           retry_timers: %{optional(reference()) => timer_entry()},
           admission_timers: %{optional(reference()) => timer_entry()},
           admission_waiters: %{optional(String.t()) => map()},
-          post_step_continuations: %{optional(reference()) => post_step_continuation()},
           accumulated_results: [term()],
           sequential_refs: [{Favn.Ref.t(), Favn.Plan.node_key(), non_neg_integer()}],
           sequential_index: non_neg_integer(),
@@ -89,7 +70,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           recovery_queue: :queue.queue(),
           cancel_requested: term(),
           cancellation_dispatched?: boolean(),
-          registration_retries: map(),
           paused_admission: map() | nil
         }
 
@@ -106,8 +86,6 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             retry_timers: %{},
             admission_timers: %{},
             admission_waiters: %{},
-            post_step_continuations: %{},
-            registration_retries: %{},
             recovery_queue: {[], []},
             cancel_requested: nil,
             cancellation_dispatched?: false,
@@ -209,24 +187,10 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
     {await, state}
   end
 
-  @doc "Stores a pending post-step continuation under its worker monitor reference."
-  @spec put_post_step_continuation(t(), reference(), post_step_continuation()) :: t()
-  def put_post_step_continuation(%__MODULE__{} = state, ref, continuation)
-      when is_reference(ref) and is_map(continuation) do
-    %{state | post_step_continuations: Map.put(state.post_step_continuations, ref, continuation)}
-  end
-
-  @doc "Removes a pending post-step continuation by worker monitor reference."
-  @spec pop_post_step_continuation(t(), reference()) :: {post_step_continuation() | nil, t()}
-  def pop_post_step_continuation(%__MODULE__{} = state, ref) when is_reference(ref) do
-    {continuation, continuations} = Map.pop(state.post_step_continuations, ref)
-    {continuation, %{state | post_step_continuations: continuations}}
-  end
-
-  @doc "Counts runner awaits and pending post-step continuations still in flight."
+  @doc "Counts runner awaits still in flight."
   @spec in_flight_count(t()) :: non_neg_integer()
   def in_flight_count(%__MODULE__{} = state),
-    do: map_size(state.awaits) + map_size(state.post_step_continuations)
+    do: map_size(state.awaits)
 
   @doc "Stores a retry timer."
   @spec put_retry_timer(t(), reference(), reference(), map()) :: t()

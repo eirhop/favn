@@ -59,7 +59,7 @@ defmodule FavnOrchestrator.RunnerTaskContextTest do
       assert {:ok, ^context} = RunnerTaskContext.decode(encoded, version)
     end
 
-    for operation_type <- [:materialization, :rebuild, :target_recovery] do
+    for operation_type <- [:materialization, :rebuild] do
       lock = %TargetOperationLock{
         workspace_id: "workspace",
         target_id: "target",

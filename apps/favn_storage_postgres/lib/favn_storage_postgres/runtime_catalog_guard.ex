@@ -53,7 +53,6 @@ defmodule FavnStoragePostgres.RuntimeCatalogGuard do
     if task.task_kind in [
          "asset_attempt",
          "generation_activate",
-         "generation_marker_initialize",
          "generation_discard"
        ] and
          (active_contract(task.workspace_id) || 0) >= @required_contract do

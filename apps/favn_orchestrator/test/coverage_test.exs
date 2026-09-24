@@ -100,7 +100,6 @@ defmodule FavnOrchestrator.CoverageTest do
       admission: FakeStore,
       resource_circuits: FakeStore,
       target_generations: FakeStore,
-      target_recovery: FakeStore,
       rebuilds: FakeStore,
       target_operation_locks: FakeStore,
       materialization: FakeStore,
@@ -632,7 +631,7 @@ defmodule FavnOrchestrator.CoverageTest do
       manifest_version_id: "coverage-manifest",
       content_hash: "sha256:coverage-manifest",
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       manifest:
         FavnTestSupport.with_manifest_contract(%Manifest{

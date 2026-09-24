@@ -146,7 +146,6 @@ Eligibility always includes workspace holds and the relevant replay protections.
 | `schedule_occurrences` | operations | Terminal scheduling/recovery history after replay and retained source dependencies end. |
 | `schema_migrations` | retained | Sequence, replay boundary, schema, projection progress, or key inventory authority. |
 | `target_operation_locks` | retained | Current coordination, identity, or reusable fencing state; lifecycle commands own settlement. |
-| `target_recovery_operations` | retained | Required materialization and generation links preserve recovery evidence, including its tasks. |
 | `target_statuses` | retained | Dataset provenance or current projection; exact source history stays referenced. |
 | `workspace_deployment_targets` | registry | Unreferenced inactive deployment or manifest; reject new references while retiring children. |
 | `workspace_deployments` | registry | Unreferenced inactive deployment or manifest; reject new references while retiring children. |

@@ -11,6 +11,7 @@ defmodule Favn.SQLAsset.CheckedMaterialization do
     :contract_validation,
     :group_replacement,
     :runtime_publication,
+    :generation_commit,
     check_results: [],
     write_outcome: :written
   ]
@@ -23,6 +24,7 @@ defmodule Favn.SQLAsset.CheckedMaterialization do
           reason: atom() | nil,
           contract_validation: Favn.SQL.ContractValidation.t() | nil,
           group_replacement: GroupReplacementResult.t() | nil,
-          runtime_publication: map() | nil
+          runtime_publication: map() | nil,
+          generation_commit: Favn.Contracts.GenerationCommit.t() | nil
         }
 end

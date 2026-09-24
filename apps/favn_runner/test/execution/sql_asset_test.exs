@@ -321,8 +321,27 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
                version,
                %{},
                work,
-               %Favn.Run.Context{run_id: work.run_id}
+               %Favn.Run.Context{run_id: work.run_id},
+               FavnRunner.TestGenerationPublication.precondition(work)
              )
+  end
+
+  test "missing assignment identity fails safely before opening a SQL session" do
+    ref = {FavnRunner.ExecutionSQLAssetTest.RuntimeInputsSQLAsset, :asset}
+
+    version =
+      register_runtime_input_sql_manifest!(
+        ref,
+        FavnRunner.ExecutionSQLAssetTest.RuntimeInputsResolver
+      )
+
+    work = work_for(version, ref, "missing-generation-pin")
+
+    assert {:ok, result} = FavnRunner.TestExecution.run(work, generation_precondition: nil)
+    assert result.status == :error
+    assert result.error.type == :invalid_generation_precondition
+    assert result.error.outcome == :safe_failure
+    refute_received {:connect_after_runtime_inputs, _}
   end
 
   test "resolves and pins manifest-declared runtime inputs before execution" do
@@ -1869,7 +1888,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     manifest =
       %Manifest{
         schema_version: 21,
-        runner_contract_version: 17,
+        runner_contract_version: 18,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
           %Asset{
@@ -1931,7 +1950,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest = %Manifest{
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
@@ -1975,7 +1994,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
           asset.relation.connection => %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
         },
         manifest_schema_version: 21,
-        runner_contract_version: 17
+        runner_contract_version: 18
       )
 
     %{asset | target_descriptor: descriptor}
@@ -2017,7 +2036,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
 
     manifest = %Manifest{
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
@@ -2215,7 +2234,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
     manifest =
       %Manifest{
         schema_version: 21,
-        runner_contract_version: 17,
+        runner_contract_version: 18,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [
           %Asset{
@@ -2249,7 +2268,7 @@ defmodule FavnRunner.ExecutionSQLAssetTest do
   defp register_elixir_manifest!(ref, relation) do
     manifest = %Manifest{
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: [
         %Asset{
@@ -2550,6 +2569,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeInspectionAdapter do
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.Connection.Resolved
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Result
@@ -2569,7 +2596,9 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
   end
 
   def disconnect(:conn, _opts), do: :ok
-  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def capabilities(%Resolved{}, _opts),
+    do: {:ok, %Capabilities{transactions: :supported, replace_table: :supported}}
 
   def query(:conn, _statement, _opts),
     do: {:ok, %Result{kind: :query, command: "SELECT", rows: [], columns: []}}
@@ -2581,6 +2610,10 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeExecutionAdapter do
 
     {:ok, %Result{command: :insert, rows_affected: 1}}
   end
+
+  def transaction(conn, fun, _opts), do: fun.(conn)
+  def materialize_in_transaction(conn, plan, opts), do: materialize(conn, plan, opts)
+  def relation(_conn, _ref, _opts), do: {:ok, nil}
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeRetryableConnectErrorAdapter do
@@ -2599,13 +2632,23 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeRetryableConnectErrorAdapter do
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeSecretExecutionAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.Connection.Resolved
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Error
 
   def connect(%Resolved{}, _opts), do: {:ok, :conn}
   def disconnect(:conn, _opts), do: :ok
-  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def capabilities(%Resolved{}, _opts),
+    do: {:ok, %Capabilities{transactions: :supported, replace_table: :supported}}
 
   def materialize(:conn, _write_plan, _opts) do
     {:error,
@@ -2618,16 +2661,30 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeSecretExecutionAdapter do
        cause: %{token: "super-secret"}
      }}
   end
+
+  def transaction(conn, fun, _opts), do: fun.(conn)
+  def materialize_in_transaction(conn, plan, opts), do: materialize(conn, plan, opts)
+  def relation(_conn, _ref, _opts), do: {:ok, nil}
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeRuntimeInputSecretAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.Connection.Resolved
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Error
 
   def connect(%Resolved{}, _opts), do: {:ok, :conn}
   def disconnect(:conn, _opts), do: :ok
-  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def capabilities(%Resolved{}, _opts),
+    do: {:ok, %Capabilities{transactions: :supported, replace_table: :supported}}
 
   def materialize(:conn, _write_plan, opts) do
     secret = opts |> Keyword.fetch!(:params) |> hd()
@@ -2641,9 +2698,21 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeRuntimeInputSecretAdapter do
        cause: {:rejected, secret}
      }}
   end
+
+  def transaction(conn, fun, _opts), do: fun.(conn)
+  def materialize_in_transaction(conn, plan, opts), do: materialize(conn, plan, opts)
+  def relation(_conn, _ref, _opts), do: {:ok, nil}
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Capabilities, Error, Relation, Result}
 
@@ -2822,6 +2891,14 @@ defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedExecutionAdapter do
 end
 
 defmodule FavnRunner.ExecutionSQLAssetTest.FakeCheckedCommitErrorAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.SQL.Error
 
   defdelegate connect(resolved, opts),

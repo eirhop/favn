@@ -20,7 +20,7 @@ defmodule FavnOrchestrator.RunnerTaskContext do
     target_generation_id evidence_generation_id owner_id status claimed_at heartbeat_at
     expires_at claimed succeeded failed completed_at result error attempt payload_hash
     revision sequence stage version resource probe? target_id operation_id operation_type
-    lease_owner lease_expires_at inserted_at updated_at materialization rebuild recovery target_recovery
+    lease_owner lease_expires_at inserted_at updated_at materialization rebuild
     stale fresh missing forced reason reasons upstream_versions freshness_version
     consumed_version ref policy refresh forced? materialize? skip? decision_at
     window_start window_end start end from to connection storage source
@@ -150,7 +150,7 @@ defmodule FavnOrchestrator.RunnerTaskContext do
   defp valid_lock?(lock) when is_map(lock) do
     Enum.sort(Map.keys(lock)) == Enum.sort(Map.keys(Map.from_struct(%TargetOperationLock{}))) and
       Enum.all?([:workspace_id, :target_id, :operation_id, :lease_owner], &identifier?(lock[&1])) and
-      lock[:operation_type] in [:rebuild, :materialization, :target_recovery] and
+      lock[:operation_type] in [:rebuild, :materialization] and
       is_integer(lock[:fencing_token]) and lock.fencing_token > 0 and
       is_integer(lock[:version]) and lock.version > 0 and
       is_struct(lock[:lease_expires_at], DateTime)

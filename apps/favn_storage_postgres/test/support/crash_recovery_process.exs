@@ -76,7 +76,7 @@ claim = %C.ClaimRunnerTask{
   runner_session_generation: 1,
   runner_pool: f["pool"],
   required_runner_release_id: task.required_runner_release_id,
-  supported_task_kinds: [:generation_marker_initialize],
+  supported_task_kinds: [:generation_discard],
   capabilities: [],
   lease_duration_ms: 30_000,
   issued_at: now,
@@ -134,29 +134,19 @@ if mode == "write" do
       if phase == "result_committed" do
         request = task.payload
 
-        marker = %Favn.Contracts.GenerationMarker{
-          target_id: request.target_id,
-          active_relation: request.active_relation,
-          active_generation_id: request.target_generation_id,
-          activation_operation_id: request.initialization_operation_id,
-          activation_token: request.initialization_token,
-          activated_at: now
-        }
-
-        result = %Favn.Contracts.GenerationMarkerInitializationResult{
+        result = %Favn.Contracts.GenerationDiscardResult{
           required_runner_release_id: request.required_runner_release_id,
           target_id: request.target_id,
-          target_generation_id: request.target_generation_id,
-          initialization_token: request.initialization_token,
-          outcome: :succeeded,
-          observed_marker: marker,
-          physical_fingerprint: request.expected_physical_fingerprint,
+          candidate_generation_id: request.candidate_generation_id,
+          discard_token: request.discard_token,
+          outcome: :discarded,
+          candidate_present: false,
           completed_at: now
         }
 
         {:ok, encoded} =
           Favn.Contracts.RunnerTask.PersistenceCodec.encode_result(
-            :generation_marker_initialize,
+            :generation_discard,
             :succeeded,
             result
           )

@@ -14,6 +14,13 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
   def capabilities(_, _),
     do: {:ok, %Capabilities{transactions: :supported, replace_table: :supported}}
 
+  # This fixture proves check rollback; native adapter tests qualify publication.
+  def generation_capabilities(_, _),
+    do: {:ok, %Favn.SQL.GenerationCapabilities{atomic_publication: :supported}}
+
+  def prepare_generation_write(_, expected, _), do: {:ok, expected}
+  def publish_generation_write(_, _, _), do: raise("failed check reached publication")
+
   def relation(_, _, _), do: {:ok, nil}
 
   def execute(conn, sql, opts), do: query(conn, sql, opts)

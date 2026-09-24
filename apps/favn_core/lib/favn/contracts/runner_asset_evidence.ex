@@ -23,6 +23,7 @@ defmodule Favn.Contracts.RunnerAssetEvidence do
           group_replacement: Favn.SQL.GroupReplacementResult.t() | nil,
           runtime_inputs: map() | nil,
           runtime_publication: map() | nil,
+          generation_commit: Favn.Contracts.GenerationCommit.t() | nil,
           manifest_version_id: String.t() | nil,
           manifest_content_hash: String.t() | nil,
           message: String.t() | nil,
@@ -46,6 +47,7 @@ defmodule Favn.Contracts.RunnerAssetEvidence do
     :group_replacement,
     :runtime_inputs,
     :runtime_publication,
+    :generation_commit,
     :manifest_version_id,
     :manifest_content_hash,
     :message,
@@ -82,7 +84,9 @@ defmodule Favn.Contracts.RunnerAssetEvidence do
       optional_struct?(value.contract_validation, Favn.SQL.ContractValidation) and
       optional_struct?(value.group_replacement, Favn.SQL.GroupReplacementResult) and
       (is_nil(value.runtime_inputs) or is_map(value.runtime_inputs)) and
-      valid_publication?(value.runtime_publication) and is_map(value.metrics)
+      valid_publication?(value.runtime_publication) and is_map(value.metrics) and
+      (is_nil(value.generation_commit) or
+         Favn.Contracts.GenerationCommit.validate(value.generation_commit) == :ok)
   end
 
   def valid?(_value), do: false

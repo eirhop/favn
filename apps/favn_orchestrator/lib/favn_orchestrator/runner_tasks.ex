@@ -517,6 +517,7 @@ defmodule FavnOrchestrator.RunnerTasks do
       assigned_at: DateTime.add(task.assignment_expires_at, -lease_ms(), :millisecond),
       lease_expires_at: task.assignment_expires_at,
       retry_class: task.retry_class,
+      generation_precondition: task.generation_precondition,
       payload: task.payload
     }
   end

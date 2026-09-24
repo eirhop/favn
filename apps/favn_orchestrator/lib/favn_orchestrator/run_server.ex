@@ -401,16 +401,6 @@ defmodule FavnOrchestrator.RunServer do
       ),
       do: {:noreply, defer_execution_event(state, message)}
 
-  def handle_info(
-        {ref, _result} = message,
-        %{
-          execution_persist_pending: _,
-          execution_state: %RunExecutionState{post_step_continuations: continuations}
-        } = state
-      )
-      when is_reference(ref) and is_map_key(continuations, ref),
-      do: {:noreply, defer_execution_event(state, message)}
-
   def handle_info({:DOWN, _, :process, _, _} = message, %{execution_persist_pending: _} = state),
     do: {:noreply, defer_execution_event(state, message)}
 
@@ -432,14 +422,6 @@ defmodule FavnOrchestrator.RunServer do
       ),
       do: {:noreply, defer_execution_event(state, message)}
 
-  def handle_info({kind, _token} = message, %{execution_persist_pending: _} = state)
-      when kind in [:registration_retry, :registration_deadline],
-      do: {:noreply, defer_execution_event(state, message)}
-
-  def handle_info({kind, _token} = message, state)
-      when kind in [:registration_retry, :registration_deadline],
-      do: handle_execution_event(state, message)
-
   def handle_info({:runner_result, execution_id, result}, state),
     do: handle_execution_event(state, {:runner_result, execution_id, result})
 
@@ -453,22 +435,12 @@ defmodule FavnOrchestrator.RunServer do
       do: handle_execution_event(state, {:runner_task_started, task_id, task})
 
   def handle_info(
-        {ref, result},
-        %{execution_state: %RunExecutionState{post_step_continuations: continuations}} = state
-      )
-      when is_reference(ref) and is_map_key(continuations, ref),
-      do: handle_execution_event(state, {:post_step_reply, ref, result})
-
-  def handle_info(
         {:DOWN, monitor_ref, :process, _pid, reason},
         %{execution_state: %RunExecutionState{} = execution_state} = state
       ) do
     cond do
       execution_id = Map.get(execution_state.await_monitors, monitor_ref) ->
         handle_execution_event(state, {:runner_await_down, execution_id, monitor_ref, reason})
-
-      Map.has_key?(execution_state.post_step_continuations, monitor_ref) ->
-        handle_execution_event(state, {:post_step_worker_down, monitor_ref, reason})
 
       true ->
         {:noreply, state}
@@ -499,8 +471,7 @@ defmodule FavnOrchestrator.RunServer do
              :step_failed,
              :step_timed_out,
              :step_cancelled,
-             :step_settled,
-             :registration_retry_scheduled
+             :step_settled
            ],
       do: {:noreply, defer_execution_event(state, message)}
 
@@ -757,7 +728,7 @@ defmodule FavnOrchestrator.RunServer do
   end
 
   defp handle_execution_result(state, {:durable_terminal, run}),
-    do: stop_normally(stop_post_step_workers(state), run)
+    do: stop_normally(state, run)
 
   defp handle_execution_result(state, {:unconfirmed_transition, execution, reason}),
     do:
@@ -787,22 +758,6 @@ defmodule FavnOrchestrator.RunServer do
     |> Map.put(:run_state, execution_state.run)
     |> Map.put(:execution_state, execution_state)
     |> stop_on_fenced_write(execution_state.run, retry.event_type)
-  end
-
-  defp handle_execution_result(
-         state,
-         {:recovery_required, %RunExecutionState{} = execution,
-          {:registration_retry_exhausted, _} = reason}
-       ) do
-    execution = Execution.stop_for_recovery(execution)
-    run = execution.run
-    task = FavnOrchestrator.RunHelper.async(run, fn -> FailureCleanup.fail(run, reason) end)
-
-    {:noreply,
-     state
-     |> Map.put(:execution_state, nil)
-     |> Map.put(:run_state, run)
-     |> Map.put(:failure_operation, %{ref: task.ref})}
   end
 
   defp handle_execution_result(
@@ -859,7 +814,6 @@ defmodule FavnOrchestrator.RunServer do
   defp transient_recovery?(_), do: false
 
   defp finalize_terminal(state, %RunState{} = terminal) do
-    state = stop_post_step_workers(state)
     terminal = copy_storage_fence(terminal, state.run_state)
     event_type = Persistence.terminal_event_type(terminal)
 
@@ -911,11 +865,6 @@ defmodule FavnOrchestrator.RunServer do
 
     {:stop, {:shutdown, :run_ownership_lost}, Map.put(state, :run_state, run)}
   end
-
-  defp stop_post_step_workers(%{execution_state: %RunExecutionState{} = execution_state} = state),
-    do: Map.put(state, :execution_state, Execution.stop_post_step_workers(execution_state))
-
-  defp stop_post_step_workers(state), do: state
 
   defp current_run_id(%{run_state: %RunState{id: run_id}}), do: run_id
   defp current_run_id(_state), do: nil
@@ -1024,7 +973,6 @@ defmodule FavnOrchestrator.RunServer do
           state
       end
 
-    _ = stop_post_step_workers(state)
     release_manifest_lease(state)
     :ok
   end

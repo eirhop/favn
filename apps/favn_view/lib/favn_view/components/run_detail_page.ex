@@ -107,9 +107,6 @@ defmodule FavnView.Components.RunDetailPage do
           Ask a workspace administrator to inspect the listed tasks and follow the held-write
           resolution procedure when a write outcome is unknown.
         </span>
-        <span :if={@run.recovery["scheduled_registration_retries"]}>
-          Scheduled registration retries: {@run.recovery["scheduled_registration_retries"]}.
-        </span>
       </.notice>
       <.notice
         :if={

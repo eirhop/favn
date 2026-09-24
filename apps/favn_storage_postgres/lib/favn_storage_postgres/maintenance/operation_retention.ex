@@ -48,14 +48,7 @@ defmodule FavnStoragePostgres.Maintenance.OperationRetention do
         [workspace, id]
       )
 
-    %{rows: recoveries} =
-      SQL.query!(
-        Repo,
-        "SELECT false FROM favn_control.target_recovery_operations WHERE workspace_id=$1 AND operation_id=$2 FOR SHARE NOWAIT",
-        [workspace, id]
-      )
-
-    case rebuilds ++ recoveries do
+    case rebuilds do
       [] ->
         if required?,
           do: Repo.rollback(Error.new(:not_found, "operation history not found")),

@@ -26,6 +26,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   alias FavnStoragePostgres.Rebuilds.Validation, as: RebuildValidation
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.RunnerTasks.Codec
+  alias FavnStoragePostgres.RunnerTasks.GenerationWrite
   alias FavnStoragePostgres.RunnerTasks.WriteOwnership
   alias Favn.Contracts.RunnerTask.PersistenceData
   alias FavnStoragePostgres.Registry.Store, as: RegistryStore
@@ -82,6 +83,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
     :assigned_runner_instance_id,
     :assigned_runner_session_generation,
     :assignment_generation,
+    :generation_precondition,
     :assigned_at,
     :assignment_expires_at,
     :cancellation_requested_at,
@@ -273,6 +275,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                 status: "assigned",
                 assigned_runner_instance_id: command.runner_instance_id,
                 assigned_runner_session_generation: command.runner_session_generation,
+                generation_precondition: task.generation_precondition,
                 assignment_generation: task.assignment_generation + 1,
                 assigned_at: command.occurred_at,
                 assignment_expires_at: expires_at,
@@ -311,6 +314,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
       if command.transition == :running do
         FavnStoragePostgres.RuntimeCatalogGuard.start!(task)
+
+        case task_data(task) do
+          {:ok, payload, _, _} -> GenerationWrite.start!(task, payload)
+          _ -> Repo.rollback(Error.new(:invalid, "runner task evidence unavailable at start"))
+        end
+
         WriteOwnership.start!(task)
       end
 
@@ -499,7 +508,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   def complete(%C.CompleteRunnerTask{} = command) do
     idempotent_transact(command, "complete", fn ->
       task = fenced_task!(command)
-      validate_completion!(task, command)
+      {payload, result} = validate_completion!(task, command)
       status = terminal_status!(command.outcome)
       error = persisted_error(command.error)
 
@@ -527,6 +536,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
             ]
           )
 
+        GenerationWrite.complete!(task, payload, result, command.occurred_at)
         WriteOwnership.complete!(task, command)
 
         remove_active_demand!(
@@ -913,7 +923,7 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
                command.workspace_context.roles,
                &(&1 in [:workspace_admin, :platform_operator])
              ),
-         :ok <- FavnOrchestrator.TargetRecovery.WriteResolution.validate(proof),
+         :ok <- FavnOrchestrator.TaskWriteResolution.validate(proof),
          true <-
            is_list(command.observation_task_ids) and length(command.observation_task_ids) <= 2 and
              Enum.all?(command.observation_task_ids, &(bounded_id(&1) == :ok)) do
@@ -2299,7 +2309,8 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
              command.retry_class,
              command.error
            ) do
-      :ok
+      GenerationWrite.validate_result!(task, payload, decoded)
+      {payload, decoded}
     else
       {:error, %Error{} = error} ->
         Repo.rollback(error)
@@ -3125,6 +3136,9 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         {key, value} when key in [:assigned_runner_session_generation, :result_version] ->
           is_nil(value) or (is_integer(value) and value >= 0)
 
+        {:generation_precondition, value} ->
+          is_nil(value) or (is_map(value) and byte_size(Jason.encode!(value)) <= 32768)
+
         {:assignment_generation, value} ->
           is_integer(value) and value >= 0
 
@@ -3364,13 +3378,20 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   defp load_details(task, row) do
     case task_data(row, task) do
       {:ok, payload, context, result} ->
-        %{
-          task
-          | payload: payload,
-            orchestration_context: context,
-            result: result,
-            data_state: :available
-        }
+        case GenerationWrite.decode(task.generation_precondition, payload) do
+          {:ok, expected} ->
+            %{
+              task
+              | payload: payload,
+                orchestration_context: context,
+                result: result,
+                generation_precondition: expected,
+                data_state: :available
+            }
+
+          {:error, _} ->
+            %{task | data_state: :unavailable, persistence_failure: :payload}
+        end
 
       {:invalid, category} ->
         %{task | data_state: :unavailable, persistence_failure: category}
@@ -3506,8 +3527,26 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp inspect_claim_candidate(task, rest, command) do
     case task_data(task) do
-      {:ok, _payload, _context, _result} ->
-        task
+      {:ok, payload, _context, _result} ->
+        case GenerationWrite.pin(task, payload, command.occurred_at) do
+          {:ok, expected} ->
+            %{task | generation_precondition: expected}
+
+          {:error, :generation_no_longer_writable} ->
+            WriteOwnership.finish_unstarted!(task)
+            error = RunnerError.new(outcome: :safe_failure, type: "generation_no_longer_writable")
+
+            update_task!(task, command,
+              status: "failed",
+              retry_class: "terminal",
+              result_version: 0,
+              error: persisted_error(error),
+              terminal_at: command.occurred_at,
+              assignment_expires_at: nil
+            )
+
+            choose_claim_candidate(rest, command)
+        end
 
       {:error, error} ->
         Repo.rollback(error)
@@ -3781,7 +3820,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
 
   defp write_link_matches?(command, %{target_id: target} = payload)
        when command.task_kind in [
-              :generation_marker_initialize,
               :generation_activate,
               :generation_discard
             ],
@@ -3836,9 +3874,6 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
   end
 
   defp context_matches_payload?(_context, _payload), do: true
-
-  defp payload_operation_id(:generation_marker_initialize, payload),
-    do: payload.initialization_operation_id
 
   defp payload_operation_id(_kind, payload), do: payload.rebuild_operation_id
 

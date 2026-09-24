@@ -69,8 +69,7 @@ defmodule FavnView.RunDetailLiveTest do
         recovery = %{
           "cleanup_state" => unquote(state),
           "unresolved" => [%{"reason_code" => "unknown_write", "task_id" => "held-task"}],
-          "disposition" => "attention",
-          "scheduled_registration_retries" => 8
+          "disposition" => "attention"
         }
 
         {:ok, %{kind: :run, detail: %{detail | header: %{detail.header | recovery: recovery}}}}
@@ -86,7 +85,6 @@ defmodule FavnView.RunDetailLiveTest do
         )
 
       assert html =~ unquote(message)
-      assert html =~ "Scheduled registration retries: 8"
 
       if unquote(state) == "attention" do
         assert html =~ "held-task"

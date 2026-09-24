@@ -147,7 +147,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
                  command_id: "unrelated",
                  target_ids: ["asset:unrelated:target"],
                  operation_id: "unrelated",
-                 operation_type: :target_recovery,
+                 operation_type: :rebuild,
                  lease_owner: "unrelated",
                  lease_duration_ms: 30_000,
                  occurred_at: f.now
@@ -760,7 +760,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
 
     assert Enum.any?(
              page.items,
-             &(&1.action == "target_recovery.resolve_write" and &1.principal_id == actor.id)
+             &(&1.action == "runner_task.resolve_write" and &1.principal_id == actor.id)
            )
 
     assert :ok = Identity.revoke_session(f.workspace_context, session.id)
@@ -816,6 +816,12 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   test "exact committed materialization settles after expiry without repeating its write", f do
     task = start(f)
 
+    assert {:ok, pinned} =
+             Store.get(%Q.GetRunnerTask{
+               workspace_context: f.workspace_context,
+               task_id: task.task_id
+             })
+
     result = %Favn.Contracts.RunnerResult{
       run_id: f.work.run_id,
       manifest_version_id: f.version.manifest_version_id,
@@ -832,6 +838,14 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
           target_generation_id: f.work.target_generation_id,
           write_relation: f.work.write_relation,
           write_outcome: :succeeded,
+          evidence: %Favn.Contracts.RunnerAssetEvidence{
+            kind: :sql,
+            write_outcome: :written,
+            generation_commit: %Favn.Contracts.GenerationCommit{
+              marker: pinned.generation_precondition.marker,
+              physical_fingerprint: String.duplicate("a", 64)
+            }
+          },
           attempt_count: 1
         }
       ]

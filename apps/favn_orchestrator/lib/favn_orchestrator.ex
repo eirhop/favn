@@ -28,7 +28,6 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.Operator.Audit, as: OperatorAudit
   alias FavnOrchestrator.Operator.Lineage
   alias FavnOrchestrator.Operator.Rebuilds, as: OperatorRebuilds
-  alias FavnOrchestrator.Operator.TargetRecovery, as: OperatorTargetRecovery
   alias FavnOrchestrator.Operator.Commands, as: OperatorCommands
   alias FavnOrchestrator.OperatorContext
   alias FavnOrchestrator.OperatorRunView
@@ -56,7 +55,7 @@ defmodule FavnOrchestrator do
   alias FavnOrchestrator.RunnerOverview
   alias FavnOrchestrator.RunReadModel
   alias FavnOrchestrator.Rebuilds
-  alias FavnOrchestrator.TargetRecovery
+  alias FavnOrchestrator.TaskWriteResolution
   alias FavnOrchestrator.WorkspaceConfiguration
   alias FavnOrchestrator.RunRetryPlanner
   alias FavnOrchestrator.RunSubmission.AssetOptions
@@ -117,10 +116,6 @@ defmodule FavnOrchestrator do
                cancel_operator_rebuild: 4,
                retry_operator_rebuild: 4,
                reconcile_operator_rebuild: 3,
-               plan_operator_target_recovery: 4,
-               start_operator_target_recovery: 4,
-               get_operator_target_recovery: 2,
-               reconcile_operator_target_recovery: 3,
                resolve_operator_task_write: 4,
                list_logs: 3,
                replay_logs: 4,
@@ -990,110 +985,14 @@ defmodule FavnOrchestrator do
     end
   end
 
-  @doc "Creates an immutable evidence-backed target-recovery plan after reauthorization."
-  @spec plan_operator_target_recovery(
-          OperatorContext.t(),
-          String.t(),
-          String.t(),
-          keyword()
-        ) :: {:ok, map()} | {:error, term()}
-  def plan_operator_target_recovery(
-        %OperatorContext{} = operator_context,
-        target_id,
-        reason,
-        opts
-      )
-      when is_binary(target_id) and is_binary(reason) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :operator),
-         {:ok, intent} <-
-           begin_operator_command(
-             context,
-             operator_context,
-             actor,
-             "target_recovery.plan",
-             "target",
-             target_id,
-             %{target_id: target_id, reason: reason},
-             opts
-           ),
-         opts <-
-           opts
-           |> Keyword.put(:idempotency_key, intent.key_hash)
-           |> Keyword.put_new(:session_id, operator_context.session_id)
-           |> Keyword.put_new(
-             :operation_id,
-             OperatorAudit.deterministic_id(intent, "target_recovery", [target_id])
-           ),
-         result <- TargetRecovery.plan(context, target_id, reason, opts) do
-      finish_operator_result(
-        context,
-        operator_context,
-        actor,
-        intent,
-        "target_recovery",
-        target_id,
-        result,
-        fn plan ->
-          {plan.plan_id, %{plan_id: plan.plan_id, plan_hash: plan.plan_hash},
-           {:ok, OperatorTargetRecovery.plan(plan, admin?(context))}}
-        end
-      )
-    end
-  end
-
-  @doc "Starts one exact target-recovery plan after administrator reauthorization."
-  @spec start_operator_target_recovery(
-          OperatorContext.t(),
-          String.t(),
-          String.t(),
-          keyword()
-        ) :: {:ok, map()} | {:error, term()}
-  def start_operator_target_recovery(
-        %OperatorContext{} = operator_context,
-        operation_id,
-        plan_hash,
-        opts
-      )
-      when is_binary(operation_id) and is_binary(plan_hash) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
-         {:ok, intent} <-
-           begin_operator_command(
-             context,
-             operator_context,
-             actor,
-             "target_recovery.start",
-             "target_recovery",
-             operation_id,
-             %{operation_id: operation_id, plan_hash: plan_hash},
-             opts
-           ),
-         result <-
-           TargetRecovery.start(
-             context,
-             operation_id,
-             plan_hash,
-             Keyword.drop(opts, [:idempotency_key])
-           ) do
-      finish_operator_result(
-        context,
-        operator_context,
-        actor,
-        intent,
-        "target_recovery",
-        operation_id,
-        result,
-        fn operation ->
-          {operation.operation_id, %{operation_id: operation.operation_id},
-           {:ok, OperatorTargetRecovery.operation(operation, true)}}
-        end
-      )
-    end
-  end
-
   @doc """
   Resolves one held task write after administrator reauthorization.
 
-  `proof` follows `FavnOrchestrator.TargetRecovery.resolve_task_write/4`.
+  `proof` includes exact assignment and owner fences, shutdown attestations,
+  an evidence reference, and either verified no effect or fresh generation observations.
+  Asset attempts accept only `:verified_no_effect`; a generation marker cannot
+  prove that an individual asset write committed. `:observe_generation` applies
+  only to rebuild activation or discard operations.
   The administrator attests that the runner and backend can no longer write.
   Required options are `:idempotency_key` and a stable `:issued_at` DateTime;
   reuse both unchanged when retrying an uncertain response. This records proof
@@ -1105,21 +1004,21 @@ defmodule FavnOrchestrator do
   def resolve_operator_task_write(%OperatorContext{} = operator_context, task_id, proof, opts)
       when is_binary(task_id) and is_list(opts) do
     with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
-         :ok <- TargetRecovery.WriteResolution.validate(proof),
+         :ok <- TaskWriteResolution.validate(proof),
          %DateTime{} = issued_at <- Keyword.get(opts, :issued_at),
          {:ok, intent} <-
            begin_operator_command(
              context,
              operator_context,
              actor,
-             "target_recovery.resolve_write",
+             "runner_task.resolve_write",
              "runner_task",
              task_id,
              %{task_id: task_id, proof: proof, issued_at: issued_at},
              opts
            ),
          result <-
-           TargetRecovery.resolve_task_write(
+           TaskWriteResolution.resolve(
              context,
              task_id,
              proof,
@@ -1139,60 +1038,6 @@ defmodule FavnOrchestrator do
       nil -> {:error, :write_resolution_command_identity_required}
       {:error, _reason} = error -> error
       _invalid -> {:error, :invalid_write_resolution_command}
-    end
-  end
-
-  @doc "Returns one bounded target-recovery operation after viewer reauthorization."
-  @spec get_operator_target_recovery(OperatorContext.t(), String.t()) ::
-          {:ok, map()} | {:error, term()}
-  def get_operator_target_recovery(%OperatorContext{} = operator_context, operation_id)
-      when is_binary(operation_id) do
-    with {:ok, context, _actor} <- authorize_operator_context(operator_context, :viewer),
-         {:ok, operation} <- TargetRecovery.get(context, operation_id) do
-      {:ok, OperatorTargetRecovery.operation(operation, admin?(context))}
-    end
-  end
-
-  @doc "Reconciles an inconclusive target recovery without retrying its marker write."
-  @spec reconcile_operator_target_recovery(OperatorContext.t(), String.t(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def reconcile_operator_target_recovery(
-        %OperatorContext{} = operator_context,
-        operation_id,
-        opts
-      )
-      when is_binary(operation_id) and is_list(opts) do
-    with {:ok, context, actor} <- authorize_operator_context(operator_context, :admin),
-         {:ok, intent} <-
-           begin_operator_command(
-             context,
-             operator_context,
-             actor,
-             "target_recovery.reconcile",
-             "target_recovery",
-             operation_id,
-             %{operation_id: operation_id},
-             opts
-           ),
-         result <-
-           TargetRecovery.reconcile(
-             context,
-             operation_id,
-             Keyword.drop(opts, [:idempotency_key])
-           ) do
-      finish_operator_result(
-        context,
-        operator_context,
-        actor,
-        intent,
-        "target_recovery",
-        operation_id,
-        result,
-        fn operation ->
-          {operation.operation_id, %{operation_id: operation.operation_id},
-           {:ok, OperatorTargetRecovery.operation(operation, true)}}
-        end
-      )
     end
   end
 

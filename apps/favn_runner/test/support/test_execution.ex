@@ -54,7 +54,13 @@ defmodule FavnRunner.TestExecution do
       assigned_at: DateTime.utc_now(),
       lease_expires_at: DateTime.add(DateTime.utc_now(), 60, :second),
       retry_class: :safe_to_retry,
-      payload: work
+      payload: work,
+      generation_precondition:
+        Keyword.get(
+          opts,
+          :generation_precondition,
+          FavnRunner.TestGenerationPublication.precondition(work)
+        )
     }
 
     child = {TaskExecutor, assignment: assignment, payload: work, owner: self()}

@@ -52,7 +52,6 @@ defmodule Favn.SQL.Client do
   alias Favn.SQL.Error
   alias Favn.SQL.GenerationActivation
   alias Favn.SQL.GenerationDiscard
-  alias Favn.SQL.GenerationMarkerInitialization
   alias Favn.SQL.GenerationReconciliation
   alias Favn.SQL.Observability
   alias Favn.SQL.PoolConfig
@@ -199,7 +198,7 @@ defmodule Favn.SQL.Client do
   def generation_capabilities(session, opts \\ [])
 
   def generation_capabilities(%Session{} = session, opts) when is_list(opts) do
-    if generation_adapter?(session.adapter) do
+    if function_exported?(session.adapter, :generation_capabilities, 2) do
       session.adapter.generation_capabilities(session.resolved, opts)
     else
       {:error, unsupported_generation_error(session, :generation_capabilities)}
@@ -405,6 +404,48 @@ defmodule Favn.SQL.Client do
 
   def table_metadata(_session, _relation_ref), do: {:error, invalid_session_error()}
 
+  @doc "Checks assignment-pinned generation identity inside the materialization transaction."
+  @spec prepare_generation_write(
+          Session.t(),
+          Favn.Contracts.GenerationPrecondition.t(),
+          keyword()
+        ) :: operation_result()
+  def prepare_generation_write(session, precondition, opts),
+    do: generation_write(session, precondition, :prepare_generation_write, opts)
+
+  @doc "Publishes generation evidence in that same materialization transaction."
+  @spec publish_generation_write(
+          Session.t(),
+          Favn.Contracts.GenerationPrecondition.t(),
+          keyword()
+        ) :: operation_result()
+  def publish_generation_write(session, precondition, opts),
+    do: generation_write(session, precondition, :publish_generation_write, opts)
+
+  defp generation_write(%Session{} = session, precondition, operation, opts) do
+    {_admission_opts, adapter_opts} = split_operation_opts(opts)
+
+    with :ok <- Favn.Contracts.GenerationPrecondition.validate(precondition),
+         true <- transaction_context?(session),
+         {:ok, %{atomic_publication: :supported}} <-
+           generation_capabilities(session, adapter_opts),
+         true <- function_exported?(session.adapter, operation, 3) do
+      run_session_operation(
+        session,
+        operation,
+        precondition,
+        operation_runtime_opts(opts),
+        fn owned -> apply(owned.adapter, operation, [owned.conn, precondition, adapter_opts]) end
+      )
+    else
+      _ -> {:error, unsupported_generation_error(session, operation)}
+    end
+  rescue
+    error -> {:error, normalize_runtime_error(operation, error)}
+  catch
+    :exit, reason -> {:error, normalize_runtime_error(operation, reason)}
+  end
+
   @doc "Inspects and fingerprints one physical generation relation."
   @spec inspect_generation(Session.t(), RelationRef.t(), keyword()) :: operation_result()
   def inspect_generation(session, relation_ref, opts \\ [])
@@ -437,43 +478,6 @@ defmodule Favn.SQL.Client do
   end
 
   def inspect_generation(_session, _relation_ref, _opts), do: {:error, invalid_session_error()}
-
-  @doc "Initializes the sidecar marker for an already materialized first generation."
-  @spec initialize_generation_marker(Session.t(), GenerationMarkerInitialization.t(), keyword()) ::
-          operation_result()
-  def initialize_generation_marker(session, request, opts \\ [])
-
-  def initialize_generation_marker(
-        %Session{} = session,
-        %GenerationMarkerInitialization{} = request,
-        opts
-      )
-      when is_list(opts) do
-    {_admission_opts, adapter_opts} = split_operation_opts(opts)
-
-    if generation_adapter?(session.adapter) do
-      session
-      |> run_session_operation(
-        :initialize_generation_marker,
-        request,
-        operation_runtime_opts(opts),
-        fn session ->
-          Admission.with_permit(session, :initialize_generation_marker, request, fn ->
-            session.adapter.initialize_generation_marker(session.conn, request, adapter_opts)
-          end)
-        end
-      )
-    else
-      {:error, unsupported_generation_error(session, :initialize_generation_marker)}
-    end
-  rescue
-    error -> {:error, normalize_runtime_error(:initialize_generation_marker, error)}
-  catch
-    :exit, reason -> {:error, normalize_runtime_error(:initialize_generation_marker, reason)}
-  end
-
-  def initialize_generation_marker(_session, _request, _opts),
-    do: {:error, invalid_session_error()}
 
   @doc "Atomically swaps a candidate generation and writes its active marker."
   @spec activate_generation(Session.t(), GenerationActivation.t(), keyword()) ::
@@ -1563,7 +1567,6 @@ defmodule Favn.SQL.Client do
           :execute,
           :materialize,
           :transaction,
-          :initialize_generation_marker,
           :activate_generation,
           :discard_generation
         ]
@@ -1670,7 +1673,6 @@ defmodule Favn.SQL.Client do
               :execute,
               :materialize,
               :transaction,
-              :initialize_generation_marker,
               :activate_generation,
               :discard_generation
             ] do
@@ -1752,7 +1754,6 @@ defmodule Favn.SQL.Client do
     function_exported?(adapter, :generation_capabilities, 2) and
       function_exported?(adapter, :inspect_generation, 3) and
       function_exported?(adapter, :bind_relation_instance, 4) and
-      function_exported?(adapter, :initialize_generation_marker, 3) and
       function_exported?(adapter, :activate_generation, 3) and
       function_exported?(adapter, :reconcile_generation, 3) and
       function_exported?(adapter, :discard_generation, 3)

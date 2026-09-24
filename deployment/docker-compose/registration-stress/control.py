@@ -29,7 +29,8 @@ def compose(args):
             str(HERE.parent / ".env.local"), "--env-file",
             str(ROOT / ".favn/registration-stress/build.env"),
             "--project-name", ARGS.project, "-f", str(HERE.parent / "compose.yml"),
-            "-f", str(HERE / "compose.yml"), *args]
+            "-f", str(HERE / "compose.yml"),
+            *(["-f", str(ARGS.compose_override.resolve())] if ARGS.compose_override else []), *args]
 
 
 def psql_command():
@@ -224,6 +225,7 @@ def trigger_outage():
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--project", default="favn-763-local")
 parser.add_argument("--proxy-port", type=int, default=8476)
+parser.add_argument("--compose-override", type=Path, help="Case-specific quota and bootstrap configuration")
 sub = parser.add_subparsers(dest="action", required=True)
 sub.add_parser("snapshot")
 sub.add_parser("up")

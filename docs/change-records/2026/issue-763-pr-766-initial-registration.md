@@ -1033,3 +1033,36 @@ DuckLake qualification and the fresh workload comparison remain required.
 The reviewed revision is commit `972c05b4012e670a35d4ab6534202e17cec509bd`.
 GitHub treated the semicolon in the sequence note as a statement delimiter;
 replace it with “without” as a syntax-only correction, retaining the same meaning.
+
+
+### Implementation checkpoint: atomic publication and retirement
+
+Implementation is in progress against the clean-break baseline above. Initial
+SQL publication and PostgreSQL task completion now carry typed assignment-time
+identity and commit receipts. The old registration helpers/timers, standalone
+initialization task, target-repair planner/table/API/CLI/View are removed. The
+canonical generation and operator documents now describe the replacement.
+
+Focused evidence and exact local logs are recorded in the
+[scratchpad](../../report/2026-09-24-issue-763-scratchpad.md). A persisted first-write
+pipeline passes with one asset task, an active generation, and no leftover write
+lock. Fresh-schema and refusal-preservation checks pass. Local SIGKILL probes,
+retained run lifecycle tests, and View boundary tests pass at this checkpoint.
+This is not the matched-image workload comparison or final acceptance.
+
+A broader cleanup finding was corrected: cancelling an unstarted rebuild task
+left its task binding attached to the retained rebuild lock. Clearing only the
+matching task binding prevents it blocking subsequent work. A safe preparation
+retry must instead preserve that exact binding. Independent review caught that
+edge in the first correction and accepted the revised behavior after tests for
+retry through Started, expired/replaced fences, and cancellation preserving the
+lock owner/fence/expiry. This is a bounded cleanup correction within the planned
+write-ownership sweep; it adds no new recovery mechanism.
+
+The historical RC17 upgrade-compatibility test is retired because this change
+explicitly does not support those execution histories. It is replaced by fresh
+readiness and non-destructive refusal coverage. Other crash/unknown-write tests
+now use retained rebuild-discard operations with explicit owner locks instead of
+the removed standalone marker task. Full verification, final diff/budget audit,
+independent implementation acceptance, and the fresh five-runner stress replay
+remain outstanding.

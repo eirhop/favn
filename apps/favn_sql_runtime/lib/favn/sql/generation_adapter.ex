@@ -19,10 +19,10 @@ defmodule Favn.SQL.GenerationAdapter do
     GenerationDiscard,
     GenerationInspection,
     GenerationMarker,
-    GenerationMarkerInitialization,
-    GenerationMarkerInitializationResult,
     GenerationReconciliation
   }
+
+  alias Favn.Contracts.{GenerationCommit, GenerationPrecondition}
 
   @type conn :: term()
   @type opts :: keyword()
@@ -30,14 +30,17 @@ defmodule Favn.SQL.GenerationAdapter do
   @callback generation_capabilities(Resolved.t(), opts()) ::
               {:ok, GenerationCapabilities.t()} | {:error, Error.t()}
 
+  @callback prepare_generation_write(conn(), GenerationPrecondition.t(), opts()) ::
+              {:ok, GenerationPrecondition.t()} | {:error, Error.t()}
+
+  @callback publish_generation_write(conn(), GenerationPrecondition.t(), opts()) ::
+              {:ok, GenerationCommit.t()} | {:error, Error.t()}
+
   @callback inspect_generation(conn(), RelationRef.t(), opts()) ::
               {:ok, GenerationInspection.t() | :not_found} | {:error, Error.t()}
 
   @callback bind_relation_instance(conn(), RelationRef.t(), String.t(), opts()) ::
               :ok | {:error, Error.t()}
-
-  @callback initialize_generation_marker(conn(), GenerationMarkerInitialization.t(), opts()) ::
-              {:ok, GenerationMarkerInitializationResult.t()} | {:error, Error.t()}
 
   @callback activate_generation(conn(), GenerationActivation.t(), opts()) ::
               {:ok, GenerationActivationResult.t()} | {:error, Error.t()}

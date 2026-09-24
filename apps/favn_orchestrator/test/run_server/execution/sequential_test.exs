@@ -170,7 +170,6 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
       admission: FakeStore,
       resource_circuits: FakeStore,
       target_generations: FakeStore,
-      target_recovery: FakeStore,
       rebuilds: FakeStore,
       target_operation_locks: FakeStore,
       materialization: FakeStore,
@@ -243,7 +242,7 @@ defmodule FavnOrchestrator.RunServer.Execution.SequentialTest do
             warehouse: %{adapter: Favn.SQL.Adapter.DuckDB.ADBC, module: nil}
           },
           manifest_schema_version: 21,
-          runner_contract_version: 17
+          runner_contract_version: 18
         )
 
       asset = %{asset | target_descriptor: descriptor}

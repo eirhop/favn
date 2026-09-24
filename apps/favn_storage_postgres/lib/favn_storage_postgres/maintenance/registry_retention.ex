@@ -133,8 +133,6 @@ defmodule FavnStoragePostgres.Maintenance.RegistryRetention do
     AND NOT EXISTS (SELECT 1 FROM favn_control.run_targets r WHERE r.manifest_version_id=item.manifest_version_id)
     AND NOT EXISTS (SELECT 1 FROM favn_control.runner_tasks r WHERE r.manifest_version_id=item.manifest_version_id)
     AND NOT EXISTS (SELECT 1 FROM favn_control.runs r WHERE r.manifest_version_id=item.manifest_version_id)
-    AND NOT EXISTS (SELECT 1 FROM favn_control.target_recovery_operations r WHERE r.desired_manifest_id=item.manifest_version_id)
-    AND NOT EXISTS (SELECT 1 FROM favn_control.target_recovery_operations r WHERE r.source_manifest_id=item.manifest_version_id)
     AND NOT EXISTS (SELECT 1 FROM favn_control.workspace_deployments r WHERE r.manifest_version_id=item.manifest_version_id)
     """
 

@@ -19,6 +19,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     Favn.RuntimeCatalog.Publication,
     Favn.Contracts.RunnerResult,
     Favn.Contracts.RunnerAssetEvidence,
+    Favn.Contracts.GenerationCommit,
+    Favn.Contracts.GenerationPrecondition,
     Favn.Contracts.RunnerAssetResult,
     Favn.Contracts.RunnerError,
     Favn.Resource.Ref,
@@ -30,8 +32,6 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     Favn.Contracts.GenerationCapabilitiesResult,
     Favn.Contracts.GenerationMarkerReadRequest,
     Favn.Contracts.GenerationMarkerReadResult,
-    Favn.Contracts.GenerationMarkerInitializationRequest,
-    Favn.Contracts.GenerationMarkerInitializationResult,
     Favn.Contracts.GenerationActivationRequest,
     Favn.Contracts.GenerationActivationResult,
     Favn.Contracts.GenerationReconciliationRequest,
@@ -87,6 +87,8 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     Favn.SQL.Template.RuntimeRelation
   ]
   @atoms [
+    :initial,
+    :existing,
     :runtime_publication,
     :invalid_runtime_publication,
     :many_to_one,
@@ -349,6 +351,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceData do
     :stage_index,
     :active_runner_task_ids,
     :transactional_ddl,
+    :atomic_publication,
     :isolated_candidates,
     :physical_inspection,
     :atomic_swap,

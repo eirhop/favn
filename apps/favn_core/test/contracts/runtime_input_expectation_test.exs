@@ -92,7 +92,7 @@ defmodule Favn.Contracts.RuntimeInputExpectationTest do
                | work: %{work | metadata: %{runner_task_mode: :runtime_input_resolution}}
              })
 
-    assert Favn.Contracts.RunnerTask.version() == 15
+    assert Favn.Contracts.RunnerTask.version() == 16
     assert PersistenceCodec.payload_version() == 2
   end
 

@@ -6,8 +6,6 @@ defmodule Favn.Contracts.GenerationContractsTest do
   alias Favn.Contracts.GenerationDiscardRequest
   alias Favn.Contracts.GenerationDiscardResult
   alias Favn.Contracts.GenerationMarker
-  alias Favn.Contracts.GenerationMarkerInitializationRequest
-  alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RunnerAssetResult
@@ -149,42 +147,6 @@ defmodule Favn.Contracts.GenerationContractsTest do
                %{result | candidate_fingerprint: String.duplicate("d", 64)},
                request
              )
-  end
-
-  test "initial generation marker results preserve exact materialization identity" do
-    request = %GenerationMarkerInitializationRequest{
-      manifest_version_id: "mv_generation",
-      manifest_content_hash: @manifest_hash,
-      required_runner_release_id: release_id(),
-      target_id: "asset:Elixir.MyApp.Target:asset",
-      target_generation_id: @previous_generation_id,
-      active_relation: active_relation(),
-      expected_physical_fingerprint: @fingerprint,
-      initialization_operation_id: "initial-materialization-1",
-      initialization_token: "initial-marker-token-1"
-    }
-
-    marker = %GenerationMarker{
-      target_id: request.target_id,
-      active_relation: request.active_relation,
-      active_generation_id: request.target_generation_id,
-      activation_operation_id: request.initialization_operation_id,
-      activation_token: request.initialization_token,
-      activated_at: now()
-    }
-
-    result = %GenerationMarkerInitializationResult{
-      required_runner_release_id: release_id(),
-      target_id: request.target_id,
-      target_generation_id: request.target_generation_id,
-      initialization_token: request.initialization_token,
-      outcome: :succeeded,
-      observed_marker: marker,
-      physical_fingerprint: @fingerprint,
-      completed_at: now()
-    }
-
-    assert :ok = GenerationMarkerInitializationResult.validate(result, request)
   end
 
   test "reconciliation distinguishes candidate, previous, and unknown states" do

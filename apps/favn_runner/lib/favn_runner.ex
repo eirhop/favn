@@ -14,8 +14,6 @@ defmodule FavnRunner do
   alias Favn.Contracts.GenerationDiscardRequest
   alias Favn.Contracts.GenerationDiscardResult
   alias Favn.Contracts.GenerationMarker
-  alias Favn.Contracts.GenerationMarkerInitializationRequest
-  alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RunnerError
@@ -364,19 +362,6 @@ defmodule FavnRunner do
         GenerationOperations.marker(asset,
           require_relation_instance?: Keyword.get(opts, :require_relation_instance?, true)
         )
-      end
-    end)
-  end
-
-  @doc "Initializes the sidecar marker for one successfully materialized initial generation."
-  @spec initialize_generation_marker(GenerationMarkerInitializationRequest.t(), keyword()) ::
-          {:ok, GenerationMarkerInitializationResult.t()} | {:error, term()}
-  def initialize_generation_marker(%GenerationMarkerInitializationRequest{} = request, opts \\ [])
-      when is_list(opts) do
-    with_admission(opts, fn ->
-      with :ok <- GenerationMarkerInitializationRequest.validate(request),
-           {:ok, version} <- generation_version(request, opts) do
-        GenerationOperations.initialize_marker(request, version)
       end
     end)
   end

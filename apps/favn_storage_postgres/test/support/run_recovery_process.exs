@@ -66,7 +66,8 @@ context = SystemContext.workspace(f["workspace"], :run_worker)
 
 :ok =
   FavnRunner.ReleaseVerifier.verify_startup(%{
-    "FAVN_RUNNER_RELEASE_ID" => version.runner_releases[f["pool"]]
+    "FAVN_RUNNER_RELEASE_ID" => version.runner_releases[f["pool"]],
+    "FAVN_RUNNER_BUILD_PROFILE" => "source"
   })
 
 if phase != "finish" do

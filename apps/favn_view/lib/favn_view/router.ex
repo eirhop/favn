@@ -69,7 +69,6 @@ defmodule FavnView.Router do
       live "/runs/:run_id/assets/:asset_step_id/logs", AssetRunLogsLive, :show
       live "/rebuilds", RebuildsLive, :index
       live "/rebuilds/:operation_id", RebuildDetailLive, :show
-      live "/recoveries", TargetRecoveryLive, :index
       live "/account/security", AccountSecurityLive, :edit
     end
 

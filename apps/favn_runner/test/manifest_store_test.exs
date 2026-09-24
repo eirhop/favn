@@ -217,7 +217,7 @@ defmodule FavnRunner.ManifestStoreTest do
 
     %Manifest{
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],

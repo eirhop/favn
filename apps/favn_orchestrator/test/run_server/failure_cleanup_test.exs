@@ -107,19 +107,19 @@ defmodule FavnOrchestrator.RunServer.FailureCleanupTest do
              FailureCleanup.apply_result(state, {:tasks, nil}, {:ok, []})
   end
 
-  test "unresolved registration releases terminal permits before proceeding and propagates release failure" do
+  test "unresolved outcome releases terminal permits before proceeding and propagates release failure" do
     state = %FailureCleanup{
       run: %RunState{metadata: %{"failure_cleanup" => %{"version" => 1, "state" => "pending"}}},
       version: nil,
       index: nil,
       progress: nil,
-      phase: :generation,
+      phase: :outcome,
       entry: %{task_id: "asset", resource_circuit_permits: [:permit]},
       tasks: [%{task_id: "asset"}]
     }
 
     assert {:cont, state} =
-             FailureCleanup.apply_result(state, {:generation, nil, 1}, {:error, :marker_mismatch})
+             FailureCleanup.apply_result(state, {:outcome, nil, "run", 1}, {:ok, %{items: []}})
 
     assert {:progress, _, _} = progress = FailureCleanup.operation(state)
     assert {:cont, state} = FailureCleanup.apply_result(state, progress, :ok)

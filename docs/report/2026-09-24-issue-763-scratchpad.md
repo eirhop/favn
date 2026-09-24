@@ -681,3 +681,149 @@ and require rebuild. Review metadata row locks against deployment/rebuild order.
 The existing asset held-write resolution only supports verified no-effect. It
 does not automatically reconcile a committed-but-unreported asset attempt. Keep
 that limit explicit; the stable generation marker is not per-attempt proof.
+
+## Atomic publication implementation checkpoint (2026-09-24)
+
+The new assignment precondition and generation commit evidence are wired through
+Core, the runner SQL transaction, and PostgreSQL runner-task completion. Native
+DuckDB and DuckLake publication tests passed (12/12), including rollback after
+publication, first-write absence, identical external replacement, and shape-change
+rejection. The native driver used was DuckDB 1.5.5; the first test invocation
+without the installed driver path failed during setup, not during publication.
+
+Five focused PostgreSQL tests passed against the disposable OrbStack test database:
+transaction rollback covers result acceptance, generation/binding activation and
+write-hold resolution together; forged receipts leave authority unsettled; queued
+writes pin current identity at assignment while old claim receipts retain their
+original precondition; deployment changes preserve desired state and classify the
+accepted original write conservatively. Both ownership-only and materialization
+claims are covered. A queue test initially used identical enqueue timestamps and
+selected either task; explicit enqueue ordering fixed that fixture.
+
+The wider runner-task storage file initially passed 92/96 tests. Outstanding
+updates concern a synthetic adapter without the new capability, pre-upgrade
+manifest fixtures that now fail closed at Started, and the expected schema
+fingerprint (updated after the migration). These are not a completed qualification.
+
+Removed the run-local registration worker, retry timers, post-step continuation,
+initial reconciler, and generation phase in ordinary failed-run cleanup. General
+failure cleanup, lease ownership, and unknown-outcome protection remain. Eight
+replacement stage-settlement tests pass, retaining resource-settlement retry and
+ambiguous-outcome coverage. Broader coordinator tests are being adapted to hold an
+ordinary settlement operation instead of the deleted registration worker.
+
+Tidewave confirmed that the existing umbrella server runs from the other checkout
+and has not loaded GenerationCommit. Its runtime is not evidence for this candidate.
+The implementation worktree compiles with warnings as errors after lifecycle
+removal. Standalone marker tasks, target-repair API/storage/UI, protocol versions,
+canonical docs, full qualification, matched images and the stress rerun remain.
+An interim independent review of atomic publication correctness was requested.
+
+### Independent review corrections and candidate Tidewave
+
+The interim reviewer found three issues in the new implementation; all three
+were fixed and independently rechecked:
+
+- A permanently ineligible queued target aborted the entire runner claim and
+  could starve unrelated work. Assignment pinning now returns a conclusive
+  ineligible result; existing unstarted-task bookkeeping fails/releases that
+  candidate and continues the bounded scan. Storage/lock errors still propagate.
+- Generic runtime-config redaction could corrupt a committed receipt when secret
+  declarations used names such as `name`, `activation_token`, or
+  `physical_fingerprint`. Only the framework-owned SQL receipt is preserved across
+  both Worker diagnostic-redaction passes. User/Elixir metadata still follows the
+  normal redactor. Actual Worker/Runtime/native DuckDB and DuckLake tests, including
+  receipt codec round trips, pass. Successful runtime-input redaction already
+  preserves the checked output receipt.
+- Initial activation accepted contradictory no-op evidence. It now requires SQL
+  `:written`; existing generations permit `:written` or `:no_op`. A PostgreSQL
+  regression verifies rejection preserves the task/hold and a valid completion
+  remains possible.
+
+Current checks: 541 fast Core tests; 14 native generation publication tests; seven
+focused PostgreSQL publication tests; all 96 selected runner-task storage tests
+(two excluded tiers); ten settlement/persistence-retry tests; Worker tests passed.
+The wider coordinator file passed 39/40 before its cancellation assertion was
+updated to wait for ordinary settlement; that updated test passed separately.
+Two tests requiring the new code to execute historical pre-contract manifests were
+retired under the reviewed no-backward-compatibility scope. Existing stale-contract
+Started rejection tests remain. The synthetic large-payload adapter explicitly
+models receipt transport; native tests qualify physical transaction behavior.
+
+At the user's request, stopped the old Phoenix process and started the umbrella
+server from this implementation worktree. Applied the additive development database
+migration in the existing OrbStack PostgreSQL container. Tidewave confirmed the
+implementation cwd, GenerationCommit loaded, runner wire version 16, and schema
+ready. Manifest runner contract is now 18. No native database service was installed.
+The interim review is accepted for its bounded slice, not final PR acceptance.
+
+
+### Clean-break deletion and runtime checkpoint
+
+Removed standalone marker initialization contracts and dispatch, run-local
+registration retries, target-repair storage/planner/API/CLI/View surfaces, and the
+old one-hour task-owned lock allocation. A reset-only migration drops the repair
+table and rejects historical marker tasks or repair state without deleting it.
+Fresh disposable OrbStack database `favn_test_atomic_763` passes exact schema
+diagnostics (fingerprint `2571f52f0d53c00155ca94ee1a9109ef5a913d674e69b6d32c27fb85f79f02db`).
+The old RC17 upgrade-compatibility test is retired with that unsupported contract;
+fresh readiness and refusal/preservation are covered by the new migration tests.
+
+Current checkpoint evidence:
+- Core: 540 passed after removing the retired initialization contract.
+- Fresh PostgreSQL atomic publication: 7 passed.
+- Migration readiness and non-destructive refusal: 2 passed.
+- Full first-write persisted pipeline: 1 passed; exactly one asset task, active
+  generation, no helper tasks, no remaining write lock.
+- Runner generation operations: 10 passed; SQL capabilities/session boundary: 24 passed.
+- Native DuckDB physical-instance/comment preservation through atomic publication: 1 passed.
+- General run lifecycle, settlement and context: 50 passed.
+- View facade and failed-run presentation: 71 passed.
+- General crash boundaries: 18 passed; local SIGKILL matrix: 1 passed across all
+  barriers and fresh BEAM reads. Native first-write and receipt tests were already
+  qualified earlier; this crash probe substitutes a durable SQL effect counter.
+- Security catalog: 30 browser routes, 63 API routes covered. Full security
+  qualification has not run for the candidate.
+
+The crash fixture now exercises retained rebuild discard operations with explicit
+rebuild-owned locks. It exposed an unstarted cancellation binding that blocked
+subsequent work under the same lock. Clear only the matching task binding, keep
+the rebuild lock/fence, and preserve that binding for a proven-safe preparation
+retry. Independent reviewer caught the missing safe-retry case in the first fix;
+regressions now cover retry through Started, expired/replaced owner rejection, and
+unchanged lock owner/fence/expiry after cancellation. Reviewer accepted the
+corrected bounded slice, explicitly not final PR acceptance.
+
+Phoenix is running from the implementation worktree (PID 38577, port 4173).
+Tidewave verified cwd, live orchestrator/repo, and ready schema after restart.
+Bulk code reload can temporarily purge instrumented store modules while the
+coordinator is live and exhaust supervision; restart after such edits rather than
+treating a reachable Tidewave endpoint alone as proof the orchestrator is running.
+
+Broader core-authority verification is still running. It exposed a check-rollback
+fixture that bypassed the new assignment pin; that fixture has been corrected,
+but the correction is not yet rerun. Full suites, final review, matched images and
+the fresh 35-asset/five-runner/0.25-vCPU stress comparison remain outstanding.
+
+
+### Broader verification follow-up
+
+The runner fast suite now passes all 288 tests. The broader authority run passed
+192 of 195 tests initially; the three remaining cases passed after fixing two
+fixtures to carry the assignment generation pin and making the negative queue
+probe immediate (it previously spent its full polling budget waiting for no work).
+The committed-result write-resolution fixture now supplies the typed receipt.
+Missing assignment pins fail before SQL connection and now use the worker's
+`asset_write_outcome: :not_started` metadata key, preserving safe-failure semantics.
+
+The full umbrella fast suite is running. It found one retained cleanup test still
+calling the deleted generation-registration phase. The test now verifies permit
+release after an unavailable saved outcome instead; all 11 cleanup unit tests pass.
+Native DuckDB and DuckLake publication tests pass again (14 total). Test tier guard
+and diff whitespace checks pass. Tidewave confirms the implementation cwd and live
+orchestrator/repo. Independent full code review is underway; stress qualification
+and final evidence acceptance remain outstanding.
+
+The local control driver now accepts an explicit case Compose override so quota
+and password bootstrap settings apply consistently to startup and observations.
+Historical case volumes remain untouched.

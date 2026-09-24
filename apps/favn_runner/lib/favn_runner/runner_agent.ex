@@ -43,7 +43,6 @@ defmodule FavnRunner.RunnerAgent do
     "relation_inspection",
     "generation_capabilities",
     "generation_marker_read",
-    "generation_marker_initialize",
     "generation_activate",
     "generation_reconcile",
     "generation_discard"

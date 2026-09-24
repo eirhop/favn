@@ -292,60 +292,17 @@ registration repair. Restoring this capability requires a separately authorized
 target-owned repair lifecycle. The recovery workflow below remains supported
 when a matching marker already exists; it is not a missing-marker repair.
 
-### Recover An Interrupted Initial Materialization
+### Initial Materialization And Unknown Writes
 
-Use target recovery only when Favn successfully materialized its initial
-generation but lost the control-plane activation step. Open the blocked asset
-and choose **Recover ownership**, or open `/recoveries`.
+A successful first materialization activates its generation when the orchestrator
+accepts the asset result. No separate target-registration or target-repair action
+is required. See the [generation publication contract](../architecture/target-generations-and-rebuilds.md#atomic-generation-publication).
 
-Planning first persists its control-plane intent, then queues read-only runner
-tasks for the fresh physical fingerprint and exact pre-existing Favn generation
-marker. It also requires the original Favn-created `building` generation, its
-successful materialization and historical descriptor, and the current logical
-relation and contract. An unmarked or unbound table cannot be recovered even
-when its schema looks identical. Tables whose markers predate relation-instance
-binding are deliberately refused. An interrupted initial generation has no
-active generation, so it is not eligible for a normal managed rebuild. The
-planning intent remains resumable across temporary runner unavailability;
-conclusive invalid or stale evidence closes it as a durable failed operation.
-The operator UI retains an opaque attempt identity in the recovery URL so a
-refresh or LiveView restart resumes the same durable intent; the operator reason
-is restored from the operation and is not copied into the URL.
-The supported non-destructive fallback is to restore a coordinated, verified
-control-plane and data-plane backup that contains the matching active binding
-and bound marker. If no such checkpoint exists, preserve the relation and
-escalate for an audited remediation; Favn has no generic in-place command that
-can prove ownership of that legacy table. Never reset only the control-plane
-database or assert ownership from schema alone.
-
-An administrator starts the exact plan id and hash. Favn persists intent, then
-atomically rechecks the operation
-fence, binding version, materialization, generation, fingerprint, and exact
-table-bound marker before activating the binding. **Reconcile marker** only
-rereads that existing marker and never creates or replaces one.
-
-This workflow cannot adopt a manually created or otherwise unproven table. A
-mismatch stops recovery and leaves ordinary writes blocked.
-
-```text
-mix favn.recover plan ASSET --reason REASON
-mix favn.recover start PLAN_ID --plan-hash HASH
-mix favn.recover status OPERATION_ID
-mix favn.recover reconcile OPERATION_ID
-```
-
-The private service API exposes the same contract:
-
-```text
-POST /api/orchestrator/v1/target-recoveries/plan
-POST /api/orchestrator/v1/target-recoveries
-GET  /api/orchestrator/v1/target-recoveries/:operation_id
-POST /api/orchestrator/v1/target-recoveries/:operation_id/reconcile
-```
-
-Planning requires operator authority. Start and reconcile require administrator
-authority. Every accepted or rejected mutation records bounded actor/session
-audit evidence.
+An unknown write remains protected because a missing reply does not prove that
+the data-system transaction rolled back. Do not rerun it or infer success from a
+stable generation marker alone. Administrator task-write resolution requires
+independent proof that the original attempt had no effect. Rebuild reconciliation
+remains available for managed rebuild operations.
 
 ### Rebuild A Managed Target
 

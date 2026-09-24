@@ -7,8 +7,6 @@ defmodule Favn.Contracts.ContractLockTest do
     GenerationDiscardRequest,
     GenerationDiscardResult,
     GenerationMarker,
-    GenerationMarkerInitializationRequest,
-    GenerationMarkerInitializationResult,
     GenerationReconciliationRequest,
     GenerationReconciliationResult,
     RelationInspectionRequest,
@@ -119,36 +117,6 @@ defmodule Favn.Contracts.ContractLockTest do
         :activation_token,
         :active_generation_id,
         :active_relation,
-        :target_id
-      ]
-    )
-
-    assert_runner_keys(
-      struct(GenerationMarkerInitializationRequest),
-      [
-        :active_relation,
-        :expected_physical_fingerprint,
-        :initialization_operation_id,
-        :initialization_token,
-        :manifest_content_hash,
-        :manifest_version_id,
-        :required_runner_release_id,
-        :target_generation_id,
-        :target_id
-      ]
-    )
-
-    assert_runner_keys(
-      struct(GenerationMarkerInitializationResult),
-      [
-        :completed_at,
-        :error,
-        :initialization_token,
-        :observed_marker,
-        :outcome,
-        :physical_fingerprint,
-        :required_runner_release_id,
-        :target_generation_id,
         :target_id
       ]
     )

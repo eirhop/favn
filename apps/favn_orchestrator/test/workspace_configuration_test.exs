@@ -105,7 +105,6 @@ defmodule FavnOrchestrator.WorkspaceConfigurationTest do
       admission: Store,
       resource_circuits: Store,
       target_generations: Store,
-      target_recovery: Store,
       rebuilds: Store,
       target_operation_locks: Store,
       materialization: Store,

@@ -113,5 +113,10 @@ The builder records source revision, Dockerfile hash, local adjustment and image
 Stop all profiles with the same Compose arguments plus `--profile '*'` and
 `down --remove-orphans`. Do not add `--volumes`: retain failed case data and raw
 evidence for upgrade/repair qualification. Full `up` initializes a fresh case;
-resume retained cases with explicit Compose service starts rather than re-running
+Use `control.py --compose-override /absolute/path/to/case.json` when a case overrides
+CPU quota or password bootstrap configuration; the driver applies the same file
+to startup and observation commands. The issue #763 candidate uses `cpus: 0.25`,
+a fresh Compose project, and runner/operator/control images from the same commit.
+
+Resume retained cases with explicit Compose service starts rather than re-running
 publication, activation or workloads. Never use global Docker cleanup for this drill.

@@ -134,11 +134,10 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   immutable generation rebuilds. Rebuilds use isolated candidates, frozen work
   items, sorted target locks, fenced recovery, physical validation, marker-based
   activation reconciliation, topological downstream repair, and explicit cleanup.
-- Operators can recover an interrupted initial generation from an immutable,
-  evidence-backed plan. Recovery requires the original Favn generation,
-  successful materialization, historical descriptor, fresh physical fingerprint,
-  and exact pre-existing table-bound marker; arbitrary, replaced, or unbound
-  relations cannot be adopted.
+- SQL writes publish generation identity in their managed transaction. Task
+  completion atomically accepts that identity and activates the initial binding;
+  no separate registration or target-repair workflow is required. Unknown writes
+  retain their protection. See the [generation contract](architecture/target-generations-and-rebuilds.md#atomic-generation-publication).
 - Orchestrator exposes monotonic lifecycle state and rejects new mutation or
   execution admission while draining. View shutdown is independent. Readiness
   flips before bounded Orchestrator shutdown;
@@ -219,7 +218,7 @@ operator contract is [`production/postgresql_operator_runbook.md`](production/po
 
 - [Lifecycle logs](storage/postgresql/architecture.md#lifecycle-messages-and-independent-diagnostics)
   derive from run events and share bounded history/replay with independent diagnostics.
-- Authenticated LiveView routes cover assets, pipelines, schedules, runs, rebuilds, recovery, logs,
+- Authenticated LiveView routes cover assets, pipelines, schedules, runs, rebuilds, logs,
   lineage, login/logout, and health through the public orchestrator facade.
 - Workspace-scoped live updates reread durable state after notification.
 - Asset and run detail distinguish requested anchors from exact effective runtime

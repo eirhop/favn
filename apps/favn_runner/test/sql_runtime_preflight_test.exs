@@ -276,7 +276,7 @@ defmodule FavnRunner.SQLRuntimePreflightTest do
 
     manifest = %Manifest{
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
       assets: assets,
       pipelines: [],
@@ -405,14 +405,28 @@ defmodule FavnRunner.SQLRuntimePreflightTest.OptionalSecretConnection do
 end
 
 defmodule FavnRunner.SQLRuntimePreflightTest.FakeExecutionAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.Connection.Resolved
   alias Favn.SQL.Capabilities
   alias Favn.SQL.Result
 
   def connect(%Resolved{}, _opts), do: {:ok, :conn}
   def disconnect(:conn, _opts), do: :ok
-  def capabilities(%Resolved{}, _opts), do: {:ok, %Capabilities{}}
+
+  def capabilities(%Resolved{}, _opts),
+    do: {:ok, %Capabilities{transactions: :supported, replace_table: :supported}}
 
   def materialize(:conn, _write_plan, _opts),
     do: {:ok, %Result{command: :insert, rows_affected: 1}}
+
+  def transaction(conn, fun, _opts), do: fun.(conn)
+  def materialize_in_transaction(conn, plan, opts), do: materialize(conn, plan, opts)
+  def relation(_conn, _ref, _opts), do: {:ok, nil}
 end

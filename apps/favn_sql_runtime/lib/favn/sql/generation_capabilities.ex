@@ -10,6 +10,7 @@ defmodule Favn.SQL.GenerationCapabilities do
   @type support :: :supported | :unsupported
 
   @type t :: %__MODULE__{
+          atomic_publication: support(),
           transactional_ddl: support(),
           isolated_candidates: support(),
           physical_inspection: support(),
@@ -20,7 +21,8 @@ defmodule Favn.SQL.GenerationCapabilities do
           max_identifier_bytes: pos_integer()
         }
 
-  defstruct transactional_ddl: :unsupported,
+  defstruct atomic_publication: :unsupported,
+            transactional_ddl: :unsupported,
             isolated_candidates: :unsupported,
             physical_inspection: :unsupported,
             atomic_swap: :unsupported,

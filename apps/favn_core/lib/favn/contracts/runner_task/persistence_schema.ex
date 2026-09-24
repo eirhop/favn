@@ -69,9 +69,6 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
   def payload(:generation_marker_read, request),
     do: Contracts.GenerationMarkerReadRequest.validate(request)
 
-  def payload(:generation_marker_initialize, request),
-    do: Contracts.GenerationMarkerInitializationRequest.validate(request)
-
   def payload(:generation_activate, request),
     do: Contracts.GenerationActivationRequest.validate(request)
 
@@ -120,7 +117,7 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
   end
 
   def result(kind, :succeeded, %{outcome: outcome})
-      when kind in [:generation_marker_initialize, :generation_activate] and outcome != :succeeded,
+      when kind in [:generation_activate] and outcome != :succeeded,
       do: {:error, :inconsistent_runner_task_outcome}
 
   def result(:generation_discard, :succeeded, %{outcome: outcome})
@@ -152,9 +149,6 @@ defmodule Favn.Contracts.RunnerTask.PersistenceSchema do
 
   # Resolving a write requires a result for the exact dispatched request.
   def completion(_kind, _request, nil, outcome) when outcome != :succeeded, do: :ok
-
-  def completion(:generation_marker_initialize, request, result, _outcome),
-    do: Contracts.GenerationMarkerInitializationResult.validate(result, request)
 
   def completion(:generation_activate, request, result, _outcome),
     do: Contracts.GenerationActivationResult.validate(result, request)

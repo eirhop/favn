@@ -341,7 +341,7 @@ defmodule FavnOrchestrator.RunnerOverviewTest do
       runner_pool: "default",
       required_runner_release_id: "rr_release",
       beam_node: "runner@node",
-      protocol_version: 15,
+      protocol_version: 16,
       lifecycle_mode: "elastic",
       busy_at_exit: false,
       task_counts: %{}

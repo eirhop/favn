@@ -61,7 +61,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
     |> Map.merge(runners())
     |> Map.merge(schedules())
     |> Map.merge(rebuilds())
-    |> Map.merge(recovery())
     |> Map.merge(errors())
     |> put_workspace_scope()
   end
@@ -1375,70 +1374,6 @@ defmodule FavnView.Dev.DesignSystem.Examples.Pages do
             }),
           items: items,
           items_has_more?: false
-        })
-      ]
-    }
-  end
-
-  defp recovery do
-    plan = fn permissions ->
-      %{
-        plan_id: "trp_9c1f4a7e2b8d",
-        plan_hash: "sha256:5833baa2c1d94f0ab7e6d2c8f1904ab3",
-        expires_at: ~U[2026-07-28 12:00:00Z],
-        permissions: permissions,
-        payload: %{
-          target_generation_id: "tg_2f19c4a8",
-          materialization_id: "mat_77b0c31d",
-          physical_fingerprint: "733c1d7d8a2b4e619f0c5d3e7a1b8c94",
-          source_manifest_id: "mv_5833baa2c1d94f0a"
-        }
-      }
-    end
-
-    %{
-      "target_recovery_page/page" => [
-        Example.attrs(
-          :empty,
-          %{},
-          "Nothing planned yet: the page refuses to imply a table can be adopted."
-        ),
-        Example.attrs(:planning, %{
-          target_id: "duckdb:main.mart_account_health",
-          planning?: true
-        }),
-        Example.attrs(
-          :plan_ready,
-          %{
-            target_id: "duckdb:main.mart_account_health",
-            plan: plan.(%{start: true})
-          },
-          "The backend granted the start permission, so the action is rendered."
-        ),
-        Example.attrs(
-          :plan_without_permission,
-          %{
-            target_id: "duckdb:main.mart_account_health",
-            plan: plan.(%{start: false})
-          },
-          "Same evidence, no permission: the control must not appear."
-        ),
-        Example.attrs(:operation_running, %{
-          target_id: "duckdb:main.mart_account_health",
-          plan: plan.(%{start: false}),
-          operation: %{
-            operation_id: "tro_41b8ce07d259",
-            state: :running,
-            phase: :activating_generation,
-            target_id: "duckdb:main.mart_account_health",
-            target_generation_id: "tg_2f19c4a8",
-            compatibility_result: %{status: :ready},
-            permissions: %{reconcile: true}
-          }
-        }),
-        Example.attrs(:error, %{
-          target_id: "duckdb:main.unknown_table",
-          error: "No proven generation exists for this target."
         })
       ]
     }
