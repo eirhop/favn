@@ -343,3 +343,83 @@ on 2026-09-24 after reproducing it separately through Tidewave. Required cases:
 resident/mixed normalization idempotence, production JSON validation followed by
 runtime normalization, and rejection of finite/nil/string infinity resident grace
 and infinity elastic grace. No broader architecture change is needed for this bug.
+
+
+## Resumed manual qualification: short assets and live View
+
+The successful unchanged-rc19 baseline used five fixed elastic runners and the
+0.5-vCPU orchestrator. No generated SQL asset contains a sleep. The unused
+`CRM_API_LATENCY_MS` setting was removed from the local overlay. The first
+35-target run finished in 62.640 seconds, with median runner asset execution
+498 ms (minimum 416 ms, p95 1,956 ms, maximum 2,979 ms). Its rerun finished in
+26.459 seconds, median 485 ms (minimum 426 ms, p95 2,414 ms, maximum 3,274 ms).
+Runner execution durations come from all 70 persisted successful task receipts,
+not SQL-log timing alone. Both runs produced exactly 35 materializations; all
+35 physical tables contained 1,000 distinct IDs and the expected sum 499,500.
+The sampled first-run CPU usage consumed 89.64% of the 0.5-core budget and
+86.02% of CPU periods were throttled. Emulation and image health probes are
+included; these are local comparative measurements, not production capacity.
+
+A fresh `favn-763-outage` case initially failed before any network fault fired:
+manifest activation left unresolved inspections, admission permanently rejected
+the run, and two runners exited with status 0. No Run row, SQL attempt, generation
+or materialization was created. Keep this separate from issue #763 reproduction.
+The no-trigger fault watcher exited without disabling the proxy. After explicitly
+restarting the two stopped runners, a third activation completed all 47 relation
+inspections successfully. Evidence is retained in the ignored
+`.favn/registration-stress/evidence/` directory; `/tmp` did not survive reboot.
+
+**Additional confirmed claim-protocol bug:** `RunnerTasks.finish_claim_error/2`
+finishes a failed store claim in `RunnerRegistry` as successful `NoWork(wait_ms: 0)`.
+`RunnerAgent` retains the command ID when retrying a storage failure. The registry
+therefore replays a successful zero-wait response to that retry. For an elastic
+runner, this schedules immediate `idle_expired`, sets `final_claim?`, and a further
+empty response stops the runner even with a one-hour configured idle grace. A
+side-effect-free Tidewave invocation of the actual registry callbacks reproduced
+the erroneous cached response. The stopped containers' logs show storage claim
+errors followed by clean draining; the protocol bug explains that sequence, but
+the original transient storage failure's cause is not yet established.
+
+The user additionally requested a production View with `/runners` held open so
+LiveView subscriptions contribute load. The image and HTTPS proxy are running.
+Browser connection is pending user handling of the local certificate warning;
+setting the isolated Entra-seeded simulation administrator's password also needs
+explicit approval after automatic approval review rejected that recovery action.
+Do not label the existing baseline as including a connected runners page.
+
+
+## First durable-trigger outage outcome
+
+At 15:25:58.470 UTC, the observer found Target01's authoritative success receipt
+and materialization while its generation remained building and no marker task
+existed. It disabled the orchestrator-only database proxy at 15:25:58.484 and
+restored it at 15:27:28.489 (90.005 seconds). The initial HTTP attempt could not
+connect because the Compose internal network did not publish the API port; after
+adding the explicit observation bridge, the exact same idempotency key and body
+were submitted. No new key masked the uncertain attempt.
+
+The outage reproduced the Sequencer checkout crash at 15:26:29.188. Its restart
+then triggered NotificationListener initialization failures: the actual Postgrex
+listen result was `{:eventually, ref}`, a documented successful deferred
+subscription, but the listener accepts only `{:ok, ref}`. Repeated bad init returns
+exhausted supervision and emptied the orchestrator runner registry. Three idle
+runner containers remained alive without registry presence, and two runners with
+expired assignments later rejected re-registration and stopped. The one-hour
+elastic idle grace used by this harness makes the missing idle reconnection more
+visible; it must not be mistaken for the production default grace.
+
+After recording those states and confirming no active assigned/running tasks,
+the five runners were explicitly restarted at 15:30:59. Recovery then completed
+34 proven successful materializations and activated all 34 corresponding
+generations. The run ended `error` at 15:31:52.471; the remaining task/claim had an
+unknown effect and its generation remained building. **This case reproduced the
+supervision/reconnection cascade, but did not strand a proven successful
+materialization after runner replacement.** Keep the unknown outcome protected.
+This is not yet a positive reproduction of the missing-marker production case.
+Its retained volume is useful for forward-upgrade unknown-outcome qualification.
+
+Independent review also rejected the first reservation-release-only proposal for
+the false-NoWork bug: replaying an earlier empty subattempt can hide a later
+committed assignment. The revised plan checks exact-session existing assignment
+on empty-receipt replay and fences local reservations with fresh tokens, without
+new task acquisition, lease renewal, receipt rewriting or old-session adoption.

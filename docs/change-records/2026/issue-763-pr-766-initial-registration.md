@@ -612,3 +612,74 @@ through Tidewave. Make resident normalization accept its canonical atom
 string `"infinity"`, and infinity for elastic mode. Verify mixed-pool idempotence
 and production JSON validation followed by runtime normalization. This startup
 bug is independent of registration recovery and does not justify a larger design.
+
+
+### Reviewed qualification-driven correction: failed claim replay
+
+The short-asset OrbStack case exposed a second lifecycle defect before fault
+injection. A failed durable task claim is cached by `RunnerTasks`/`RunnerRegistry`
+as successful `NoWork` with zero wait. Replaying the same claim command then
+expires an elastic runner's idle grace and can shut it down immediately.
+A side-effect-free Tidewave callback probe confirms that reply shape; container
+logs show two such exits. The transient storage failure itself remains under
+investigation.
+
+Revised correction after independent review: keep store failure distinct from a
+committed empty claim. Release only the matching process-local in-flight claim
+reservation after a store failure, so a retry with the same command ID re-enters
+the durable store. Do not fabricate empty work, create a fresh command ID, or cache
+errors forever. Give every reservation a fresh local token, returned with the
+claimed Session and required for both success completion and failure release.
+Match that token, session generation, command ID and claiming status; a delayed
+completion for the same command must not release its later reservation. Registry
+loss during best-effort completion/release preserves the original durable result.
+
+Reservation release alone is insufficient: logical claim X may commit empty X:0,
+then assign a task at X:1 after a queue wake race. A retry starts again at X:0.
+On replay of an empty durable receipt only, reconcile an existing compatible
+active assignment for the exact runner/session under the existing claim lock,
+owner and deployment checks. Never acquire queued work, renew a lease, change a
+fence, rewrite the empty receipt, or alter a nonempty receipt's replay. An empty
+receipt remains empty if only new queued work exists. Old-session work cannot be
+adopted. This persistence replay refinement survives registry loss without a new
+durable cursor or a process-local recovery assumption.
+
+Focused tests cover earlier empty receipt then later committed assignment with
+lost reply (including the final enrolled subattempt), same-ID replay and registry
+loss, unchanged lease/fence/demand, queued-only empty replay, incompatible/other
+session rejection, exact nonempty replay, same-ID stale completion, and transient
+claim failure without elastic idle shutdown. Estimated production change: 40–100
+added and 10–35 deleted lines; focused tests 150–260 added lines. Wire contracts,
+serialized types and schema stay unchanged; the empty-receipt replay semantics are
+explicitly refined. This supplements the preserved registration baseline.
+
+The local qualification also now includes the production View with an authenticated
+runners page held open, as requested by the user. Record connected-page evidence
+and separate it from earlier measurements made without that page.
+
+
+### Qualification finding within storage failure containment
+
+The 90-second proxy outage reproduced the planned Sequencer checkout exception.
+Its restart exposed a second concrete containment defect: NotificationListener
+accepts only `{:ok, reference}` from Postgrex.Notifications.listen/2, although the
+pinned dependency also returns `{:eventually, reference}` for a disconnected,
+automatically reconnecting listener. Returning that tuple from GenServer.init/1
+causes immediate restart failures; the backend then loses its restart budget and
+the orchestrator's one-for-all tree loses runner presence and live owners.
+
+Extend slice 1's existing transient-storage containment to accept both documented
+subscription results, retain every reference and let Postgrex reconnect. Preserve
+real initialization errors. Add focused evidence for startup while unavailable
+and subscription delivery after connection recovery. The existing independent
+consumer supervisor and Sequencer bounded retry remain necessary. This correction
+is estimated at 5–15 production lines plus 40–90 focused test lines, within slice
+1's production budget; additional test work will be reported against its budget.
+
+
+Independent reviewer `review_763_plan` approved both the revised failed-claim
+correction and the deferred notification subscription correction on 2026-09-24.
+The reviewer required valid `{:stop, reason}` for real listener init failures and
+retention of periodic reconciliation: subscriptions reconnect, but notifications
+missed during the outage are not replayed. Existing outbox, projection and
+admission pollers remain. This review supplements baseline `f0b5ae52`.
