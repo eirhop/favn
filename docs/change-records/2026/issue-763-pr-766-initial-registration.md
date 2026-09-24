@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix, lifecycle refactor, migration |
 | Primary issue | [#763](https://github.com/eirhop/favn/issues/763) |
-| Pull request | Pending |
+| Pull request | [#766](https://github.com/eirhop/favn/pull/766) |
 | Related work | [#762](https://github.com/eirhop/favn/issues/762); the ownership and cleanup changes in PRs #754 and #760 |
 | Affected areas | Orchestrator registration, runner-task observation, PostgreSQL persistence, Core task decoding, operator recovery and View diagnostics |
-| Approved plan commit | Recorded in the immediate PR-number update |
+| Approved plan commit | [`f0b5ae52`](https://github.com/eirhop/favn/commit/f0b5ae52cb627972e7b4b30aa2db2710fa71b293) |
 | Last updated | 2026-09-24 |
 
 ## One-minute summary
@@ -558,6 +558,11 @@ independent final review will be added before marking the PR ready.
 
 The scratchpad records completed local investigation probes. They establish the
 failure mechanisms and repeated work described above, not the proposed fix.
+
+Documentation validation: relative links resolve, `git diff --check` passes, and
+both Mermaid diagrams in the approved baseline rendered on GitHub without syntax
+or layout corrections. Application implementation has not started despite the
+workflow status advancing when the draft PR was opened.
 
 ### Not verified
 
