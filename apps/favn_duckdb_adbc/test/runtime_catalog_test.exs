@@ -131,6 +131,24 @@ defmodule FavnDuckdbADBC.RuntimeCatalogTest do
     end
   end
 
+  defmodule EmptyGroupAsset do
+    use Favn.SQLAsset
+    relation(connection: :runtime_test, catalog: "mart", schema: "main", name: "empty_group_rows")
+    materialized({:incremental, strategy: :replace_groups, replacement_key: [:id]})
+
+    replacement_scope :incremental do
+      ~SQL"SELECT 1 AS id"
+    end
+
+    replacement_scope :full do
+      ~SQL"SELECT 1 AS id"
+    end
+
+    query do
+      ~SQL"SELECT id, 42 AS value FROM replacement_scope() WHERE false"
+    end
+  end
+
   for backend <- [:duckdb, :ducklake] do
     test "#{backend}: retry qualification uses native destination type and excludes candidates" do
       with_session(unquote(backend), fn session ->
@@ -188,7 +206,7 @@ defmodule FavnDuckdbADBC.RuntimeCatalogTest do
       end)
     end
 
-    test "#{backend}: runner automatically publishes a table with no checks or freshness configuration" do
+    test "#{backend}: runner atomically publishes managed SQL mutations and preserves skipped-write identity" do
       root = Path.join(System.tmp_dir!(), "runtime-runner-#{System.unique_integer([:positive])}")
       File.mkdir_p!(root)
       backend = unquote(backend)
@@ -242,7 +260,14 @@ defmodule FavnDuckdbADBC.RuntimeCatalogTest do
         )
       end
 
-      for module <- [PlainAsset, UnqualifiedAsset, AppendAsset, WindowAsset, GroupAsset] do
+      for module <- [
+            PlainAsset,
+            UnqualifiedAsset,
+            AppendAsset,
+            WindowAsset,
+            GroupAsset,
+            EmptyGroupAsset
+          ] do
         definition = module.__favn_sql_asset_definition__()
 
         {:ok, package} =
@@ -284,7 +309,10 @@ defmodule FavnDuckdbADBC.RuntimeCatalogTest do
           manifest_content_hash: String.duplicate("a", 64),
           required_runner_release_id: "release",
           logical_target_id: inspect(module),
-          target_generation_id: "generation"
+          target_generation_id: "11111111-1111-4111-8111-111111111111",
+          target_operation:
+            if(module == UnqualifiedAsset, do: nil, else: :normal_materialization),
+          write_relation: asset.relation
         }
 
         version = %Favn.Manifest.Version{
@@ -292,23 +320,101 @@ defmodule FavnDuckdbADBC.RuntimeCatalogTest do
           content_hash: work.manifest_content_hash
         }
 
-        for attempt <- 1..2 do
-          work = %{work | attempt: attempt}
+        expected =
+          if module != UnqualifiedAsset do
+            %Favn.Contracts.GenerationPrecondition{
+              mode: :initial,
+              marker: %Favn.Contracts.GenerationMarker{
+                target_id: work.logical_target_id,
+                active_relation: asset.relation,
+                active_generation_id: work.target_generation_id,
+                activation_operation_id: "initial-runtime",
+                activation_token: "initial-runtime",
+                activated_at: ~U[2026-09-24 12:00:00Z]
+              }
+            }
+          end
+
+        attempts = if module in [PlainAsset, GroupAsset, WindowAsset], do: [1, 2, 3], else: [1, 2]
+
+        Enum.reduce(attempts, expected, fn attempt, expected ->
+          work = %{work | attempt: attempt + 1}
           {:ok, p} = Publication.new(asset, work, "workspace", "latest")
           work = %{work | runtime_publication: p}
 
           context = %Favn.Run.Context{
             run_id: "run",
             window: window,
-            params: %{include_rows: attempt == 1},
+            params: %{include_rows: attempt in [1, 3]},
             run_started_at: ~U[2026-01-01 12:00:00Z]
           }
 
-          assert {:ok, output} =
-                   Favn.SQLAsset.Runtime.run_manifest(asset, package, version, %{}, work, context)
+          execution =
+            if module == PlainAsset and attempt in [1, 3] do
+              sql = "SELECT false AS passed"
 
-          assert output.runtime_publication["publication_id"] == p.publication_id
-        end
+              check =
+                Favn.SQL.Check.new!(
+                  name: :skip_write,
+                  when: :target_exists,
+                  uses_query?: false,
+                  uses_target?: false,
+                  at: :before_materialize,
+                  on_violation: :skip_materialization,
+                  sql: sql,
+                  template: Favn.SQL.Template.compile!(sql, file: "native-skip.sql", line: 1)
+                )
+
+              {:ok, skipped} =
+                Favn.Manifest.ExecutionPackage.new(asset.ref, %{
+                  package.sql_execution
+                  | checks: [check]
+                })
+
+              skipped
+            else
+              package
+            end
+
+          result =
+            Favn.SQLAsset.Runtime.run_manifest(
+              asset,
+              execution,
+              version,
+              %{},
+              work,
+              context,
+              expected
+            )
+
+          assert {:ok, output} = result
+
+          if module == PlainAsset and attempt == 3 do
+            assert output.write_outcome == :no_op
+            assert is_nil(output.runtime_publication)
+          else
+            assert output.runtime_publication["publication_id"] == p.publication_id
+          end
+
+          if attempt == 1, do: assert(output.write_outcome == :written)
+
+          if module == GroupAsset and attempt == 3,
+            do: assert(output.group_replacement.operation == :replaced)
+
+          if module == EmptyGroupAsset and attempt == 1,
+            do: assert(output.group_replacement.operation == :bootstrap_empty)
+
+          if expected do
+            assert :ok =
+                     Favn.Contracts.GenerationCommit.validate(output.generation_commit, expected)
+
+            %{
+              expected
+              | mode: :existing,
+                physical_fingerprint: output.generation_commit.physical_fingerprint
+            }
+          end
+        end)
 
         {:ok, conn} =
           ADBC.connect(resolved, duckdb_adbc: Application.fetch_env!(:favn, :duckdb_adbc))
@@ -328,10 +434,17 @@ defmodule FavnDuckdbADBC.RuntimeCatalogTest do
               AppendAsset -> 2
               PlainAsset -> 1
               UnqualifiedAsset -> 1
+              GroupAsset -> 1
+              WindowAsset -> 1
               _ -> 0
             end
 
           assert count == expected_count
+
+          if module == GroupAsset do
+            assert {:ok, %{rows: [%{"id" => 1, "value" => 42}]}} =
+                     ADBC.query(conn, "SELECT * FROM mart.main.group_rows", [])
+          end
 
           if module == UnqualifiedAsset do
             assert {:ok, %{rows: [%{"relation_catalog" => "mart", "relation_schema" => "sales"}]}} =

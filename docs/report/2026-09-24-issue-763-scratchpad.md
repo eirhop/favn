@@ -856,3 +856,40 @@ workers/repair promises or old protocol numbers. Candidate fault injection now
 requires explicit `--generation-state active`: accepted result and active
 generation are atomic, so the historical `building` trigger cannot fire on a
 correct candidate. This tests database loss after acceptance, not the removed gap.
+
+
+### Green suite and first matched stress run
+
+The clean full umbrella fast rerun passed: **3,906 checks**, including 961
+orchestrator, 616 PostgreSQL, 289 runner and 844 View checks. The earlier
+manifest-inspection timeout did not recur in its 33-test module with the failing
+seed or the clean umbrella run; retain the initial failure log as evidence of an
+intermittent SQL Sandbox lifecycle interaction. No production change was made
+for that unconfirmed issue.
+
+Independent code review approved candidate `84248a5c74f46835bc5a0f1bc7662708c539ac29`.
+Native qualification expanded to 52 passing checks across the generation and
+runtime-catalog modules. The real Runtime uses pinned initial then existing
+evidence on DuckDB and DuckLake for table replacement, append, window delete/insert,
+group replacement (including nonempty replacement after deletion), empty group
+bootstrap and existing-target check no-op. The authored skip policy requires
+`when: :target_exists`; on first creation that guard skips the check and the table
+is written. Direct native callback tests additionally reject publication of an
+absent initial target. No weakening of unknown commit semantics.
+
+Matched local images use `84248a5c` (control image ID
+`sha256:8f31aad047e08d5d3c39e368032d626d11158c8ac71df74644f11a01259a7954`;
+runner ID `sha256:a31b4a97766a3eb64af53b1fdb4507f2bd3c577777bd6d5ad07093a9775cadfd`).
+The fresh `favn-763-atomic` project retains the original 35-target fixture hash.
+Bootstrap and activation needed a temporary 1-CPU allowance for image health
+checks, matching the documented baseline allowance. Restored 0.25 CPU before
+any workload; five distinct runners registered, no runs existed. Old quarter
+project containers stopped without deleting volumes.
+
+First run: `run_api_f388eb43a63b6a9303c81dd6837ab226`. Evidence under ignored
+`.favn/registration-stress/atomic-case/`. No injected faults; no authenticated
+View browser subscription because the local certificate warning requires user
+interaction. Do not count merely running View as live browser load.
+
+Phoenix restarted from the implementation root (PID 51731, port 4173); Tidewave
+verified cwd, live repo/orchestrator and runner contract 18.

@@ -259,6 +259,46 @@ defmodule FavnDuckdbADBC.GenerationPublicationTest do
         assert {:ok, %{rows: [%{"id" => 2}]}} = ADBC.query(c.conn, "SELECT * FROM #{c.table}", [])
       end
 
+      test "empty bootstrap, incremental writes, group replacement and no-op preserve identity",
+           c do
+        assert {:ok, receipt} = write(c, "SELECT 1::INTEGER AS id WHERE false")
+
+        existing = %{
+          c.expected
+          | mode: :existing,
+            physical_fingerprint: receipt.physical_fingerprint
+        }
+
+        mutations = [
+          ["INSERT INTO #{c.table} VALUES (1), (2)"],
+          ["UPDATE #{c.table} SET id=3 WHERE id=2"],
+          ["DELETE FROM #{c.table} WHERE id=1", "INSERT INTO #{c.table} VALUES (4), (5)"],
+          []
+        ]
+
+        for statements <- mutations do
+          assert {:ok, ^receipt} =
+                   ADBC.transaction(
+                     c.conn,
+                     fn tx ->
+                       with {:ok, _} <- ADBC.prepare_generation_write(tx, existing, []) do
+                         Enum.each(statements, fn sql ->
+                           assert {:ok, _} = ADBC.execute(tx, sql, [])
+                         end)
+
+                         ADBC.publish_generation_write(tx, existing, [])
+                       end
+                     end,
+                     []
+                   )
+        end
+
+        assert {:ok, %{rows: [%{"id" => 3}, %{"id" => 4}, %{"id" => 5}]}} =
+                 ADBC.query(c.conn, "SELECT id FROM #{c.table} ORDER BY id", [])
+
+        assert :ok = GenerationCommit.validate(receipt, existing)
+      end
+
       test "failure after publication rolls back table and marker", c do
         assert {:error, %Error{}} =
                  ADBC.transaction(
