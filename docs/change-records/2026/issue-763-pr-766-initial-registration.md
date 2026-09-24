@@ -1249,9 +1249,10 @@ Local verification: the two CI regressions plus deterministic retry test pass
 (three tests; 333 distributed simulated runners, p95 Started 1,217ms). Four
 standalone tooling tests cover no automatic POST retry/redirect, malformed
 responses, evidence exclusivity and SIGTERM unwinding; Quick checks now runs
-these unit tests, with no Docker simulation CI job. Format, no-Python/legacy/tag
-checks, umbrella-runner tests, compile warnings and quick static/security checks
-pass. Source preparation matches six original fixture/build inputs byte-for-byte.
+these unit tests, with no Docker simulation CI job. Format, no-Python/asset-DSL/tag checks, umbrella-runner tests, compile warnings
+and quick static/security checks pass. The next GitHub run exposed two scratchpad
+phrases caught by the removed-architecture guard; clarify them as restarting
+runners and rerun that guard successfully. Source preparation matches six original fixture/build inputs byte-for-byte.
 Read-only snapshot/observe, a one-second fault, trigger timeout, SIGTERM fault
 restoration and absence of retained watcher sessions were checked locally. One
 additional 35-asset run through the Elixir driver passed; the original eight-run /

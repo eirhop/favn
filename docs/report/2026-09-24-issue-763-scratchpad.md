@@ -414,7 +414,7 @@ the five runners were explicitly restarted at 15:30:59. Recovery then completed
 generations. The run ended `error` at 15:31:52.471; the remaining task/claim had an
 unknown effect and its generation remained building. **This case reproduced the
 supervision/reconnection cascade, but did not strand a proven successful
-materialization after runner replacement.** Keep the unknown outcome protected.
+materialization after restarting the runners.** Keep the unknown outcome protected.
 This is not yet a positive reproduction of the missing-marker production case.
 Its retained volume is useful for forward-upgrade unknown-outcome qualification.
 
@@ -522,7 +522,7 @@ manually restarted. The run ended `error` at 16:29:34.126 with 34 successful ass
 tasks and one protected unknown outcome. Four runners remained registered/idle;
 the runner with the expired assignment rejected registration and exited. The
 registry-wide loss seen with rc19 did not recur in this test. An unknown write
-requires reconciliation; neither a table count nor runner replacement permits
+requires reconciliation; neither a table count nor restarting a runner permits
 blind retry. Do not report this as all-success recovery or proof the original
 missing-marker bug is fixed.
 
