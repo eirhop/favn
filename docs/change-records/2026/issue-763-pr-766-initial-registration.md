@@ -11,6 +11,13 @@
 | Approved plan commit | [`f0b5ae52`](https://github.com/eirhop/favn/commit/f0b5ae52cb627972e7b4b30aa2db2710fa71b293) |
 | Last updated | 2026-09-24 |
 
+> **Current direction:** the user has explicitly removed historical repair and
+> backward-compatibility requirements. The original approved baseline is retained
+> below for review. The clean-break architecture in
+> [the latest plan revision](#clean-break-plan-revision-atomic-generation-publication)
+> supersedes the target-owned registration coordinator and repair-first order.
+> That revision was independently approved on 2026-09-24; implementation follows it.
+
 ## One-minute summary
 
 A successful asset write can become permanently unusable when the database is
@@ -804,3 +811,221 @@ the case for forward-upgrade qualification and do not enlarge the workload to
 100 assets before resolving this failure. Additional activation classification
 and health-probe defects require follow-up, while native CPU attribution remains
 outstanding. Full timestamped evidence and local filenames are in the scratchpad.
+
+
+### Positive-reproduction plan review and repair-first order (2026-09-24)
+
+Independent reviewer `review_763_plan` rechecked the retained quarter-CPU
+reproduction against the implementation and approved the existing durable
+registration design. One saved 30-second registration retry exhausted and the
+run invoked failure cleanup; successful materialization settlement continued
+after the run failed. The later settled snapshot contains 35 materializations
+and 29 building generations. The earlier `quarter-stranded-proof.json` contains
+34 materializations and 30 building generations; these are different observation
+times, not contradictory simultaneous results. Import and repair must collect
+current exact receipts and write holds again. Cancelled marker tasks are not
+proof that no external effect occurred.
+
+The user prioritizes a supported way out of the failed environment: the old
+production repair failed too, leaving reset as the only operational escape.
+Implement the registration storage/authority foundation first (slice 4), then
+the shared driver and historical repair (slices 5/6), bringing forward the
+necessary scalar observation work from slice 2 before enabling that driver.
+Complete the remaining observation/decoding improvements and fresh-run
+qualification afterward. This changes sequencing, not the approved ownership,
+attestation, unknown-outcome or retention contracts. In particular, do not add
+a temporary second repair executor.
+
+The first live acceptance gate is an in-place upgrade and supported repair of
+the retained failed case. Preserve its failed run history, successful asset
+receipts and physical data. Prove exact eligible targets become active with no
+additional asset executions. Targets with unresolved effects must remain
+protected with a specific supported resolution path. After repair, demonstrate
+that a new eligible run can start and finish; repair alone is not sufficient if
+admission remains blocked. Then rerun an equivalent fresh initial workload at
+0.25 CPU and exercise registration restart/timeout/recovery. A passing run does
+not establish an absolute guarantee against all future failures.
+
+Two adjacent findings stay explicit: activation currently converts some
+pre-mutation transient inspection failures into durable operator decisions,
+and the release-RPC health probe behaves poorly at the constrained quota.
+Concrete phase-aware activation handling and any probe replacement require
+reviewed additions before their implementation. Keep the original probe in the
+primary comparison and report a changed-probe comparison separately.
+
+
+## Clean-break plan revision: atomic generation publication
+
+### Decision and scope
+
+The user confirms there are no users to migrate and their deployment has already
+been reset. They prefer a clean breaking change with as little lifecycle code
+as possible. Historical target import, missing-marker attestation, forward
+repair of rc19 volumes and compatibility executors are no longer requirements.
+The repair-first order immediately above is superseded by this decision. Keep
+the failed local reproduction as evidence, not as a migration acceptance target.
+Do not reset or rewrite it during implementation.
+
+The source offers a smaller solution than the original target-owned coordinator:
+all managed persisted targets are SQL tables or incremental tables; views and
+Elixir assets do not get target descriptors. Managed native writes already
+commit runtime-catalog metadata inside their existing SQL transaction. Commit
+generation identity and physical evidence in that transaction too. Accept that
+evidence and activate the initial binding inside the existing PostgreSQL runner
+completion transaction. There is then no separate initial-registration work to
+be stranded by a run timeout.
+
+This revision supersedes original slices 4–7. It does not implement a new
+registration table, background dispatcher, registration lease or retry policy.
+The completed consumer/claim fixes remain. Scalar observation and decoder
+optimizations remain candidates, but are now measurement-driven: first measure
+the removal of separate helper tasks before adding another performance refactor.
+The manual harness remains the qualification method; rebuild/transaction outcome
+reconciliation and general held-write protections remain supported.
+
+### Write and completion contract
+
+```mermaid
+sequenceDiagram
+    participant P as PostgreSQL task authority
+    participant R as Runner SQL transaction
+    participant D as Data system
+    P->>R: Exact fenced asset task and generation identity
+    R->>D: Validate prior marker and physical instance
+    R->>D: Write table, generation marker and runtime metadata
+    D-->>R: Commit or explicit uncertain outcome
+    R->>P: Original task result with typed generation evidence
+    P->>P: Atomically accept receipt, resolve write hold and activate binding
+    P-->>R: Idempotent completion acknowledgement
+    Note over P,R: Run settlement observes the original durable result; no registration helper tasks
+```
+
+1. Require explicit adapter support for atomic generation publication before a
+   persisted managed write starts. General transaction support is insufficient.
+   DuckDB ADBC is the shipped generation adapter and must qualify real native
+   transactions, including DuckLake. Unsupported adapters fail before mutation;
+   there is no marker-free fallback or post-write helper path.
+2. Add a bounded typed generation receipt to framework-owned runner evidence.
+   Validate it against pinned target, generation, relation, manifest/release and
+   the exact task result. Keep it out of user-controlled application metadata.
+   Bump the runner task contract and reject mixed runner/orchestrator versions.
+3. Prepare and publish on the same owner-exclusive connection and transaction
+   used for table, incremental and group-replacement writes. No nested
+   transaction and no independent marker retry. The runner carries the exact
+   expected generation marker, physical fingerprint and derived instance identity
+   from a bounded typed precondition captured in the existing exclusive task
+   assignment transaction, after the nonblocking target reservation check.
+   Persist it with the assignment generation and carry it separately from
+   immutable enqueued work. Hydration, command-receipt replay and registry restart
+   must reuse the saved precondition; only a new proven-safe assignment may repin.
+   Initial mode requires both table and marker absent and uses deterministic
+   identity tied to the generation. After its completion, the next queued window
+   receives the exact active marker, fingerprint and derived instance identity.
+   An existing unbound table is never automatically adopted. Recheck control-plane
+   eligibility at Started and physical evidence before mutation. Read generation
+   metadata through a small transaction-local helper; review metadata row-lock
+   order against deployment/rebuild rather than nesting a public transaction.
+4. Verify an existing marker and its physical-instance binding before any
+   managed mutation. A controlled table replacement may rebind the replacement
+   inside the same transaction, preserving the pinned generation marker identity.
+   An absent, foreign or unbound prior marker for an active target fails closed.
+   Rebuild candidates remain isolated and use the existing rebuild activation
+   contract; ordinary writes after rebuild pin the resulting active marker.
+   Ordinary writes that change the expected physical shape roll back and require
+   rebuild; they cannot silently replace the authoritative fingerprint.
+5. Inspect and construct bounded physical evidence before commit. If marker or
+   evidence publication fails, the entire asset transaction rolls back. A failed
+   commit acknowledgement remains unknown and cannot be retried as a safe
+   failure. Existing qualified rejected-transaction replay may repeat the whole
+   transaction only with proven no-effect rejection; it cannot retry a marker
+   separately or interpret an absent marker as no effect.
+6. A first-write check that skips materialization cannot report a successful
+   generation or create a successful materialization fact for an absent table.
+   Return a conclusive safe failure with check evidence. A no-op against an
+   existing valid generation preserves its marker and existing binding.
+7. Settle validated generation evidence in `RunnerTasks.Store.complete/1`,
+   inside the same transaction as the exact terminal task receipt and write-hold
+   resolution, before an ownership-only claim can be released. This common boundary covers both normal materialization claims
+   and sequential ownership-only claims. Do not rely on the later run-owned
+   `FinishMaterialization` call for binding activation. Later freshness and
+   materialization-ledger settlement retain their existing durable run behavior.
+8. Activation uses the accepted original write as authority; it neither renews
+   execution authority nor executes SQL. Cancellation, run failure or a lost
+   acknowledgement cannot erase a committed result. A retry of the same result
+   observes the same receipt and binding without another asset execution.
+   If desired deployment changed while the original write was running, retain
+   the current desired descriptor and classify the accepted source generation
+   conservatively; never overwrite new desired metadata or reject a valid
+   committed write merely because its run has stopped.
+
+This removes the reproduced registration failure class, not distributed-system
+uncertainty. A runner can die after a data-system commit and before its result
+is durable. Preserve the existing explicit unknown-write hold. Current asset
+resolution supports verified no-effect, not successful reconciliation of a
+committed-but-unreported asset attempt. A stable generation marker cannot prove
+an individual attempt; exact runtime-publication reconciliation is outside this
+revision. A missing acknowledgement is never proof that the asset may be blindly
+rerun. General cancellation, run settlement and rebuild reconciliation remain.
+
+### Deletions and rollout
+
+Remove the run-owned initial reconciler, registration retry timers/events and
+post-step continuations, standalone marker-initialization runner task, its
+one-hour task-owned write-lock fallback, and initial-target repair planner/
+executor/API/UI. Retain or rename the separate held-write resolution boundary
+so removing `TargetRecovery` does not remove unknown-write protections. Remove
+stale canonical docs and tests for the deleted public behavior; replace them
+with the new transaction and completion contracts.
+
+Use a fresh deployment with newly built orchestrator and runner images from
+the same revision. Existing manifests/tasks using the old runner contract are
+not supported. No automatic data migration, adoption or cleanup of old targets.
+A small forward schema migration adds the bounded per-assignment precondition
+column and may remove retired repair-only storage and constraints. It does not
+promise in-place recovery of old execution history.
+Review each retained table/field reference before deleting it.
+
+### Revised implementation budget and acceptance
+
+The original budget table remains unchanged as the historical approved baseline.
+These estimates replace the unimplemented lifecycle/repair slices. Generated
+files, formatter-only changes and this record are excluded.
+
+| Slice | Production added | Production deleted | Supporting added | Supporting deleted |
+| --- | ---: | ---: | ---: | ---: |
+| Typed evidence and transactional runner/adapter publication | 250–450 | 150–300 | 300–550 | 100–250 |
+| Atomic completion and deletion of run registration/repair routes | 150–300 | 1,500–2,800 | 300–550 | 500–1,000 |
+| Contract/schema gate, canonical docs and operator cleanup | 60–120 | 150–300 | 100–200 | 100–250 |
+
+Verify native first write, ordinary table replacement, incremental and group
+replacement, empty bootstrap, initial check skip, existing-target no-op, foreign
+marker, identical out-of-band replacement and unsupported adapters. Inject
+marker/body failure and uncertain commit acknowledgement; prove rollback or
+unknown without a duplicate asset write. At the persistence boundary test exact
+receipt replay and registry restart preserving the exact assignment precondition,
+two initially queued windows with external ALTER or identical replacement between
+them, wrong generation/target/manifest/assignment, stale owner,
+cancellation and run failure after commit, a changed desired deployment, and
+sequential ownership-only completion. Force a PostgreSQL rollback after binding
+mutation to prove receipt, binding and hold settlement are all-or-nothing. Qualify
+atomic publication on native DuckDB and DuckLake. Restart during accepted-result delivery
+and verify the existing settlement path does not dispatch another asset write.
+
+Build both images and run the same fresh 35-asset, five-runner 0.25-CPU workload
+with the original health probe. If activation still needs the baseline's temporary
+1-CPU setup allowance, record it separately from runtime qualification. Require
+all successful persisted targets active,
+no registration helper tasks and no stranded successful receipt. Verify physical
+rows and execution counts, repeat warm runs, then bounded database latency/outage
+and restart cases. Report unknown-write cases separately from the eliminated
+registration failure. Authenticate View and keep the runners page open when the
+local TLS setup permits; do not claim browser load when it is absent.
+
+
+### Independent review of the clean-break revision
+
+Reviewer `review_763_plan` inspected the source and revised plan, required the
+assignment-time precondition correction, then rechecked the written changes on
+2026-09-24. Verdict: **approved**, with no blocking plan findings. This approves
+implementation and deletion scope, not production readiness. Native DuckDB/
+DuckLake qualification and the fresh workload comparison remain required.

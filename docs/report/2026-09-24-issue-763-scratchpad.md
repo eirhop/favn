@@ -627,3 +627,57 @@ Ignored evidence: `quarter-35-ready-load.jsonl`, `quarter-run-api.json`,
 `quarter-stranded-proof.json`, `quarter-35-settled.json`, `quarter-data-audit.log`,
 `quarter-timeline.jsonl`, `quarter-cpu-summary.json`, and activation trace/intervention
 files under `.favn/registration-stress/evidence/`. Source image remains d6777925.
+
+
+### Repair-first implementation decision
+
+The user reports that production repair also failed and prevented a subsequent
+run, forcing a full environment reset. Current `TargetRecovery` confirms why
+it cannot repair the no-marker variant: inspection requires a durable relation
+instance ID, then `existing_marker/6` rejects a missing marker. Existing recovery
+only restores a binding around an already matching marker. The approved shared
+registration lifecycle must support narrowly approved first-marker completion
+and retain uncertainty protections. Prioritize this retained-case repair gate
+before fresh-run prevention/performance qualification; do not discard volumes or
+rewrite terminal run history. Independent re-review approved the architecture;
+sequencing re-review is in progress. No new application code has been edited
+for the registration lifecycle yet.
+
+
+### User removes compatibility/repair requirement
+
+The immediately preceding repair-first decision is superseded: no users need
+migration and the user's environment is reset. Do not build historical import,
+adoption or an additional cleanup executor. The proposed smaller architecture
+publishes generation evidence inside the managed asset transaction and settles
+binding activation in the durable runner completion transaction, covering both
+pipeline and sequential ownership-only tasks. Independent review independently
+favors this direction; concrete revised plan review is pending. The first-write
+no-op and ordinary CREATE OR REPLACE physical-identity cases need explicit tests.
+Only documentation changed so far; no lifecycle implementation was discarded.
+
+Tidewave source lookup confirms the existing TargetRecovery entry point. The
+active umbrella is the root development checkout, not the candidate image. Its
+loaded ADBC capability response advertises transactional DDL, inspection and
+marker reconciliation. An initial function_exported? call preceded module load
+and returned false; it is not evidence that the callback is absent. Candidate
+source defines materialize_in_transaction/3 and managed table/incremental/group
+paths already call it inside their publication transaction.
+
+
+### Assignment-time physical preconditions
+
+Independent review caught a concurrency gap in plan-time evidence: ordinary
+materialization claims may coexist for one target, so admission-time capture also
+precedes the first window's commit. Actual task assignment already serializes
+target writes with a nonblocking target reservation check. Capture a bounded
+typed precondition there and persist it with assignment_generation, separately
+from immutable work. Same-assignment receipt replay and registry restart must
+reuse it; only a new proven-safe assignment may refresh it. This adds one column
+and no new owner, table, lease or retry process. Test two initially queued windows
+and physical drift between them. Ordinary schema-changing writes must roll back
+and require rebuild. Review metadata row locks against deployment/rebuild order.
+
+The existing asset held-write resolution only supports verified no-effect. It
+does not automatically reconcile a committed-but-unreported asset attempt. Keep
+that limit explicit; the stable generation marker is not per-attempt proof.
