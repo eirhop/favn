@@ -45,7 +45,7 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
       end)
     end
 
-    defp maybe_restart_registry({:ok, %RunnerTask{}}, true) do
+    defp maybe_restart_registry(_reply, true) do
       previous = Process.whereis(FavnOrchestrator.RunnerRegistry)
       GenServer.stop(previous, :normal)
       await_registry_restart(previous, 100)
@@ -100,6 +100,23 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
     defp agent, do: Application.fetch_env!(:favn_orchestrator, :runner_task_claim_test_agent)
 
     defp unavailable, do: {:error, Error.new(:unavailable, "runner task claim test store")}
+  end
+
+  defmodule ClaimGateway do
+    use GenServer
+
+    def start_link(owner), do: GenServer.start_link(__MODULE__, owner)
+    def init(owner), do: {:ok, owner}
+    def handle_call(:gateway, _from, owner), do: {:reply, {:ok, self()}, owner}
+
+    def handle_call({:register, registration, agent}, _from, owner),
+      do: {:reply, RunnerRegistry.register(registration, agent), owner}
+
+    def handle_call({:request, %ClaimRequest{} = request}, _from, owner) do
+      reply = RunnerTasks.claim(request)
+      send(owner, {:claim_reply, request, reply})
+      {:reply, reply, owner}
+    end
   end
 
   setup do
@@ -193,6 +210,81 @@ defmodule FavnOrchestrator.RunnerTaskClaimTest do
 
     assert {:ok, %{status: :busy, active_assignment: %{task_id: "rt_registry_restart"}}} =
              RunnerRegistry.fetch("runner-registry-restart")
+  end
+
+  test "a transient claim failure retries its identity and preserves elastic idle grace", %{
+    agent: store
+  } do
+    {:ok, _} = Application.ensure_all_started(:favn_runner)
+
+    Application.put_env(:favn_orchestrator, :runner_pools,
+      duckdb: [mode: :elastic, idle_grace_ms: 60_000]
+    )
+
+    error = Error.new(:unavailable, "test checkout failure", retryable?: true)
+    Agent.update(store, &%{&1 | replies: [{:error, error}, {:ok, nil}], churn?: false})
+    gateway = start_supervised!({ClaimGateway, self()})
+    owner = self()
+
+    runner =
+      start_supervised!(
+        {FavnRunner.RunnerAgent,
+         name: nil,
+         connection: gateway,
+         runner_pool: @pool,
+         lifecycle_mode: :elastic,
+         exit_fun: fn code -> send(owner, {:unexpected_exit, code}) end}
+      )
+
+    assert_receive {:claim_reply, first, {:error, ^error}}, 2_000
+    assert_receive {:claim_reply, ^first, {:ok, %NoWork{wait_ms: 60_000}}}, 2_000
+    refute_receive {:unexpected_exit, _}, 50
+    assert Process.alive?(runner)
+    assert :sys.get_state(runner).phase == :waiting
+    assert Process.read_timer(:sys.get_state(runner).idle_timer) > 59_000
+    assert [second, first_store] = Agent.get(store, & &1.claims)
+    assert second.command_id == first_store.command_id
+  end
+
+  test "registry loss while reporting a claim failure preserves the original error", %{
+    agent: agent
+  } do
+    generation = register("runner-error-restart")
+    request = claim_request("runner-error-restart", generation, "claim-error-restart")
+    error = Error.new(:unavailable, "test checkout failure", retryable?: true)
+    Agent.update(agent, &%{&1 | replies: [{:error, error}], restart_registry?: true})
+    assert {:error, ^error} = RunnerTasks.claim(request)
+    assert RunnerRegistry.list() == []
+  end
+
+  test "the enrolled final subclaim can fail and retry the same logical command", %{agent: agent} do
+    generation = register("runner-final-error")
+    request = claim_request("runner-final-error", generation, "claim-final-error")
+    error = Error.new(:unavailable, "test lost assignment reply", retryable?: true)
+    task = queued_task("rt_replayed_final_claim")
+
+    Agent.update(
+      agent,
+      &%{&1 | replies: [{:ok, nil}, {:ok, nil}, {:ok, nil}, {:error, error}, {:ok, task}]}
+    )
+
+    assert {:error, ^error} = RunnerTasks.claim(request)
+    assert {:ok, %Assignment{task_id: "rt_replayed_final_claim"}} = RunnerTasks.claim(request)
+
+    assert Agent.get(
+             agent,
+             &Enum.map(Enum.reverse(&1.claims), fn command -> command.command_id end)
+           ) ==
+             [
+               "claim-final-error:0",
+               "claim-final-error:1",
+               "claim-final-error:2",
+               "claim-final-error:3",
+               "claim-final-error:0"
+             ]
+
+    RunnerQueueCoordinator.notify(@pool, @release, 1)
+    refute_receive {:agent_message, {:favn_runner_task, _wake}}, 50
   end
 
   defp register(runner_id) do

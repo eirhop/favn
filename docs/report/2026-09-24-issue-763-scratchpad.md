@@ -461,3 +461,14 @@ receipt replay. The approved shared-helper refinement returns an explicit
 retryable conflict while ownership cannot be confirmed and leaves the existing
 assignment for fenced recovery. A locked-owner regression is being added before
 claim implementation review can be accepted.
+
+
+The shared owner-validation correction now passes the real row-lock test with
+both fresh and empty-receipt claims. All 91 owning task-store tests pass (two
+excluded). The rerun exposed one existing fixture's fixed platform-global
+`native-claim` command ID; making it workspace-unique allows repeatable runs
+against retained test data. Independent re-review approved the corrected claim
+implementation and canonical documentation. Test-environment compilation with
+warnings as errors, the CI tag-tier guard and diff whitespace checks passed.
+Candidate image comparison and the remaining registration/performance slices
+are still outstanding.

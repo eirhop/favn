@@ -388,8 +388,8 @@ defmodule FavnOrchestrator.RunnerTasks do
 
     case store().claim(claim_command(request, attempt)) do
       {:ok, nil} -> wait_or_retry(request, session, observed, attempt)
-      {:ok, task} -> finish_assignment(request, task)
-      {:error, reason} -> finish_claim_error(request, reason)
+      {:ok, task} -> finish_assignment(request, session, task)
+      {:error, reason} -> finish_claim_error(request, session, reason)
     end
   end
 
@@ -402,7 +402,7 @@ defmodule FavnOrchestrator.RunnerTasks do
            session
          ) do
       :retry -> do_claim(request, session, attempt + 1)
-      :waiting -> finish_empty_claim(request)
+      :waiting -> finish_empty_claim(request, session)
     end
   end
 
@@ -420,14 +420,14 @@ defmodule FavnOrchestrator.RunnerTasks do
 
     case store().claim(claim_command(request, attempt + 1)) do
       {:ok, nil} ->
-        finish_empty_claim(request)
+        finish_empty_claim(request, session)
 
       {:ok, task} ->
-        finish_assignment(request, task)
+        finish_assignment(request, session, task)
 
       {:error, reason} ->
         cancel_wait(request)
-        finish_claim_error(request, reason)
+        finish_claim_error(request, session, reason)
     end
   end
 
@@ -449,15 +449,20 @@ defmodule FavnOrchestrator.RunnerTasks do
 
   # A runner claiming on its poll timer may still hold a waiter slot from an
   # earlier cycle; release it so a wake is never spent on a busy runner.
-  defp finish_assignment(request, task) do
+  defp finish_assignment(request, session, task) do
     cancel_wait(request)
     assignment = assignment(request, task)
-    finish_registry_claim(request, assignment)
+    finish_registry_claim(request, session, assignment)
     {:ok, assignment}
   end
 
-  defp finish_claim_error(request, reason) do
-    _ = RunnerRegistry.finish_claim(request, no_work(request, :wait, 0))
+  defp finish_claim_error(request, session, reason) do
+    try do
+      RunnerRegistry.release_claim(request, session.claim_reservation)
+    catch
+      :exit, _registry_restart -> :ok
+    end
+
     {:error, reason}
   end
 
@@ -470,7 +475,7 @@ defmodule FavnOrchestrator.RunnerTasks do
       )
   end
 
-  defp finish_empty_claim(request) do
+  defp finish_empty_claim(request, session) do
     wait_ms =
       case FavnOrchestrator.RunnerPools.fetch(
              FavnOrchestrator.RuntimeConfig.runner_pools(),
@@ -482,15 +487,15 @@ defmodule FavnOrchestrator.RunnerTasks do
       end
 
     no_work = no_work(request, :wait, wait_ms)
-    finish_registry_claim(request, no_work)
+    finish_registry_claim(request, session, no_work)
     {:ok, no_work}
   end
 
   # PostgreSQL owns the assignment. A process-local registry restart after the
   # store commits must not turn that durable success into a failed claim; the
   # runner reconciles the assignment when it re-registers.
-  defp finish_registry_claim(request, outcome) do
-    case RunnerRegistry.finish_claim(request, outcome) do
+  defp finish_registry_claim(request, session, outcome) do
+    case RunnerRegistry.finish_claim(request, session.claim_reservation, outcome) do
       {:ok, _session} -> :ok
       {:error, _stale_or_missing_session} -> :ok
     end

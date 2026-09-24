@@ -21,6 +21,7 @@ defmodule FavnOrchestrator.RunnerPools do
   @spec default() :: keyword()
   def default, do: [default: [mode: :elastic, idle_grace_ms: @default_idle_grace_ms]]
 
+  @doc "Validates authored or already normalized pool policies."
   @spec normalize(term()) :: {:ok, t()} | {:error, term()}
   def normalize(value) when is_list(value) and length(value) in 1..@max_pools do
     if Keyword.keyword?(value) do
@@ -120,7 +121,7 @@ defmodule FavnOrchestrator.RunnerPools do
             else: {:error, {:invalid_idle_grace_ms, grace}}
 
         :resident ->
-          if Keyword.get(options, :idle_grace_ms, :absent) != :absent,
+          if Keyword.get(options, :idle_grace_ms, :absent) not in [:absent, :infinity],
             do: {:error, :resident_idle_grace_not_allowed},
             else: {:ok, %{mode: :resident, idle_grace_ms: :infinity}}
 

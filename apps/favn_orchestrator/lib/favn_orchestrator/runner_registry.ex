@@ -8,7 +8,9 @@ defmodule FavnOrchestrator.RunnerRegistry do
 
   use GenServer
 
+  alias Favn.Contracts.RunnerTask.Assignment
   alias Favn.Contracts.RunnerTask.ClaimRequest
+  alias Favn.Contracts.RunnerTask.NoWork
   alias Favn.Contracts.RunnerTask.Registration
   alias Favn.Contracts.RunnerTask.RegistrationAck
 
@@ -33,7 +35,13 @@ defmodule FavnOrchestrator.RunnerRegistry do
       :registered_at
     ]
     defstruct @enforce_keys ++
-                [:session_row_id, :claim_command_id, :claim_outcome, :active_assignment]
+                [
+                  :session_row_id,
+                  :claim_command_id,
+                  :claim_reservation,
+                  :claim_outcome,
+                  :active_assignment
+                ]
 
     @type t :: %__MODULE__{}
   end
@@ -63,8 +71,16 @@ defmodule FavnOrchestrator.RunnerRegistry do
 
   def begin_claim(request), do: GenServer.call(__MODULE__, {:begin_claim, request})
 
-  def finish_claim(request, outcome),
-    do: GenServer.call(__MODULE__, {:finish_claim, request, outcome})
+  @doc "Completes only the matching in-flight local claim reservation."
+  @spec finish_claim(ClaimRequest.t(), reference(), Assignment.t() | NoWork.t()) ::
+          {:ok, Session.t()} | {:error, term()}
+  def finish_claim(request, reservation, outcome),
+    do: GenServer.call(__MODULE__, {:finish_claim, request, reservation, outcome})
+
+  @doc "Releases a failed local claim reservation without caching a successful outcome."
+  @spec release_claim(ClaimRequest.t(), reference()) :: :ok | {:error, term()}
+  def release_claim(request, reservation),
+    do: GenServer.call(__MODULE__, {:release_claim, request, reservation})
 
   def mark_busy(runner_instance_id, generation, assignment),
     do: GenServer.call(__MODULE__, {:mark, runner_instance_id, generation, :busy, assignment})
@@ -168,6 +184,7 @@ defmodule FavnOrchestrator.RunnerRegistry do
         session
         | status: :claiming,
           claim_command_id: request.command_id,
+          claim_reservation: make_ref(),
           claim_outcome: :in_flight
       }
 
@@ -178,17 +195,30 @@ defmodule FavnOrchestrator.RunnerRegistry do
     end
   end
 
-  def handle_call({:finish_claim, %ClaimRequest{} = request, outcome}, _from, state) do
-    with {:ok, session} <- matching_session(state, request),
-         true <- session.claim_command_id == request.command_id,
-         true <- session.status == :claiming do
+  def handle_call({:finish_claim, %ClaimRequest{} = request, reservation, outcome}, _from, state) do
+    with {:ok, session} <- matching_claim(state, request, reservation) do
       status =
-        if match?(%Favn.Contracts.RunnerTask.Assignment{}, outcome), do: :reserved, else: :idle
+        if match?(%Assignment{}, outcome), do: :reserved, else: :idle
 
-      updated = %{session | status: status, claim_outcome: outcome}
+      updated = %{session | status: status, claim_reservation: nil, claim_outcome: outcome}
       {:reply, {:ok, updated}, put_session(state, updated)}
     else
-      false -> {:reply, {:error, :stale_claim_request}, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:release_claim, %ClaimRequest{} = request, reservation}, _from, state) do
+    with {:ok, session} <- matching_claim(state, request, reservation) do
+      updated = %{
+        session
+        | status: :idle,
+          claim_command_id: nil,
+          claim_reservation: nil,
+          claim_outcome: nil
+      }
+
+      {:reply, :ok, put_session(state, updated)}
+    else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
@@ -202,6 +232,7 @@ defmodule FavnOrchestrator.RunnerRegistry do
         | status: status,
           active_assignment: assignment,
           claim_command_id: if(status == :idle, do: nil, else: session.claim_command_id),
+          claim_reservation: if(status == :idle, do: nil, else: session.claim_reservation),
           claim_outcome: if(status == :idle, do: nil, else: session.claim_outcome)
       }
 
@@ -392,6 +423,17 @@ defmodule FavnOrchestrator.RunnerRegistry do
 
       _other ->
         {:error, :stale_or_incompatible_runner_session}
+    end
+  end
+
+  defp matching_claim(state, request, reservation) do
+    with {:ok, session} <- matching_session(state, request),
+         true <- session.status == :claiming and session.claim_command_id == request.command_id,
+         true <- is_reference(reservation) and session.claim_reservation == reservation do
+      {:ok, session}
+    else
+      false -> {:error, :stale_claim_request}
+      {:error, reason} -> {:error, reason}
     end
   end
 

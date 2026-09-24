@@ -551,8 +551,9 @@ production observations remain separately labelled.
 
 Implementation is in progress. The resident-pool normalization correction and
 storage-consumer containment slice are implemented and independently reviewed.
-The reviewed claim-reservation/empty-replay correction is implemented and has
-passed its focused tests; independent implementation review is in progress.
+The reviewed claim-reservation/empty-replay correction, including the shared
+owner-validation refinement, is implemented and independently approved after
+focused tests.
 The durable registration handoff and repair lifecycle are not implemented yet.
 This partial outcome does not close issue #763 or qualify the PR for release.
 The approved baseline above remains unchanged.
@@ -571,7 +572,8 @@ or layout corrections.
 | Resident normalization and production configuration | 26 focused tests passed; independent implementation review approved |
 | Sequencer and notification recovery | 5 PostgreSQL tests passed: checkout backoff, statement timeout, unexpected invariant failure, sibling restart isolation, deferred subscription delivery after reconnect; independent implementation review approved |
 | Claim facade and registry | 15 tests passed, including a real elastic RunnerAgent retaining its wait after transient failure |
-| Durable runner task store | 90 passed, 2 excluded; empty-receipt reconciliation preserves the exact task, lease, fence, receipt and demand, and rejects incompatible/other-session adoption |
+| Durable runner task store | 91 passed, 2 excluded; empty-receipt reconciliation preserves the exact task, lease, fence, receipt and demand, and rejects incompatible/other-session adoption |
+| Compiler / repository checks | Test-environment compilation with warnings as errors, test-tier guard and `git diff --check` passed |
 | Manual unchanged-release outage | 90.005-second durable-receipt-triggered proxy outage reproduced the supervision cascade; 34 successful writes activated after explicit runner restart, one unknown effect stayed protected |
 
 Raw logs and snapshots are retained locally under the ignored
@@ -721,3 +723,13 @@ empty-receipt claims with another compatible queued task, then unlock and verify
 that both recover the original assignment with unchanged durable state and demand.
 This adds approximately 5 production and 50–80 supporting lines to the claim
 correction, within its reviewed budget.
+
+
+### Independent implementation review of completed slices
+
+Reviewer `review_763_plan` approved resident normalization, the storage-consumer
+containment slice, and the corrected claim slice. Claim review initially found
+the skipped-owner-row ambiguity described above; re-review confirmed the shared
+helper and real row-lock test resolve it, and approved the canonical docs.
+The original registration-lifecycle and performance slices still require their
+own implementation, verification and final baseline comparison.

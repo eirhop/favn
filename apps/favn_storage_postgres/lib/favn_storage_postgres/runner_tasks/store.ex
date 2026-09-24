@@ -1498,6 +1498,12 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
         if RebuildValidation.candidate_live?(candidate) do
           DeploymentOwnership.lock!(candidate.workspace_id, candidate.deployment_operation_id)
           Repo.one(lock(query, "FOR UPDATE"))
+        else
+          Repo.rollback(
+            Error.new(:conflict, "active assignment owner validation is unconfirmed",
+              retryable?: true
+            )
+          )
         end
     end
   end
@@ -2743,6 +2749,25 @@ defmodule FavnStoragePostgres.RunnerTasks.Store do
       do: Repo.rollback(Error.new(:conflict, "write resolution receipt identity changed"))
 
     resolution
+  end
+
+  # A later wake-race subclaim may have committed an assignment whose reply was
+  # lost. Replaying an earlier empty receipt can recover only that exact session's
+  # existing assignment; it must never acquire newly queued work.
+  defp replay_command_result!(%RunnerTaskCommand{result: %{"kind" => "none"}}, "claim", command) do
+    validate_claim!(command)
+    lock_runner_claim_key!(command.runner_instance_id, command.runner_session_generation)
+
+    case active_runner_task(command) do
+      nil ->
+        nil
+
+      task ->
+        if active_runner_matches_claim?(task, command),
+          do: to_state(task),
+          else:
+            Repo.rollback(Error.new(:conflict, "runner already owns an incompatible active task"))
+    end
   end
 
   defp replay_command_result!(receipt, operation, _command),

@@ -1253,10 +1253,23 @@ remove only the matching generation and schedule durable assignment recovery.
   waiter registration;
 - still requires each woken runner to perform the atomic claim.
 
-Duplicate claim requests return the same in-flight or completed claim outcome;
-they cannot reserve a second task for the runner. A dead claim worker resets
-only its matching claim request and leaves any committed task for fenced
-recovery.
+Duplicate claim requests return the same in-flight or completed successful
+outcome; they cannot reserve a second task for the runner. A failed store claim
+releases only its matching local reservation and preserves the storage error.
+It never becomes successful empty work. Each reservation has a fresh local token,
+so a delayed finalizer cannot complete or release a newer retry of the same
+command. The runner retries an uncertain response with the same command identity.
+
+A logical claim may commit an empty subattempt before a later wake-race subattempt
+assigns work. Replaying an empty durable receipt reconciles only an already-active,
+compatible assignment for that exact runner session under the existing claim and
+owner locks. It does not claim newly queued work, renew a lease, change a fence or
+demand count, adopt another session, or rewrite the empty receipt. Nonempty
+receipts retain their exact replay behavior. If an active assignment exists but
+owner validation cannot be confirmed, both fresh claims and empty-receipt replay
+return a retryable conflict rather than reporting an empty slot or acquiring
+another task. Existing fenced recovery resolves invalid/expired ownership. This
+recovery uses durable state and survives loss of the process-local registry.
 
 The per-pool/release `RunnerQueueCoordinator` owns only an in-memory queue
 generation and eligible idle waiters. After a committed enqueue it advances the

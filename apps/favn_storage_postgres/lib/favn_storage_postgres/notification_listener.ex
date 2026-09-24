@@ -20,9 +20,9 @@ defmodule FavnStoragePostgres.NotificationListener do
   @impl true
   def init(options) do
     with {:ok, connection} <- Postgrex.Notifications.start_link(options),
-         {:ok, committed_ref} <- Postgrex.Notifications.listen(connection, @committed_channel),
-         {:ok, published_ref} <- Postgrex.Notifications.listen(connection, @published_channel),
-         {:ok, admission_ref} <- Postgrex.Notifications.listen(connection, @admission_channel) do
+         {:ok, committed_ref} <- listen(connection, @committed_channel),
+         {:ok, published_ref} <- listen(connection, @published_channel),
+         {:ok, admission_ref} <- listen(connection, @admission_channel) do
       send(self(), :initial_wake)
 
       {:ok,
@@ -32,6 +32,16 @@ defmodule FavnStoragePostgres.NotificationListener do
          published_ref: published_ref,
          admission_ref: admission_ref
        }}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  # A deferred subscription is retained by Postgrex and installed on reconnect.
+  defp listen(connection, channel) do
+    case Postgrex.Notifications.listen(connection, channel) do
+      {status, ref} when status in [:ok, :eventually] -> {:ok, ref}
+      {:error, reason} -> {:error, reason}
     end
   end
 

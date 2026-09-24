@@ -128,12 +128,32 @@ defmodule FavnOrchestrator.RunnerRegistryTest do
       wait_ms: 100
     }
 
-    assert {:ok, idle} = RunnerRegistry.finish_claim(request, no_work)
+    assert {:ok, idle} = RunnerRegistry.finish_claim(request, claiming.claim_reservation, no_work)
     assert idle.status == :idle
     assert {:ok, {:duplicate, ^no_work}, _session} = RunnerRegistry.begin_claim(request)
 
     assert {:ok, :start, _session} =
              RunnerRegistry.begin_claim(%{request | command_id: "claim-two"})
+  end
+
+  test "a failed reservation can retry the same command without accepting stale finalizers" do
+    agent = spawn_agent()
+    assert {:ok, ack} = RunnerRegistry.register(registration("runner-retry", "boot-one"), agent)
+    request = claim_request("runner-retry", ack.runner_session_generation, "claim-retry")
+    assert {:ok, :start, first} = RunnerRegistry.begin_claim(request)
+    assert :ok = RunnerRegistry.release_claim(request, first.claim_reservation)
+    assert {:ok, :start, second} = RunnerRegistry.begin_claim(request)
+    refute first.claim_reservation == second.claim_reservation
+
+    assert {:error, :stale_claim_request} =
+             RunnerRegistry.release_claim(request, first.claim_reservation)
+
+    assert {:error, :stale_claim_request} =
+             RunnerRegistry.finish_claim(request, first.claim_reservation, :stale_result)
+
+    assert {:ok, {:duplicate, :in_flight}, ^second} = RunnerRegistry.begin_claim(request)
+    assert :ok = RunnerRegistry.release_claim(request, second.claim_reservation)
+    assert {:ok, :start, _third} = RunnerRegistry.begin_claim(request)
   end
 
   test "coordinator retries a missed-wake race and targets only requested waiters" do

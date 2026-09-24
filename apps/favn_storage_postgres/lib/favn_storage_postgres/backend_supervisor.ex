@@ -3,10 +3,8 @@ defmodule FavnStoragePostgres.BackendSupervisor do
 
   use Supervisor
 
-  alias FavnStoragePostgres.NotificationListener
+  alias FavnStoragePostgres.ConsumerSupervisor
   alias FavnStoragePostgres.ConnectionConfig
-  alias FavnStoragePostgres.Outbox.Sequencer
-  alias FavnStoragePostgres.Projections.Worker
   alias FavnStoragePostgres.Registry.ManifestCache
   alias FavnStoragePostgres.Repo
   alias FavnStoragePostgres.SchemaGate
@@ -27,12 +25,7 @@ defmodule FavnStoragePostgres.BackendSupervisor do
           {FavnStoragePostgres.RunLeaseRepo,
            Keyword.merge(config.repo_options, pool_size: 2, timeout: 2_000)},
           {ManifestCache, []},
-          {Sequencer, []},
-          {Worker, []},
-          {NotificationListener, config.notification_options},
-          {Task.Supervisor, name: FavnStoragePostgres.Maintenance.Tasks},
-          {FavnStoragePostgres.Maintenance.Worker,
-           policy: Application.get_env(:favn_orchestrator, :retention, [])}
+          {ConsumerSupervisor, config.notification_options}
         ]
 
     Supervisor.init(children, strategy: :rest_for_one)

@@ -143,7 +143,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert {:ok, assignment} =
              RunnerTasks.claim(%ClaimRequest{
-               command_id: "native-claim",
+               command_id: "#{fixture.workspace_id}:native-claim",
                issued_at: DateTime.utc_now(),
                runner_instance_id: runner,
                runner_session_generation: ack.runner_session_generation,
@@ -2526,6 +2526,137 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert {:ok, claimed_new} = Store.claim(claim_command(fixture, "new-poll", "new-runner"))
     assert claimed_new.task_id == newly_queued.task_id
+  end
+
+  test "an earlier empty receipt recovers a later committed subclaim without changing ownership",
+       fixture do
+    # Exercise both the ordinary wake retry and the final enrolled subattempt.
+    for last_attempt <- [1, 3] do
+      runner = "replay-#{last_attempt}"
+      first = claim_command(fixture, "logical-#{last_attempt}:0", runner)
+      assert {:ok, nil} = Store.claim(first)
+      assert {:ok, _} = Store.enqueue(enqueue_command(fixture, "late-#{last_attempt}"))
+
+      later = %{
+        first
+        | command_id: String.replace_suffix(first.command_id, ":0", ":#{last_attempt}")
+      }
+
+      assert {:ok, assignment} = Store.claim(later)
+      assert {:ok, before_demand} = demand(fixture)
+
+      before_task =
+        Repo.get_by!(RunnerTask, workspace_id: fixture.workspace_id, task_id: assignment.task_id)
+
+      receipt =
+        Repo.get_by!(RunnerTaskCommand,
+          scope_id: "platform:runner_tasks",
+          command_id: first.command_id
+        )
+
+      assert {:ok, ^assignment} =
+               Store.claim(%{first | occurred_at: DateTime.add(first.occurred_at, 5, :second)})
+
+      assert {:ok, ^assignment} = Store.claim(later)
+
+      assert Repo.get_by!(RunnerTask,
+               workspace_id: fixture.workspace_id,
+               task_id: assignment.task_id
+             ) == before_task
+
+      assert Repo.get_by!(RunnerTaskCommand,
+               scope_id: receipt.scope_id,
+               command_id: receipt.command_id
+             ) == receipt
+
+      assert {:ok, ^before_demand} = demand(fixture)
+      assert receipt.result == %{"kind" => "none"}
+    end
+  end
+
+  test "empty receipt replay cannot adopt another session or an incompatible assignment",
+       fixture do
+    first = claim_command(fixture, "empty-session", "shared-runner", runner_session_generation: 2)
+    incompatible = claim_command(fixture, "empty-capability", "shared-runner", capabilities: [])
+    assert {:ok, nil} = Store.claim(first)
+    assert {:ok, nil} = Store.claim(incompatible)
+    assert {:ok, _} = Store.enqueue(enqueue_command(fixture, "assigned-old-session"))
+    assert {:ok, task} = Store.claim(claim_command(fixture, "old-session", "shared-runner"))
+    assert {:ok, nil} = Store.claim(first)
+    assert {:error, %{kind: :conflict}} = Store.claim(incompatible)
+    assert {:ok, %{active_count: 1, queued_count: 0}} = demand(fixture)
+    assert task.assigned_runner_session_generation == 1
+  end
+
+  test "unconfirmed active ownership cannot appear empty or admit another queued task", fixture do
+    {operation, command, _, _} = rebuild_resolution(fixture)
+
+    first =
+      claim_command(fixture, "owner-empty", "owner-runner",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        supported_task_kinds: [:runtime_input_resolution, :relation_inspection],
+        capabilities: ["runtime_input_resolution", "relation_inspection"]
+      )
+
+    assert {:ok, nil} = Store.claim(first)
+    assert {:ok, _} = Store.enqueue(command)
+    assert {:ok, assigned} = Store.claim(%{first | command_id: first.command_id <> ":1"})
+
+    assert {:ok, queued} =
+             Store.enqueue(
+               enqueue_command(fixture, "owner-next",
+                 required_runner_release_id: FavnTestSupport.runner_release_id()
+               )
+             )
+
+    fresh = %{first | command_id: first.command_id <> ":fresh"}
+
+    demand_query = %Q.GetRunnerCapacityDemand{
+      platform_context: fixture.platform_context,
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: FavnTestSupport.runner_release_id()
+    }
+
+    assert {:ok, before_demand} = Store.demand(demand_query)
+    parent = self()
+
+    holder =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            "SELECT operation_id FROM favn_control.rebuild_operations WHERE workspace_id=$1 AND operation_id=$2 FOR UPDATE",
+            [fixture.workspace_id, operation.operation_id]
+          )
+
+          send(parent, :owner_locked)
+
+          receive do
+            :release_owner -> :ok
+          after
+            5_000 -> :ok
+          end
+        end)
+      end)
+
+    assert_receive :owner_locked
+
+    try do
+      for request <- [first, fresh] do
+        assert {:error, %{kind: :conflict, retryable?: true}} = Store.claim(request)
+      end
+
+      assert {:ok, ^before_demand} = Store.demand(demand_query)
+    after
+      send(holder.pid, :release_owner)
+      assert {:ok, :ok} = Task.await(holder)
+    end
+
+    for request <- [first, fresh], do: assert({:ok, ^assigned} = Store.claim(request))
+    assert {:ok, ^before_demand} = Store.demand(demand_query)
+
+    assert Repo.get_by!(RunnerTask, workspace_id: fixture.workspace_id, task_id: queued.task_id).status ==
+             "queued"
   end
 
   test "concurrent first operation ensures share one durable issuance", fixture do

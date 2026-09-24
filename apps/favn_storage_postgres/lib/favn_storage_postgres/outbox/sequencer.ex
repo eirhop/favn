@@ -9,10 +9,13 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
   use GenServer
 
   alias Ecto.Adapters.SQL
+  alias FavnOrchestrator.Persistence.Error
+  alias FavnStoragePostgres.ErrorMapper
   alias FavnStoragePostgres.Repo
 
   @default_batch_size 1_000
   @default_interval_ms 30_000
+  @max_retry_ms 30_000
 
   @type publication :: %{
           outbox_event_id: pos_integer(),
@@ -119,6 +122,12 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
         |> Enum.sort_by(& &1.publication_id)
       end
     end)
+  rescue
+    exception in [DBConnection.ConnectionError, Postgrex.Error] ->
+      case ErrorMapper.map(exception) do
+        %Error{retryable?: true} = error -> {:error, error}
+        _unexpected -> reraise exception, __STACKTRACE__
+      end
   end
 
   @impl true
@@ -126,13 +135,18 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
     state = %{
       batch_size: Keyword.get(opts, :batch_size, @default_batch_size),
       interval_ms: Keyword.get(opts, :interval_ms, @default_interval_ms),
-      timer_ref: nil
+      timer_ref: nil,
+      failure_count: 0,
+      retry_after: nil
     }
 
     {:ok, schedule(state, 0)}
   end
 
   @impl true
+  def handle_cast(:wake, %{retry_after: retry_after} = state) when not is_nil(retry_after),
+    do: {:noreply, state}
+
   def handle_cast(:wake, %{timer_ref: :pending} = state), do: {:noreply, state}
 
   def handle_cast(:wake, %{timer_ref: timer_ref} = state) do
@@ -148,7 +162,7 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
     state = %{state | timer_ref: nil}
     started_at = System.monotonic_time()
 
-    delay =
+    {state, delay} =
       case sequence_batch(state.batch_size) do
         {:ok, publications} ->
           :telemetry.execute(
@@ -157,7 +171,8 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
             %{}
           )
 
-          if(length(publications) == state.batch_size, do: 0, else: state.interval_ms)
+          {%{state | failure_count: 0, retry_after: nil},
+           if(length(publications) == state.batch_size, do: 0, else: state.interval_ms)}
 
         {:error, reason} ->
           :telemetry.execute(
@@ -166,7 +181,15 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
             %{reason: redacted_reason(reason)}
           )
 
-          state.interval_ms
+          failures = state.failure_count + 1
+          base = min(1_000 * Integer.pow(2, min(failures - 1, 5)), @max_retry_ms)
+          delay = min(base + :rand.uniform(div(base, 5)) - 1, @max_retry_ms)
+
+          {%{
+             state
+             | failure_count: failures,
+               retry_after: System.monotonic_time(:millisecond) + delay
+           }, delay}
       end
 
     {:noreply, schedule(state, delay)}
@@ -175,6 +198,7 @@ defmodule FavnStoragePostgres.Outbox.Sequencer do
   defp schedule(state, delay),
     do: %{state | timer_ref: Process.send_after(self(), :sequence, delay)}
 
+  defp redacted_reason(%Error{kind: kind}), do: kind
   defp redacted_reason(%Postgrex.Error{postgres: %{code: code}}), do: code
   defp redacted_reason(%DBConnection.ConnectionError{}), do: :connection_error
   defp redacted_reason(_reason), do: :unknown
