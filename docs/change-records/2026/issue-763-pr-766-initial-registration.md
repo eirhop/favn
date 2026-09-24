@@ -1066,3 +1066,157 @@ now use retained rebuild-discard operations with explicit owner locks instead of
 the removed standalone marker task. Full verification, final diff/budget audit,
 independent implementation acceptance, and the fresh five-runner stress replay
 remain outstanding.
+
+
+### Implementation outcome and qualification
+
+The reviewed clean-break baseline remains `972c05b4`. Production implementation
+is pinned by `84248a5c`; `65fc8e24` adds native qualification and documentation
+without changing production code. The SQL write now commits generation identity
+inside its original managed transaction. Exact fenced result acceptance activates
+the initial PostgreSQL binding and resolves write ownership atomically. Later run
+settlement uses the existing materialization/freshness lifecycle.
+
+Removed the standalone marker task, registration reconciler/retry continuation,
+one-hour task-owned lock, and old target-repair planner/storage/API/CLI/View.
+Retained general failed-run cleanup, cancellation, rebuild reconciliation and
+explicit unknown-write protection. Fresh deployment and matched wire-16 / runner-18
+images are required. Historical failed volumes were preserved, not migrated.
+
+Verification:
+- Full umbrella fast rerun: **3,906 passed**. The first broader run exposed a stale
+  deleted-phase cleanup test (corrected), plus an intermittent shared SQL Sandbox
+  owner exit in a deployment timeout test. Its 33-test module passed with the
+  original seed, and the clean umbrella rerun passed. No production fix was made
+  for that unconfirmed failure; the scratchpad retains its evidence.
+- Native DuckDB/DuckLake generation and runtime-catalog modules: **52 passed**.
+  Real Runtime tests cover initial/existing identity, table/append/window/group
+  writes, nonempty group replacement, empty bootstrap, guarded initial checks and
+  existing no-op. Initial absent-table publication rejection and rollback are
+  separately covered by native transaction tests.
+- Focused persisted lifecycle regressions prove pre-BEGIN capability rejection
+  and confirmed rollback release the hold and admit subsequent work. Unknown
+  transaction results remain held. General SIGKILL boundaries passed earlier;
+  local matched-image restart/fault qualification also passed below.
+- Route inventory covers 30 browser and 63 API routes; test-tier guard passes.
+- Independent code review approved `84248a5c`; the expanded native gate was also
+  approved. Final operational evidence and baseline comparison were accepted by
+  independent reviewer `review_763_plan` on 2026-09-24 (verdict below).
+
+Local OrbStack conditions: 35 independent no-sleep assets, 1,000 rows each, five
+one-slot runners, 0.25-vCPU/1-GiB orchestrator, shared DuckLake. Matched images
+come from `84248a5c`, with unchanged fixture hash. AMD64 emulation and original
+image health probes remain enabled. Bootstrap/activation required the baseline's
+temporary 1-vCPU allowance; restored 0.25 before any run. View is running, but its
+local TLS warning has prevented authenticated live-page load so far.
+
+| Case | Result | Evidence |
+| --- | --- | --- |
+| Historical first run | Failed after 106.770s; 35 asset successes, 6 active / 29 building | Preserved `favn-763-quarter` baseline |
+| Atomic first run | Passed in 53.227s execution time; 35 successes / 35 active / 35 resolved claims | `run_api_f388eb43a63b6a9303c81dd6837ab226` |
+| Three warm runs | All passed; total 140 successful asset tasks across four runs | `atomic-case/warm-load.jsonl`, `warm-final.json` |
+| Database latency / overlapping runs | Both passed: 562.945s and 618.530s, 70 successes | `atomic-case/latency-load.jsonl` |
+| Bounded database outage | Passed in 174.737s; proxy disabled for 10s after durable success, restored automatically | `atomic-case/outage-events.jsonl`, `outage-load.jsonl` |
+| Orchestrator restart | Passed in 170.041s; SIGKILL after durable success, automatic fenced recovery | `atomic-case/restart-events.jsonl`, `restart-load.jsonl` |
+
+First-run physical audit confirms all 35 tables have 1,000 distinct IDs and sum
+499,500. Each asset was assigned exactly once; all assignment preconditions were
+persisted. Observed CPU interval: 98.9% of the 0.25 quota used, 98.5% throttled
+periods. This eliminates the reproduced registration gap in the first comparison;
+it does not establish native production capacity or zero future failures.
+
+Deviations from estimates and incidental fixes:
+- The production diff is slightly above the 870-line addition estimate (900
+  added), while deleting 6,099 lines. Full retirement reached more old plumbing
+  than the estimated deletion range. No replacement coordination subsystem was
+  introduced. The accounting below includes development UI examples as production.
+- Removed the old RC17 upgrade-compatibility test with the unsupported migration
+  contract; new tests prove fresh readiness and non-destructive refusal of old
+  recovery state.
+- Cancellation qualification exposed a retained rebuild lock bound to a stopped,
+  unstarted task. Clear only that matching binding, preserve the owner/fence and
+  preserve binding during proven-safe preparation retry. Independently reviewed.
+- Pre-write capability/identity validation could label a never-started write as
+  unknown. Explicit `not_started` classification prevents an unnecessary hold;
+  commit/rollback uncertainty is unchanged. Independently reviewed with full
+  worker-to-storage regression coverage.
+- The old outage trigger required a successful task with a building generation,
+  which the new atomic completion prevents. An explicit active-generation mode
+  now targets accepted-result delivery/settlement; baseline mode remains intact.
+
+A lost result after a possible SQL commit still needs explicit unknown-outcome
+handling. Current asset resolution supports verified no-effect; a stable marker
+alone cannot prove that an individual attempt committed. Automatic reconciliation
+of committed-but-unreported writes remains outside this change.
+
+
+Additional production findings from qualification:
+- With 10ms latency per direction plus 3ms jitter, overlapping runs completed
+  but runner utilization fell while CPU had spare capacity. Existing admission
+  and task paths perform repeated database round trips and serialize shared
+  authority/demand. This needs measured query and lock-cost reduction, tracked
+  under #525 in ROADMAP. Same-target contention also affects this comparison.
+- The packaged runner health probe uses release RPC against an outbound-only
+  dynamic node and reports `:noconnection` despite successful execution. The
+  independent reviewer verified this pre-existing template incompatibility.
+  It is distinct from the orchestrator's five-second health timeout at 0.25 CPU.
+  Keep probes unchanged for comparison; qualify local readiness reporting under
+  #522 before relying on runner health for replacement/admission.
+
+
+Final local evidence: all eight runs passed, with **280 successful asset tasks,
+280 resolved/succeeded claims, 280 durable success receipts and 35 active
+generations**. Exactly 280 assignments, maximum assignment generation one,
+280 distinct run/target pairs, and 280 persisted preconditions. Final physical
+audit passes all 35 tables (1,000 rows, distinct IDs 1,000, sum 499,500). No manual
+repair or replay was issued. The restart reclaimed the run with fence two after
+the retained ownership lease expired; all five runners re-registered. Proxy is
+enabled with no toxics. Local raw evidence is retained under ignored
+`.favn/registration-stress/atomic-case/`; key results are recorded here because
+that directory is not shipped with the PR.
+
+Actual budget against `972c05b4` (Git numstat, excluding this record):
+
+| Category | Added | Deleted | Paths |
+| --- | ---: | ---: | ---: |
+| Production, including development UI examples | 900 | 6,099 | 85 |
+| Tests and shared fixtures | 1,564 | 3,299 | 64 |
+| Local harness / security support | 19 | 13 | 5 |
+| Canonical and historical documentation | 386 | 166 | 15 |
+
+Canonical and historical documentation are accounted separately; their line
+counts do not represent production complexity. Supporting additions exceed the
+combined 1,300-line estimate (1969 including tests, harness and docs, a material
+budget overrun): native multi-mode qualification, persisted safe-failure
+regressions and migration/fixture replacement explain the additional test scope.
+Deletions exceed the estimate because the complete retired repair stack and its
+tests were removed. No new scheduler, queue, lock service or recovery subsystem.
+
+Remaining limits: live authenticated View load was not exercised (browser TLS
+warning requires user interaction); no 100-asset case was run, as requested.
+This local emulated test is not a VM capacity guarantee. Full deployment security
+and all broad acceptance/slow tiers were not rerun; the focused native and SIGKILL
+gates plus full fast suite are the verification claimed here. The health-probe
+defect and latency amplification above remain separate production follow-ups.
+
+
+Qualification deviation: the final candidate exercised a **10-second** database
+outage, not the original historical plan's 60–120-second outage. Load used the
+user-requested bounded local backlog (one run at a time, two overlapping for
+latency), not the original sustained offered-rate gate. Those longer-outage and
+sustained-rate gates are **not claimed as passed**. The evidence establishes the
+reproduced registration fix, bounded-backlog fault behavior and SIGKILL recovery
+after lease expiry; longer disruption and capacity qualification remain release
+work. This explicitly narrows the earlier statement that all other historical
+correctness gates were preserved.
+
+
+### Final independent verdict
+
+Reviewer `review_763_plan` accepted the implementation and outcome against
+`972c05b4` on 2026-09-24, with no blocking findings for the scoped issue #763 fix.
+The reviewer independently checked test logs, all eight local runs, durable
+assignment/claim/receipt counts, physical data, restored proxy, runner sessions,
+Git budget totals and deviations. The verdict accepts this fix; it does not
+claim complete production qualification or close the explicitly remaining
+health, performance and longer-duration/browser qualification work.

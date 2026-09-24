@@ -893,3 +893,68 @@ interaction. Do not count merely running View as live browser load.
 
 Phoenix restarted from the implementation root (PID 51731, port 4173); Tidewave
 verified cwd, live repo/orchestrator and runner contract 18.
+
+
+### Performance sweep under latency
+
+The first run and three warm runs passed: 140 successful asset tasks, 35 active
+generations, 140 resolved claims. First-run assignment audit: exactly 35
+assignments (no reassignment), mean assigned-to-terminal 1.494s, maximum 3.317s.
+Physical tables all match 1,000 rows / 1,000 distinct IDs / sum 499,500.
+
+The overlapping-run latency case applies 10ms per direction plus 3ms jitter
+to orchestrator PostgreSQL traffic only. It is substantially slower while still
+advancing. Independent operational review of 44 snapshots found zero to two
+assigned runners, all five sessions present, no unknown claims, and all 35
+generations active. CPU usage was ~0.165 core (66% of quota), not continuous
+CPU saturation. PostgreSQL shows client waits, including idle-in-transaction
+package reads, plus an advisory lock waiter. This supports round-trip/coordination
+amplification, not a proven specific deadlock or new stranded-result bug.
+
+Source follow-up identified pre-existing serial admission with a 25ms yield
+budget, repeated authority/clock checks within admission, run cancellation lock
+duration, and demand/run serialization in task commands. Assignment-time
+generation checks add bounded reads, but evidence does not establish those as
+the dominant cost. Added a focused performance qualification item to ROADMAP;
+measure per-phase query counts/timing/lock waits before changing these fences.
+The two same-target overlapping runs add contention versus the single-run
+no-latency baseline, so do not quote their ratio as a pure network effect.
+
+An idle interval with five runners consumed ~43% of the .25 quota. That includes
+emulated health probes and the five-second observer API calls; attribution to
+polling alone would be unsupported. No health probes were disabled to improve
+the comparison.
+
+
+### Completed latency and outage qualification
+
+Both overlapping delayed runs passed (562.944574s and 618.530443s). Latency was
+cleared before the next case. The 10-second CP-to-PostgreSQL outage was triggered
+after an exact accepted, active-generation materialization receipt at
+19:44:51.445 UTC. Proxy disabled 19:44:51.468 and restored 19:45:01.559. Run
+`run_api_5d11c16bc5d736f9efbc16607535ade3` passed after 174.736853s execution.
+No manual repair or result replay was issued.
+
+Reviewer confirmed a pre-existing packaged-runner health defect: release RPC
+requires a reachable node, whereas canonical `env.sh.eex`/ProductionRuntimeConfig
+require outbound-only dynamic `undefined@host` startup. Fast `:noconnection`
+probe failure is separate from CP health timeouts. Added a #522 qualification
+follow-up; original probes remain enabled throughout this comparison.
+
+Restart case `run_api_5848fc6194549110f2b5b936a66e3681` armed after accepted
+submission. Durable active-generation success observed 19:49:47.214 UTC;
+control-plane container killed/restarted at that instant, with quota unchanged
+at 0.25 vCPU. Exact events in `atomic-case/restart-events.jsonl`.
+
+Restart passed at 19:52:32.372 UTC (170.041304s execution). Control plane
+accepted traffic at 19:50:06; all five runners re-registered. Automatic recovery
+claimed fence 2 after the two-minute run lease expired. Final snapshot: eight
+okay runs, 280 succeeded asset tasks/receipts, 280 succeeded/resolved claims,
+35 active generations. Final task audit: 280 assignments and persisted
+preconditions, maximum assignment generation 1, 280 distinct run/target pairs.
+Final physical audit again passes all 35 tables. Proxy enabled, no toxics.
+No repair/replay/reset and no 100-asset test.
+
+The readonly Tidewave check after restart confirms the development server still
+runs from the implementation folder with repo/orchestrator alive. Docker restart
+only affected the isolated qualification control-plane container.
