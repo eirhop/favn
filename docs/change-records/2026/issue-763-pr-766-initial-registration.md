@@ -1273,3 +1273,15 @@ Independent reviewer `review_763_plan` accepted this 18-file CI follow-up on
 2026-09-24 after checking the source, focused tests, smoke evidence and support
 budget. No blocking findings remain; production implementation approval is
 unchanged. Full GitHub rerun remains the final CI gate.
+
+The next full run (`36055206297`, head `b78fb01a`) passed Quick checks, Slow tests
+(including the 333-runner case), native macOS, acceptance, Dialyzer, HTTP and
+image qualification. Fast tests exposed a separate test-teardown race:
+`ConsumerRecoveryTest` linked its blocker connection to the test process and
+also stopped it in `on_exit`; the liveness check could pass while linked shutdown
+was already in progress. ExUnit now owns that connection with `start_supervised!`,
+removing the competing cleanup path. All five module tests pass across eleven
+runs (55 checks). This is a one-line test-ownership correction, with no production
+change or weakened timeout assertion; the final CI run must still pass.
+Independent reviewer `review_763_plan` accepted the teardown correction and its
+55-check evidence on 2026-09-24; no remaining findings.

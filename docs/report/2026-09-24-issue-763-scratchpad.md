@@ -979,3 +979,9 @@ Port-driven run `run_api_8873c0c3235c38209739adb3f07ba342` passed (35 assets,
 63.008736s execution). This is tooling smoke on the unchanged production images,
 separate from the original qualification. Source preparation was compared and
 active build.env/build.json restored afterward; no images or manifests changed.
+
+CI run `36055206297` passed the original failing jobs. A separate fast-suite
+failure was only in `ConsumerRecoveryTest` teardown (`GenServer.stop` raced a
+linked `:shutdown`). ExUnit-supervised blocker connection fixes ownership; 55
+checks passed in eleven module runs. Logs `/tmp/favn-766-fast-failure.log` and
+`/tmp/favn-766-consumer-cleanup.log`. No production code changed.

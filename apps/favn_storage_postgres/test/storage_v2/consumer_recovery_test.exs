@@ -93,8 +93,7 @@ defmodule FavnStoragePostgres.StorageV2.ConsumerRecoveryTest do
   end
 
   test "statement timeout returns an explicit retryable failure", %{config: config} do
-    {:ok, blocker} = Postgrex.start_link(config.notification_options)
-    on_exit(fn -> if Process.alive?(blocker), do: GenServer.stop(blocker) end)
+    blocker = start_supervised!({Postgrex, config.notification_options})
     Postgrex.query!(blocker, "BEGIN", [])
     Postgrex.query!(blocker, "SELECT 1 FROM favn_control.outbox_publication_state FOR UPDATE", [])
     SQL.query!(Repo, "SET statement_timeout = '50ms'", [])
