@@ -93,7 +93,7 @@ defmodule FavnOrchestrator.RunManager do
   def recover_candidate(context, run_id), do: call_manager({:recover_candidate, context, run_id})
 
   @doc false
-  def recover_cancellation(context, run_id),
+  def recover_cleanup(context, run_id),
     do: call_manager({:cleanup_candidate, context, run_id})
 
   @doc false
@@ -265,7 +265,7 @@ defmodule FavnOrchestrator.RunManager do
   end
 
   def handle_call({:recover_claimed_run, context, ownership}, _from, state) do
-    case begin_lifecycle(state, context, ownership.run_id, ownership) do
+    case begin_lifecycle(state, context, ownership.run_id, ownership, ownership.claim_purpose) do
       {:ok, state} -> {:reply, {:ok, ownership.run_id}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -508,6 +508,11 @@ defmodule FavnOrchestrator.RunManager do
       else: %{state | resume_waiters: Map.delete(state.resume_waiters, key)}
   end
 
+  defp cleanup_lifecycle?(entry),
+    do:
+      Map.get(entry, :purpose) == :cleanup or
+        (not is_nil(entry.ownership) and entry.ownership.claim_purpose == :cleanup)
+
   defp begin_lifecycle(state, context, run_id, ownership, purpose \\ :execution) do
     key = {context.workspace_id, run_id}
     previous = Enum.filter(state.lifecycles, fn {_, e} -> e.key == key end)
@@ -517,12 +522,19 @@ defmodule FavnOrchestrator.RunManager do
         e.ownership && ownership && e.ownership.fencing_token >= ownership.fencing_token
       end)
 
-    active_count =
-      state.lifecycles |> Map.values() |> Enum.map(& &1.key) |> Enum.uniq() |> length()
+    execution_entries = Enum.reject(Map.values(state.lifecycles), &cleanup_lifecycle?/1)
+    active_count = execution_entries |> Enum.map(& &1.key) |> Enum.uniq() |> length()
+    preparing = Enum.count(execution_entries, &(&1.phase == :preparing))
 
-    preparing = Enum.count(state.lifecycles, fn {_, e} -> e.phase == :preparing end)
+    cleanup_count =
+      Enum.count(state.lifecycles, fn {_, entry} ->
+        cleanup_lifecycle?(entry)
+      end)
 
     cond do
+      purpose == :cleanup and previous == [] and cleanup_count >= 2 ->
+        {:error, :cleanup_capacity}
+
       Map.has_key?(state.resume_waiters, key) ->
         {:error, :resume_in_progress}
 
@@ -534,7 +546,8 @@ defmodule FavnOrchestrator.RunManager do
            do: {:ok, state},
            else: {:error, :stale_handoff}
 
-      preparing >= 4 or (previous == [] and active_count >= state.max_active) ->
+      purpose != :cleanup and
+          (preparing >= 4 or (previous == [] and active_count >= state.max_active)) ->
         {:error, :run_start_capacity}
 
       true ->
@@ -544,6 +557,7 @@ defmodule FavnOrchestrator.RunManager do
         with {:ok, pid} <- start_temporary(FavnOrchestrator.RunPreparation, args) do
           entry = %{
             key: key,
+            purpose: purpose,
             context: context,
             ownership: nil,
             claim_deadline: System.monotonic_time(:millisecond) + 20_000,

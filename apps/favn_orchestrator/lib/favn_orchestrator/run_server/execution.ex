@@ -20,6 +20,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   Every terminal transition terminates pending workers.
   """
 
+  alias FavnOrchestrator.RunServer.Execution.RegistrationRetry
   alias FavnOrchestrator.RefreshPolicy
   alias FavnOrchestrator.RunServer.Execution.RecoveredTask
   alias Favn.Manifest.Version
@@ -79,12 +80,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
           | {:post_step_reply, reference(), term()}
           | {:post_step_worker_down, reference(), term()}
 
-  @typep compact_index :: %Favn.Manifest.Index{
-           planning_index: nil,
-           assets_by_ref: map(),
-           pipelines_by_ref: %{},
-           schedules_by_ref: %{}
-         }
+  @type compact_index :: %Favn.Manifest.Index{
+          planning_index: nil,
+          assets_by_ref: map(),
+          pipelines_by_ref: %{},
+          schedules_by_ref: %{}
+        }
 
   @spec start_state(RunState.t(), Version.t()) ::
           {:ok, RunExecutionState.t()} | {:terminal, RunState.t()} | {:recovery_required, term()}
@@ -156,26 +157,243 @@ defmodule FavnOrchestrator.RunServer.Execution do
     |> stop_workers_on_terminal(state)
   end
 
+  @doc "Executes one bounded operation without coordinator timers or awaits."
+  @spec perform_operation(tuple()) :: term()
+  def perform_operation({:cancel_reconcile, state, _reason}) do
+    context = SystemContext.workspace(state.run.workspace_id, :run_worker)
+
+    with {:ok, latest} <- Runs.get(context, state.run.id) do
+      latest =
+        RunState.with_storage_fence(
+          latest,
+          state.run.storage_owner_id,
+          state.run.storage_fencing_token
+        )
+
+      reconcile_cancelled_admission(%{state | run: latest})
+    end
+  end
+
+  def perform_operation({:cancel_drain, state, reason, pending}) do
+    Enum.each(pending, &release_pending_permits(state.run, &1))
+    state = state |> cleanup_paused_admission(reason) |> clear_admission_waiters()
+
+    Cancellation.dispatch_runner_tasks(state.run, ActiveTaskSet.task_ids(state.work_set), reason,
+      wait_for_ack: false
+    )
+
+    state
+  end
+
+  def perform_operation({:sequential, action, state, args}),
+    do: apply(Sequential, action, [state | args])
+
+  def perform_operation({:resolve_transition, retry}), do: PersistenceRetry.resolve(retry)
+
+  def perform_operation({:cancellation_check, run, _resume}),
+    do: Persistence.externally_cancelled?(run)
+
+  def perform_operation({:checkpoint, args, _resume}),
+    do: apply(PipelineFreshnessCheckpoint, :put, args)
+
+  def perform_operation({:classify, args}), do: apply(StageClassifier, :classify, args)
+
+  def perform_operation({:stage_admission_continuation, action, pause, value}),
+    do: apply(StageAdmission, action, [pause, value])
+
+  def perform_operation({:stage_admit, input, waiters, _resume}) do
+    Enum.each(waiters, &ExecutionAdmission.cancel_wait/1)
+    StageAdmission.submit(input)
+  end
+
+  def perform_operation({:restore, input}), do: Restore.next(input)
+
+  def perform_operation({:recover_task, run, id, entry, _kind}) do
+    with {:ok, task} <- RunnerTasks.fetch(run.workspace_id, id),
+         true <- RecoveredTask.verify_evidence(task, entry.recovery_evidence),
+         {:ok, next} <-
+           RecoveredTask.reconcile(
+             run,
+             task,
+             Map.drop(entry, [:recovery_pending?, :recovery_evidence])
+           ),
+         do: {:ok, next}
+  end
+
+  def perform_operation({:read_terminal, run, id, evidence}) do
+    with {:ok, task} <- RunnerTasks.fetch(run.workspace_id, id),
+         :ok <- RecoveredTask.validate_terminal_read(task, evidence),
+         do: durable_task_result(task)
+  end
+
+  def perform_operation({:settle_stage, stage, entry, result}) do
+    StageResult.process(stage, entry, result, %{stage: entry.stage, attempt: entry.attempt})
+  after
+    ActiveTaskSet.release_entry(entry)
+  end
+
+  def perform_operation({:finish_stage, stage, pending, result}),
+    do: StageResult.finish_post_step(stage, pending, result)
+
+  def perform_operation({:resume_stage, stage, resume}),
+    do: StageResult.resume_persisted(stage, resume)
+
+  def perform_operation({kind, retry}) when kind in [:persist, :registration_intent],
+    do: PersistenceRetry.persist(retry)
+
+  @doc "Applies an operation receipt and stops workers on a terminal outcome."
+  @spec finish_operation(RunExecutionState.t(), tuple(), term()) :: term()
+  def finish_operation(state, operation, result),
+    do: state |> apply_operation(operation, result) |> stop_workers_on_terminal(state)
+
+  defp apply_operation(_state, {:cancel_reconcile, _, reason}, {:ok, next}),
+    do: cancel_reconciled(next, reason)
+
+  defp apply_operation(state, {:cancel_reconcile, _, _}, {:error, reason}),
+    do: {:recovery_required, state, {:cancellation_admission_reconciliation_failed, reason}}
+
+  defp apply_operation(_state, {:cancel_drain, _, _, _}, next) do
+    next = %{next | cancellation_dispatched?: true}
+
+    if map_size(next.awaits) > 0,
+      do: {:cont, %{next | status: :awaiting}},
+      else: {:terminal, Snapshots.cancelled_terminal(next.run, accumulated_results(next))}
+  end
+
+  defp apply_operation(state, {:sequential, _, _, _}, result) do
+    result =
+      case result do
+        {kind, next} when kind in [:cont, :retry_timer] and is_struct(next, RunExecutionState) ->
+          {kind, %{next | cancel_requested: state.cancel_requested}}
+
+        {kind, next, value} when kind in [:await, :retry_timer] ->
+          {kind, %{next | cancel_requested: state.cancel_requested}, value}
+
+        other ->
+          other
+      end
+
+    handle_sequential_directive(result)
+  end
+
+  defp apply_operation(state, {:resolve_transition, retry}, {:committed, _run}),
+    do: resume_persisted(state, retry.resume)
+
+  defp apply_operation(_state, {:resolve_transition, _}, {kind, run})
+       when kind in [:terminal, :failed], do: {:durable_terminal, run}
+
+  defp apply_operation(state, {:resolve_transition, _}, {:error, :cancellation_race}),
+    do: cancel(state, :cancellation_during_transition)
+
+  defp apply_operation(state, {:resolve_transition, _}, {:error, reason}),
+    do: {:unconfirmed_transition, state, reason}
+
+  defp apply_operation(
+         state,
+         {:cancellation_check, _run, {:registration, pending, retry, run}},
+         cancelled?
+       ),
+       do: resume_registration(state, pending, retry, run, cancelled?)
+
+  defp apply_operation(state, {:cancellation_check, _run, :pipeline_progress}, cancelled?),
+    do: pipeline_progress(state, cancelled?)
+
+  defp apply_operation(
+         state,
+         {:cancellation_check, _run, {:restored, progress, entries}},
+         cancelled?
+       ),
+       do: resume_restored_checked(state, progress, entries, cancelled?)
+
+  defp apply_operation(state, {:cancellation_check, _run, :continue_pipeline}, cancelled?),
+    do: continue_pipeline_checked(state, cancelled?)
+
+  defp apply_operation(state, {:classify, [_run, _version, stage | _]}, result),
+    do:
+      handle_stage_classification(
+        state,
+        result,
+        stage,
+        state.pipeline_continuation.runnable_node_keys_rev
+      )
+
+  defp apply_operation(state, {:checkpoint, _, resume}, {:ok, reference, run}),
+    do: resume_checkpoint(%{state | run: run, freshness_checkpoint: reference}, resume)
+
+  defp apply_operation(state, {:checkpoint, _, _}, {:error, reason}),
+    do: terminalize_checkpoint_failure(state, reason)
+
+  defp apply_operation(state, {:stage_admission_continuation, _, pause, _}, result),
+    do:
+      handle_resumed_stage_admission(
+        state,
+        pause.ctx.attempt,
+        result,
+        pause.ctx.completed_node_statuses
+      )
+
+  defp apply_operation(state, {:stage_admit, _, _, :refill}, result),
+    do: finish_refill(state, result)
+
+  defp apply_operation(state, {:stage_admit, _, _, {:submit, attempt, statuses}}, result),
+    do: finish_submission(state, attempt, statuses, result)
+
+  defp apply_operation(state, {:restore, _}, {:more, next}),
+    do: defer_pipeline_continue(struct!(state, next))
+
+  defp apply_operation(state, {:restore, _}, {:ready, next, progress, tasks}),
+    do: resume_restored(struct!(state, next), progress, tasks)
+
+  defp apply_operation(state, {:restore, _}, error),
+    do: {:recovery_required, state, {:execution_restore_failed, error}}
+
+  defp apply_operation(state, {:recover_task, _, _, _, kind}, {:ok, entry}),
+    do: {:cont, state |> RunExecutionState.add_work(entry) |> start_await(entry, kind)}
+
+  defp apply_operation(state, {:recover_task, _, id, _, _}, error),
+    do: {:recovery_required, state, {:recovered_task_reconciliation_failed, id, error}}
+
+  defp apply_operation(state, {:read_terminal, _, id, _}, {:ok, %RunnerResult{}} = result),
+    do: dispatch_event(state, {:runner_result, id, result})
+
+  defp apply_operation(state, {:read_terminal, _, id, _}, error),
+    do: {:recovery_required, state, {:recovered_terminal_read_failed, id, error}}
+
+  defp apply_operation(state, {kind, _, _, _}, result)
+       when kind in [:settle_stage, :finish_stage],
+       do: result |> prepare_pipeline_settlement(state) |> continue_pipeline_settlement()
+
+  defp apply_operation(state, {:resume_stage, _, _}, result),
+    do: result |> prepare_pipeline_settlement(state) |> continue_pipeline_settlement()
+
+  defp apply_operation(state, {:persist, retry}, result),
+    do: apply_persistence(state, retry, result)
+
+  defp apply_operation(state, {:registration_intent, retry}, :ok),
+    do: resume_persisted(state, retry.resume)
+
+  defp apply_operation(state, {:registration_intent, retry}, {:error, error}),
+    do: {:persist_retry, state, retry, error}
+
   # A `{:terminal, run}` result terminates every pending post-step worker before
   # it is returned, so no terminal transition can leave a worker behind.
   defp dispatch_event(%RunExecutionState{} = state, :continue), do: continue_state(state)
 
+  defp dispatch_event(state, :recover_next) do
+    case :queue.out(state.recovery_queue) do
+      {:empty, _} ->
+        {:cont, state}
+
+      {{:value, {id, kind}}, queue} ->
+        unless :queue.is_empty(queue), do: send(self(), :recover_next)
+        dispatch_event(%{state | recovery_queue: queue}, {:runner_task_result, id, kind})
+    end
+  end
+
   defp dispatch_event(%RunExecutionState{} = state, {:runner_task_result, task_id, :recover}) do
     case state.awaits[task_id] do
       %{entry: %{recovery_pending?: true} = entry, kind: kind} ->
-        with {:ok, task} <- RunnerTasks.fetch(state.run.workspace_id, task_id),
-             true <- RecoveredTask.verify_evidence(task, entry.recovery_evidence),
-             {:ok, entry} <-
-               RecoveredTask.reconcile(
-                 state.run,
-                 task,
-                 Map.drop(entry, [:recovery_pending?, :recovery_evidence])
-               ) do
-          {:cont, state |> RunExecutionState.add_work(entry) |> start_await(entry, kind)}
-        else
-          reason ->
-            {:recovery_required, state, {:recovered_task_reconciliation_failed, task_id, reason}}
-        end
+        {:operation, state, {:recover_task, state.run, task_id, entry, kind}}
 
       _ ->
         {:cont, state}
@@ -188,14 +406,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ) do
     case state.awaits[task_id] do
       %{entry: %{terminal_evidence: evidence}} ->
-        with {:ok, task} <- RunnerTasks.fetch(state.run.workspace_id, task_id),
-             :ok <- RecoveredTask.validate_terminal_read(task, evidence),
-             {:ok, %RunnerResult{} = result} <- durable_task_result(task) do
-          dispatch_event(state, {:runner_result, task_id, {:ok, result}})
-        else
-          reason ->
-            {:recovery_required, state, {:recovered_terminal_read_failed, task_id, reason}}
-        end
+        {:operation, state, {:read_terminal, state.run, task_id, evidence}}
 
       _ ->
         {:cont, state}
@@ -207,8 +418,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   # A runner reported the awaited task as started. The `:step_running` event is
-  # an advisory presence signal for read models: a persist failure is dropped
-  # rather than retried, because the attempt's terminal step event still lands.
+  # an advisory presence signal for read models, but its durable sequence must
+  # be resolved before persisting the attempt's terminal event.
   defp dispatch_event(%RunExecutionState{} = state, {:runner_task_started, task_id, _task}) do
     case Map.get(state.awaits, task_id) do
       %{started_persisted?: true} ->
@@ -337,6 +548,50 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   # The worker's reply. A reply for a continuation that already settled, or
   # whose worker was terminated, matches nothing and is ignored.
+  defp dispatch_event(state, {:registration_retry, token}) do
+    case RunExecutionState.pop_post_step_continuation(state, token) do
+      {%{waiting?: true, pending: pending, retry: retry} = continuation, next} ->
+        cancel_registration_timers(continuation)
+
+        if RegistrationRetry.remaining_ms(retry) > 0 do
+          {:cont, start_registration_worker(next, pending, retry, false)}
+        else
+          registration_exhausted(next, pending, retry)
+        end
+
+      _ ->
+        {:cont, state}
+    end
+  end
+
+  defp dispatch_event(state, {:registration_deadline, token}) do
+    case Enum.find(state.post_step_continuations, fn {_ref, c} -> c[:deadline_token] == token end) do
+      {ref, %{pending: pending, retry: retry} = continuation} ->
+        Process.demonitor(ref, [:flush])
+        terminate_post_step_worker(continuation.pid)
+        cancel_registration_timers(continuation)
+        {_removed, next} = RunExecutionState.pop_post_step_continuation(state, ref)
+
+        if continuation[:existing_only?] and RegistrationRetry.remaining_ms(retry) > 0 do
+          settle_post_step(
+            next,
+            continuation,
+            {:error,
+             FavnOrchestrator.Persistence.Error.new(
+               :timeout,
+               "existing registration evidence read timed out",
+               retryable?: true
+             )}
+          )
+        else
+          registration_exhausted(next, pending, retry)
+        end
+
+      nil ->
+        {:cont, state}
+    end
+  end
+
   defp dispatch_event(%RunExecutionState{} = state, {:post_step_reply, ref, result}) do
     case RunExecutionState.pop_post_step_continuation(state, ref) do
       {nil, state} ->
@@ -344,6 +599,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {continuation, state} ->
         Process.demonitor(ref, [:flush])
+        cancel_registration_timers(continuation)
         settle_post_step(state, continuation, post_step_result(result))
     end
   end
@@ -354,6 +610,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
         {:cont, state}
 
       {continuation, state} ->
+        cancel_registration_timers(continuation)
+
         settle_post_step(
           state,
           continuation,
@@ -381,8 +639,10 @@ defmodule FavnOrchestrator.RunServer.Execution do
       else: replay_persistence(state, retry)
   end
 
-  defp replay_persistence(state, retry) do
-    case PersistenceRetry.persist(retry) do
+  defp replay_persistence(state, retry), do: {:operation, state, {:persist, retry}}
+
+  defp apply_persistence(state, retry, result) do
+    case result do
       :ok
       when elem(retry.resume, 0) in [
              :stage_operation,
@@ -400,7 +660,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       {:error, :external_cancel} ->
         state = cleanup_paused_admission(state, :external_cancel)
-        {:terminal, Snapshots.cancelled_snapshot(state.run)}
+        {:terminal, Snapshots.cancelled_terminal(state.run, [])}
 
       {:error, reason} ->
         handle_persistence_retry_failure(state, retry, reason)
@@ -441,16 +701,12 @@ defmodule FavnOrchestrator.RunServer.Execution do
               :admission_intent,
               :runner_admission
             ] do
-    result = StageAdmission.fail_operation(pause, PersistenceRetry.exhaustion(retry))
-    state = %{state | paused_admission: nil}
-
-    handle_resumed_stage_admission(
-      state,
-      pause.ctx.attempt,
-      result,
-      pause.ctx.completed_node_statuses
-    )
+    {:operation, %{state | paused_admission: nil},
+     {:stage_admission_continuation, :fail_operation, pause, PersistenceRetry.exhaustion(retry)}}
   end
+
+  defp exhaust_persistence(state, %PersistenceRetry{event_type: :step_running} = retry),
+    do: {:operation, state, {:resolve_transition, retry}}
 
   defp exhaust_persistence(state, retry),
     do: {:recovery_required, state, PersistenceRetry.exhaustion(retry)}
@@ -463,20 +719,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
   def resume_persisted_retry(%RunExecutionState{} = state, %PersistenceRetry{} = retry) do
     case retry.resume do
       {:sequential_operation, pause} ->
-        state
-        |> Sequential.resume_operation(pause, retry.result || :ok)
-        |> handle_sequential_directive()
+        sequential_operation(state, :resume_operation, [pause, retry.result || :ok])
 
       {:stage_operation, pause} ->
-        state = %{state | paused_admission: nil}
-        result = StageAdmission.resume_operation(pause, retry.result || :ok)
-
-        handle_resumed_stage_admission(
-          state,
-          pause.ctx.attempt,
-          result,
-          pause.ctx.completed_node_statuses
-        )
+        {:operation, %{state | paused_admission: nil},
+         {:stage_admission_continuation, :resume_operation, pause, retry.result || :ok}}
 
       _ ->
         resume_persisted(state, retry.resume)
@@ -488,15 +735,8 @@ defmodule FavnOrchestrator.RunServer.Execution do
          %PersistenceRetry{resume: {:stage_operation, %{phase: :runner_admission} = pause}},
          %{details: %{reason_code: "target_write_in_progress"}} = reason
        ) do
-    result = StageAdmission.reject_operation(pause, reason)
-    state = %{state | paused_admission: nil}
-
-    handle_resumed_stage_admission(
-      state,
-      pause.ctx.attempt,
-      result,
-      pause.ctx.completed_node_statuses
-    )
+    {:operation, %{state | paused_admission: nil},
+     {:stage_admission_continuation, :reject_operation, pause, reason}}
   end
 
   defp handle_persistence_retry_failure(
@@ -504,9 +744,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
          %PersistenceRetry{resume: {:sequential_operation, %{phase: :admission} = pause}},
          %{details: %{reason_code: "target_write_in_progress"}} = reason
        ) do
-    state
-    |> Sequential.reject_operation(pause, reason)
-    |> handle_sequential_directive()
+    sequential_operation(state, :reject_operation, [pause, reason])
   end
 
   defp handle_persistence_retry_failure(
@@ -524,6 +762,23 @@ defmodule FavnOrchestrator.RunServer.Execution do
       true ->
         {:recovery_required, state, {:attempt_start_replay_rejected, reason}}
     end
+  end
+
+  defp handle_persistence_retry_failure(
+         state,
+         %PersistenceRetry{event_type: :step_running},
+         :cancellation_race
+       ),
+       do: cancel(state, :cancellation_during_transition)
+
+  defp handle_persistence_retry_failure(
+         state,
+         %PersistenceRetry{event_type: :step_running} = retry,
+         reason
+       ) do
+    if reason in [:fenced, :cancellation_race] or PersistenceRetry.transition_retryable?(reason),
+      do: {:persist_retry, state, retry, reason},
+      else: {:operation, state, {:resolve_transition, PersistenceRetry.rejected(retry, reason)}}
   end
 
   defp handle_persistence_retry_failure(state, retry, reason) do
@@ -545,21 +800,19 @@ defmodule FavnOrchestrator.RunServer.Execution do
   def cancel(%RunExecutionState{recovery: recovery} = state, _reason) when is_map(recovery),
     do: state |> Restore.start() |> defer_pipeline_continue()
 
-  def cancel(%RunExecutionState{} = state, reason) do
-    case reconcile_cancelled_admission(state) do
-      {:ok, state} ->
-        cancel_reconciled(state, reason)
-
-      {:error, error} ->
-        {:recovery_required, state, {:cancellation_admission_reconciliation_failed, error}}
-    end
+  def cancel(%RunExecutionState{cancellation_dispatched?: true} = state, _reason) do
+    if RunExecutionState.in_flight_count(state) > 0,
+      do: {:cont, %{state | status: :awaiting}},
+      else: {:terminal, Snapshots.cancelled_terminal(state.run, accumulated_results(state))}
   end
+
+  def cancel(%RunExecutionState{} = state, reason),
+    do: {:operation, state, {:cancel_reconcile, state, reason}}
 
   defp cancel_reconciled(state, reason) do
     reason = %{kind: :external_cancel, reason: reason}
 
     state = track_paused_entries_for_cancellation(state)
-    state = cleanup_paused_admission(state, reason)
 
     state =
       if map_size(state.post_step_continuations) > 0 do
@@ -576,18 +829,9 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     Enum.each(state.retry_timers, fn {_ref, timer} -> Process.cancel_timer(timer.timer_ref) end)
 
-    state = state |> stop_post_step_workers() |> clear_admission_waiters()
+    {state, pending} = detach_post_step_workers(state)
     state = %{state | retry_timers: %{}, pipeline_continuation: nil}
-
-    Cancellation.dispatch_runner_tasks(state.run, ActiveTaskSet.task_ids(state.work_set), reason,
-      wait_for_ack: false
-    )
-
-    if map_size(state.awaits) > 0 do
-      {:cont, %{state | status: :awaiting}}
-    else
-      {:terminal, Snapshots.cancelled_terminal(state.run, accumulated_results(state))}
-    end
+    {:operation, state, {:cancel_drain, state, reason, pending}}
   end
 
   @doc "Stops local waiters while retaining durable tasks, claims and leases for recovery."
@@ -616,17 +860,27 @@ defmodule FavnOrchestrator.RunServer.Execution do
       do: state
 
   def stop_post_step_workers(%RunExecutionState{} = state) do
-    Enum.each(state.post_step_continuations, fn {ref, %{pid: pid, pending: pending}} ->
-      Process.demonitor(ref, [:flush])
-      terminate_post_step_worker(pid)
-      release_pending_permits(state.run, pending)
-    end)
+    {state, pending} = detach_post_step_workers(state)
+    Enum.each(pending, &release_pending_permits(state.run, &1))
+    state
+  end
 
-    %{state | post_step_continuations: %{}}
+  defp detach_post_step_workers(state) do
+    pending =
+      Enum.map(state.post_step_continuations, fn {ref, continuation} ->
+        cancel_registration_timers(continuation)
+        Process.demonitor(ref, [:flush])
+        terminate_post_step_worker(continuation.pid)
+        continuation.pending
+      end)
+
+    {%{state | post_step_continuations: %{}}, pending}
   end
 
   # The supervisor shuts the worker down without an error report. If the
   # supervisor itself is already gone the worker is killed directly.
+  defp terminate_post_step_worker(nil), do: :ok
+
   defp terminate_post_step_worker(pid) do
     case Task.Supervisor.terminate_child(@post_step_supervisor, pid) do
       :ok -> :ok
@@ -740,11 +994,17 @@ defmodule FavnOrchestrator.RunServer.Execution do
     do: Map.update(refs, target_id, MapSet.new([ref]), &MapSet.put(&1, ref))
 
   defp continue_state(%RunExecutionState{recovery: recovery} = state) when is_map(recovery) do
-    case Restore.next(state) do
-      {:more, next} -> defer_pipeline_continue(next)
-      {:ready, next, progress, tasks} -> resume_restored(next, progress, tasks)
-      {:error, reason} -> {:recovery_required, state, {:execution_restore_failed, reason}}
-    end
+    input =
+      Map.take(state, [
+        :run,
+        :mode,
+        :recovery,
+        :freshness_checkpoint,
+        :accumulated_results,
+        :registration_retries
+      ])
+
+    {:operation, state, {:restore, input}}
   end
 
   defp continue_state(%RunExecutionState{mode: :sequential, status: :awaiting} = state),
@@ -763,9 +1023,18 @@ defmodule FavnOrchestrator.RunServer.Execution do
        do: after_pipeline_progress(state)
 
   defp continue_state(%RunExecutionState{mode: :sequential} = state),
-    do: state |> Sequential.continue() |> handle_sequential_directive()
+    do: sequential_operation(state, :continue, [])
 
   defp continue_state(%RunExecutionState{mode: :pipeline} = state), do: continue_pipeline(state)
+
+  defp sequential_operation(state, action, args),
+    do: {:operation, state, {:sequential, action, state, args}}
+
+  defp handle_sequential_directive({:retry_timer, state, retry}) do
+    token = make_ref()
+    timer = Process.send_after(self(), {:retry_attempt, token}, retry.retry_after_ms)
+    {:cont, RunExecutionState.put_retry_timer(state, token, timer, retry)}
+  end
 
   defp handle_sequential_directive({:await, %RunExecutionState{} = state, entry}),
     do: {:cont, start_await(state, entry, :sequential)}
@@ -781,20 +1050,23 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ),
        do: result
 
+  defp resume_persisted(state, {:step_running, running, task_id}) do
+    await = Map.put(state.awaits[task_id], :started_persisted?, true)
+    {:cont, RunExecutionState.put_await(%{state | run: running}, task_id, await)}
+  end
+
+  defp resume_persisted(state, {:registration_retry, pending, retry, run}),
+    do: {:operation, state, {:cancellation_check, run, {:registration, pending, retry, run}}}
+
   defp resume_persisted(%RunExecutionState{} = state, {:sequential, resume}) do
-    state
-    |> Sequential.resume_persisted(resume)
-    |> handle_sequential_directive()
+    sequential_operation(state, :resume_persisted, [resume])
   end
 
   defp resume_persisted(%RunExecutionState{stage_state: %StageAttemptState{}} = state, {
          :pipeline,
          resume
        }) do
-    state.stage_state
-    |> StageResult.resume_persisted(resume)
-    |> prepare_pipeline_settlement(state)
-    |> continue_pipeline_settlement()
+    {:operation, state, {:resume_stage, state.stage_state, resume}}
   end
 
   defp resume_persisted(state, {:stage_classification, ctx}) do
@@ -842,8 +1114,56 @@ defmodule FavnOrchestrator.RunServer.Execution do
     terminalize_stage_admission_failure(state, failed_run, step_results, cleanup_entries)
   end
 
+  defp resume_registration(state, pending, retry, run, cancelled?) do
+    OperationalEvents.emit(
+      :generation_registration_retry_scheduled,
+      %{scheduled_retries: retry.slots},
+      %{run_id: run.id, reason_code: retry.reason_code},
+      level: if(retry.slots == 1, do: :warning, else: :debug)
+    )
+
+    state = %{
+      state
+      | run: run,
+        stage_state: %{state.stage_state | run: run},
+        registration_retries: Map.put(state.registration_retries, retry.asset_step_id, retry)
+    }
+
+    if cancelled? or not is_nil(state.cancel_requested) do
+      cancel(state, state.cancel_requested || :cancelled_during_registration_retry)
+    else
+      if RegistrationRetry.remaining_ms(retry) == 0 do
+        registration_exhausted(state, pending, retry)
+      else
+        token = make_ref()
+        delay = max(DateTime.diff(retry.next_at, DateTime.utc_now(), :millisecond), 0)
+
+        timer =
+          Process.send_after(
+            self(),
+            {:registration_retry, token},
+            min(delay, RegistrationRetry.remaining_ms(retry))
+          )
+
+        {:cont,
+         RunExecutionState.put_post_step_continuation(state, token, %{
+           pid: nil,
+           pending: pending,
+           retry: retry,
+           waiting?: true,
+           timer_ref: timer
+         })}
+      end
+    end
+  end
+
+  defp queue_recovery(state, id, kind) do
+    if :queue.is_empty(state.recovery_queue), do: send(self(), :recover_next)
+    %{state | recovery_queue: :queue.in({id, kind}, state.recovery_queue)}
+  end
+
   defp start_await(%RunExecutionState{} = state, %{recovery_pending?: true} = entry, kind) do
-    send(self(), {:runner_task_result, state.run.workspace_id, entry.task_id, :recover})
+    state = queue_recovery(state, entry.task_id, :recover)
 
     RunExecutionState.put_await(state, entry.task_id, %{
       pid: nil,
@@ -856,7 +1176,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp start_await(%RunExecutionState{} = state, %{terminal_task?: true} = entry, kind) do
-    send(self(), {:runner_task_result, state.run.workspace_id, entry.task_id, :read_terminal})
+    state = queue_recovery(state, entry.task_id, :read_terminal)
 
     RunExecutionState.put_await(state, entry.task_id, %{
       pid: nil,
@@ -914,7 +1234,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   # A restart rebuilds awaits without the started_persisted? marker, so a
   # re-delivered started signal can persist a second `:step_running` event.
   # The event is advisory, so the duplicate is acceptable.
-  defp persist_step_running(%RunExecutionState{} = state, task_id, await, entry) do
+  defp persist_step_running(%RunExecutionState{} = state, task_id, _await, entry) do
     data = %{
       asset_ref: Map.get(entry, :asset_ref),
       runner_task_id: task_id,
@@ -928,32 +1248,15 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
     running = RunState.transition(state.run, status: :running)
 
-    case Persistence.persist_run_step(running, :step_running, data) do
-      :ok ->
-        marked = Map.put(await, :started_persisted?, true)
-        state = RunExecutionState.put_await(%{state | run: running}, task_id, marked)
-        {:cont, state}
-
-      {:error, :external_cancel} ->
-        {:terminal, Snapshots.cancelled_snapshot(state.run)}
-
-      {:error, :fenced} ->
-        exit({:shutdown, :run_ownership_lost})
-
-      {:error, reason} ->
-        OperationalEvents.emit(
-          :step_running_persist_failed,
-          %{},
-          %{run_id: state.run.id, task_id: task_id, reason: reason},
-          level: :warning
-        )
-
-        {:cont, state}
-    end
+    retry = PersistenceRetry.new(running, :step_running, data, {:step_running, running, task_id})
+    {:operation, state, {:persist, retry}}
   end
 
-  defp resume_restored(state, progress, entries) do
-    if Persistence.externally_cancelled?(state.run) do
+  defp resume_restored(state, progress, entries),
+    do: {:operation, state, {:cancellation_check, state.run, {:restored, progress, entries}}}
+
+  defp resume_restored_checked(state, progress, entries, cancelled?) do
+    if cancelled? or not is_nil(state.cancel_requested) do
       state =
         if state.mode == :pipeline do
           stage =
@@ -1179,13 +1482,13 @@ defmodule FavnOrchestrator.RunServer.Execution do
                  )}
 
               intended ->
-                next |> Sequential.restore_intent(intended) |> handle_sequential_directive()
+                sequential_operation(next, :restore_intent, [intended])
 
               retry ->
-                next |> Sequential.restore_retry(retry) |> handle_sequential_directive()
+                sequential_operation(next, :restore_retry, [retry])
 
               true ->
-                next |> Sequential.continue() |> handle_sequential_directive()
+                sequential_operation(next, :continue, [])
             end
 
           {:error, reason} ->
@@ -1214,14 +1517,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp handle_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
-    settlement =
-      try do
-        process_await_result(state, entry, result, :pipeline)
-      after
-        :ok = ActiveTaskSet.release_entry(entry)
-      end
-
-    continue_pipeline_settlement(settlement)
+    process_await_result(state, entry, result, :pipeline)
   end
 
   defp handle_await_result(%RunExecutionState{} = state, entry, result, :sequential) do
@@ -1326,9 +1622,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
     result = validate_await_result(entry, result)
     state = elem(RunExecutionState.complete_work(state, entry.task_id), 1)
 
-    state
-    |> Sequential.handle_result(entry, result)
-    |> handle_sequential_directive()
+    sequential_operation(state, :handle_result, [entry, result])
   end
 
   defp process_await_result(%RunExecutionState{} = state, entry, result, :pipeline) do
@@ -1362,9 +1656,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp resume_retry(%RunExecutionState{mode: :sequential} = state, retry) do
-    state
-    |> Sequential.resume_retry(retry)
-    |> handle_sequential_directive()
+    sequential_operation(state, :resume_retry, [retry])
   end
 
   defp resume_retry(%RunExecutionState{mode: :pipeline} = state, retry) do
@@ -1385,27 +1677,33 @@ defmodule FavnOrchestrator.RunServer.Execution do
     )
   end
 
-  defp continue_pipeline(%RunExecutionState{} = state) do
-    if state.stage_index >= length(state.stage_groups) do
-      terminalize_pipeline_state(state)
-    else
-      {stage, node_keys} = Enum.at(state.stage_groups, state.stage_index)
+  defp continue_pipeline(%RunExecutionState{cancel_requested: reason} = state)
+       when not is_nil(reason),
+       do: cancel(state, reason)
 
-      if Persistence.externally_cancelled?(state.run) do
-        {:terminal, Snapshots.cancelled_terminal(state.run, state.accumulated_results)}
-      else
-        state
-        |> Map.put(:stage_decisions, %{})
-        |> Map.put(:stage_freshness_context, state.freshness_context)
-        |> Map.put(:pipeline_continuation, %{
-          kind: :stage_classification,
-          stage: stage,
-          remaining_node_keys: node_keys,
-          runnable_node_keys_rev: []
-        })
-        |> Map.put(:status, :classifying)
-        |> continue_stage_classification()
-      end
+  defp continue_pipeline(%RunExecutionState{} = state) do
+    if state.stage_index >= length(state.stage_groups),
+      do: terminalize_pipeline_state(state),
+      else: {:operation, state, {:cancellation_check, state.run, :continue_pipeline}}
+  end
+
+  defp continue_pipeline_checked(state, cancelled?) do
+    {stage, node_keys} = Enum.at(state.stage_groups, state.stage_index)
+
+    if cancelled? do
+      {:terminal, Snapshots.cancelled_terminal(state.run, state.accumulated_results)}
+    else
+      state
+      |> Map.put(:stage_decisions, %{})
+      |> Map.put(:stage_freshness_context, state.freshness_context)
+      |> Map.put(:pipeline_continuation, %{
+        kind: :stage_classification,
+        stage: stage,
+        remaining_node_keys: node_keys,
+        runnable_node_keys_rev: []
+      })
+      |> Map.put(:status, :classifying)
+      |> continue_stage_classification()
     end
   end
 
@@ -1415,21 +1713,20 @@ defmodule FavnOrchestrator.RunServer.Execution do
              kind: :stage_classification,
              stage: stage,
              remaining_node_keys: node_keys,
-             runnable_node_keys_rev: runnable_rev
+             runnable_node_keys_rev: _runnable_rev
            }
          } = state
        ) do
-    result =
-      StageClassifier.classify(
+    {:operation, state,
+     {:classify,
+      [
         state.run,
         state.version,
         stage,
         node_keys,
         state.stage_freshness_context,
         state.terminal_failure
-      )
-
-    handle_stage_classification(state, result, stage, runnable_rev)
+      ]}}
   end
 
   defp handle_stage_classification(state, result, stage, runnable_rev) do
@@ -1471,25 +1768,45 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp finish_stage_classification(state, runnable_node_keys) do
     {stage, _node_keys} = Enum.at(state.stage_groups, state.stage_index)
 
-    case put_freshness_checkpoint(state, stage, 1, state.stage_freshness_context) do
-      {:ok, checkpointed} when runnable_node_keys == [] ->
-        checkpointed
-        |> Map.put(:freshness_context, checkpointed.stage_freshness_context)
-        |> Map.put(:stage_index, checkpointed.stage_index + 1)
+    checkpoint_operation(
+      state,
+      stage,
+      1,
+      state.stage_freshness_context,
+      "admit",
+      {:classified, runnable_node_keys}
+    )
+  end
+
+  defp resume_checkpoint(state, {:classified, runnable_node_keys}) do
+    case runnable_node_keys do
+      [] ->
+        state
+        |> Map.put(:freshness_context, state.stage_freshness_context)
+        |> Map.put(:stage_index, state.stage_index + 1)
         |> Map.put(:pipeline_continuation, nil)
         |> Map.put(:status, :starting)
         |> defer_pipeline_continue()
 
-      {:ok, checkpointed} ->
-        checkpointed
+      _ ->
+        state
         |> Map.put(:pipeline_continuation, nil)
         |> Map.put(:status, :submitting)
         |> submit_pipeline_stage_attempt(runnable_node_keys, 1)
-
-      {:error, reason} ->
-        terminalize_checkpoint_failure(state, reason)
     end
   end
+
+  defp resume_checkpoint(state, {:submit, keys, attempt, statuses}),
+    do: submit_pipeline_stage_attempt_with_checkpoint(state, keys, attempt, statuses)
+
+  defp resume_checkpoint(state, :advance),
+    do:
+      continue_pipeline(%{
+        state
+        | stage_index: state.stage_index + 1,
+          stage_admission_deadline_ms: nil,
+          status: :starting
+      })
 
   defp defer_pipeline_continue(%RunExecutionState{} = state) do
     send(self(), :continue_execution)
@@ -1504,13 +1821,11 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ) do
     {stage, _stage_node_keys} = Enum.at(state.stage_groups, state.stage_index)
 
-    with {:ok, state} <-
-           ensure_freshness_checkpoint(
-             state,
-             stage,
-             attempt,
-             state.stage_freshness_context
-           ) do
+    if match?(
+         %{stage: ^stage, attempt: ^attempt, sequence: sequence}
+         when sequence == state.run.event_seq,
+         state.freshness_checkpoint
+       ) do
       submit_pipeline_stage_attempt_with_checkpoint(
         state,
         node_keys,
@@ -1518,7 +1833,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
         completed_node_statuses
       )
     else
-      {:error, reason} -> terminalize_checkpoint_failure(state, reason)
+      checkpoint_operation(
+        state,
+        stage,
+        attempt,
+        state.stage_freshness_context,
+        "admit",
+        {:submit, node_keys, attempt, completed_node_statuses}
+      )
     end
   end
 
@@ -1528,14 +1850,21 @@ defmodule FavnOrchestrator.RunServer.Execution do
          attempt,
          completed_node_statuses
        ) do
-    case submit_stage_entries(
-           state,
-           state.run,
-           node_keys,
-           attempt,
-           MapSet.new(),
-           completed_node_statuses
-         ) do
+    input =
+      stage_admission_input(
+        state,
+        state.run,
+        node_keys,
+        attempt,
+        MapSet.new(),
+        completed_node_statuses
+      )
+
+    {:operation, state, {:stage_admit, input, [], {:submit, attempt, completed_node_statuses}}}
+  end
+
+  defp finish_submission(state, attempt, completed_node_statuses, result) do
+    case result do
       {:ok, run_after_submit, entries, deferred_node_keys, queued_steps, waiters,
        admission_failure, deferred_refill_cause} ->
         stage_state =
@@ -1649,21 +1978,14 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp handle_pipeline_await_result(%RunExecutionState{} = state, entry, result) do
     state = elem(RunExecutionState.complete_work(state, entry.task_id), 1)
 
-    state.stage_state
-    |> Map.put(:run, state.run)
-    |> StageResult.process(
+    entry =
       Map.merge(entry, %{
         version: state.version,
         manifest_index: state.manifest_index,
         freshness_context: state.stage_freshness_context
-      }),
-      result,
-      %{
-        stage: entry.stage,
-        attempt: entry.attempt
-      }
-    )
-    |> prepare_pipeline_settlement(state)
+      })
+
+    {:operation, state, {:settle_stage, %{state.stage_state | run: state.run}, entry, result}}
   end
 
   defp prepare_pipeline_settlement({:recovery_required, run, reason}, state),
@@ -1719,47 +2041,111 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp continue_pipeline_settlement(result), do: result
 
-  # The unchanged reconciler runs in a worker so the blocking wait on runner
-  # inspection tasks never occupies the run process. The reply and any exit
-  # arrive as ordinary messages keyed by the monitor reference.
-  defp start_post_step_worker(%RunExecutionState{} = state, pending) do
+  defp start_post_step_worker(state, pending) do
+    retry = state.registration_retries[pending.entry.asset_step_id]
+    start_registration_worker(state, pending, retry, not is_nil(retry))
+  end
+
+  defp start_registration_worker(state, pending, retry, existing_only?) do
+    remaining = if retry, do: RegistrationRetry.remaining_ms(retry)
+    timeout = if existing_only?, do: 5_000, else: remaining
+    opts = [reconcile_only?: existing_only?]
+    opts = if timeout, do: Keyword.put(opts, :timeout_ms, timeout), else: opts
     entry = pending.entry
 
     task =
       FavnOrchestrator.RunHelper.async(state.run, fn ->
-        InitialTargetGenerationReconciler.reconcile(entry)
+        InitialTargetGenerationReconciler.reconcile(entry, opts)
       end)
+
+    token = make_ref()
+
+    deadline_timer =
+      if timeout, do: Process.send_after(self(), {:registration_deadline, token}, timeout)
 
     OperationalEvents.emit(
       :post_step_continuation_started,
       %{},
-      %{workspace_id: state.run.workspace_id, run_id: state.run.id, node_key: entry.node_key},
+      %{
+        workspace_id: state.run.workspace_id,
+        run_id: state.run.id,
+        node_key: entry.node_key
+      },
       level: :debug
     )
 
     RunExecutionState.put_post_step_continuation(state, task.ref, %{
       pid: task.pid,
-      pending: pending
+      pending: pending,
+      retry: retry,
+      existing_only?: existing_only?,
+      deadline_token: token,
+      deadline_timer: deadline_timer
     })
   end
 
-  defp settle_post_step(
+  defp settle_post_step(state, %{pending: pending}, {:error, reason} = result) do
+    if RegistrationRetry.retryable?(reason) do
+      previous = state.registration_retries[pending.entry.asset_step_id]
+
+      case RegistrationRetry.next(previous, pending, reason) do
+        {:ok, retry} ->
+          data = RegistrationRetry.event(retry)
+
+          run =
+            RunState.transition(state.run,
+              metadata: Map.put(state.run.metadata, "registration_retry", data)
+            )
+
+          intent =
+            PersistenceRetry.new(
+              run,
+              :registration_retry_scheduled,
+              data,
+              {:registration_retry, pending, retry, run}
+            )
+
+          {:operation, state, {:registration_intent, intent}}
+
+        {:error, _} ->
+          registration_exhausted(state, pending, previous)
+      end
+    else
+      finish_post_step(state, pending, result)
+    end
+  end
+
+  defp settle_post_step(state, %{pending: pending}, result),
+    do: finish_post_step(state, pending, result)
+
+  defp registration_exhausted(state, pending, retry) do
+    data = if retry, do: RegistrationRetry.event(retry), else: %{}
+
+    {:recovery_required, state,
+     {:registration_retry_exhausted, Map.put(data, "asset_step_id", pending.entry.asset_step_id)}}
+  end
+
+  defp cancel_registration_timers(continuation) do
+    for key <- [:timer_ref, :deadline_timer],
+        ref = continuation[key],
+        is_reference(ref),
+        do: Process.cancel_timer(ref)
+
+    :ok
+  end
+
+  defp finish_post_step(
          %RunExecutionState{stage_state: %StageAttemptState{}} = state,
-         %{pending: pending},
+         pending,
          result
        ) do
     emit_post_step_settled(state, pending.entry, result)
-
-    state.stage_state
-    |> Map.put(:run, state.run)
-    |> StageResult.finish_post_step(pending, result)
-    |> prepare_pipeline_settlement(state)
-    |> continue_pipeline_settlement()
+    {:operation, state, {:finish_stage, %{state.stage_state | run: state.run}, pending, result}}
   end
 
   # Unreachable while pending continuations gate stage progress; kept loud so a
   # future regression never silently drops a node's settlement.
-  defp settle_post_step(%RunExecutionState{} = state, %{pending: pending}, _result) do
+  defp finish_post_step(%RunExecutionState{} = state, pending, _result) do
     OperationalEvents.emit(
       :post_step_continuation_orphaned,
       %{},
@@ -1813,10 +2199,21 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
   defp bounded_inspect(term), do: inspect(term, limit: 20, printable_limit: 1_000)
 
+  defp after_pipeline_progress(%RunExecutionState{cancel_requested: reason} = state)
+       when not is_nil(reason),
+       do: cancel(state, reason)
+
   defp after_pipeline_progress(%RunExecutionState{stage_state: nil} = state), do: {:cont, state}
 
-  defp after_pipeline_progress(%RunExecutionState{} = state) do
-    if Persistence.externally_cancelled?(state.run) do
+  defp after_pipeline_progress(%RunExecutionState{} = state),
+    do: {:operation, state, {:cancellation_check, state.run, :pipeline_progress}}
+
+  defp pipeline_progress(%RunExecutionState{cancel_requested: reason} = state, _)
+       when not is_nil(reason),
+       do: cancel(state, reason)
+
+  defp pipeline_progress(state, cancelled?) do
+    if cancelled? do
       state = clear_admission_waiters(state)
 
       if RunExecutionState.in_flight_count(state) > 0 do
@@ -1897,15 +2294,22 @@ defmodule FavnOrchestrator.RunServer.Execution do
   end
 
   defp refill_or_schedule_admission(%RunExecutionState{} = state) do
-    state = clear_admission_waiters(state)
+    {waiters, state} = RunExecutionState.clear_admission_waiters(state)
 
-    case submit_stage_entries(
-           state,
-           state.run,
-           state.stage_state.deferred_node_keys,
-           state.stage_attempt,
-           state.stage_state.queued_steps
-         ) do
+    input =
+      stage_admission_input(
+        state,
+        state.run,
+        state.stage_state.deferred_node_keys,
+        state.stage_attempt,
+        state.stage_state.queued_steps
+      )
+
+    {:operation, state, {:stage_admit, input, waiters, :refill}}
+  end
+
+  defp finish_refill(state, result) do
+    case result do
       {:ok, next_run, [], next_deferred_node_keys, next_queued_steps, waiters, admission_failure,
        deferred_refill_cause} ->
         stage_state =
@@ -2460,22 +2864,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
 
       retry = PersistenceRetry.new(checkpointed, :pipeline_retry_checkpointed, data, resume)
 
-      case PersistenceRetry.persist(retry) do
-        :ok ->
-          schedule_pipeline_retry_timer(
-            %{state | run: checkpointed},
-            node_keys,
-            stage,
-            attempt,
-            next_retry_at
-          )
-
-        {:error, :external_cancel} ->
-          {:terminal, Snapshots.cancelled_snapshot(checkpointed)}
-
-        {:error, reason} ->
-          {:persist_retry, %{state | pipeline_continuation: nil}, retry, reason}
-      end
+      {:operation, %{state | pipeline_continuation: nil}, {:persist, retry}}
     else
       {:error, reason} ->
         {:terminal,
@@ -2814,52 +3203,22 @@ defmodule FavnOrchestrator.RunServer.Execution do
     end
   end
 
-  defp ensure_freshness_checkpoint(state, stage, attempt, context) do
-    case state.freshness_checkpoint do
-      %{stage: ^stage, attempt: ^attempt, sequence: sequence}
-      when sequence == state.run.event_seq ->
-        {:ok, state}
+  defp checkpoint_operation(state, stage, attempt, context, phase, resume) do
+    args = [
+      state.run,
+      stage,
+      attempt,
+      context,
+      state.freshness_checkpoint,
+      %{version: 1, mode: "pipeline", phase: phase, index: state.stage_index, attempt: attempt}
+    ]
 
-      _missing_or_stale ->
-        put_freshness_checkpoint(state, stage, attempt, context)
-    end
-  end
-
-  defp put_freshness_checkpoint(state, stage, attempt, context, phase \\ "admit") do
-    case PipelineFreshnessCheckpoint.put(
-           state.run,
-           stage,
-           attempt,
-           context,
-           state.freshness_checkpoint,
-           %{
-             version: 1,
-             mode: "pipeline",
-             phase: phase,
-             index: state.stage_index,
-             attempt: attempt
-           }
-         ) do
-      {:ok, reference, run} -> {:ok, %{state | run: run, freshness_checkpoint: reference}}
-      {:error, reason} -> {:error, reason}
-    end
+    {:operation, state, {:checkpoint, args, resume}}
   end
 
   defp continue_after_stage_checkpoint(state, context) do
     {stage, _node_keys} = Enum.at(state.stage_groups, state.stage_index)
-
-    case put_freshness_checkpoint(state, stage, state.stage_attempt, context, "advance") do
-      {:ok, checkpointed} ->
-        continue_pipeline(%{
-          checkpointed
-          | stage_index: checkpointed.stage_index + 1,
-            stage_admission_deadline_ms: nil,
-            status: :starting
-        })
-
-      {:error, reason} ->
-        terminalize_checkpoint_failure(state, reason)
-    end
+    checkpoint_operation(state, stage, state.stage_attempt, context, "advance", :advance)
   end
 
   defp terminalize_checkpoint_failure(state, reason) do
@@ -2878,7 +3237,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
   defp metadata_field(metadata, key) when is_map(metadata),
     do: Map.get(metadata, key, Map.get(metadata, Atom.to_string(key)))
 
-  defp submit_stage_entries(
+  defp stage_admission_input(
          %RunExecutionState{} = state,
          %RunState{} = run_state,
          node_keys,
@@ -2888,7 +3247,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
        ) do
     {stage, _node_keys} = Enum.at(state.stage_groups, state.stage_index)
 
-    StageAdmission.submit(%{
+    %{
       run: run_state,
       version: state.version,
       manifest_index: state.manifest_index,
@@ -2901,7 +3260,7 @@ defmodule FavnOrchestrator.RunServer.Execution do
       manifest_lease_id: state.manifest_lease_id,
       queued_steps: queued_steps,
       completed_node_statuses: completed_node_statuses
-    })
+    }
   end
 
   defp durable_task_result(%{result: %RunnerResult{} = result}), do: {:ok, result}

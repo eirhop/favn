@@ -122,8 +122,14 @@ defmodule FavnOrchestrator.RunServer.Execution.Restore do
          {:ok, failure} <- failure(state, progress.failure) do
       run = restore_results(state.run, progress, Enum.reverse(recovery.details))
 
-      {:ready, %{state | run: run, recovery: nil, accumulated_results: recovery.asset_results},
-       %{progress | failure: failure}, Enum.reverse(recovery.tasks)}
+      {:ready,
+       %{
+         state
+         | run: run,
+           recovery: nil,
+           registration_retries: progress.registration_retries,
+           accumulated_results: recovery.asset_results
+       }, %{progress | failure: failure}, Enum.reverse(recovery.tasks)}
     end
   end
 
@@ -191,7 +197,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Restore do
 
   defp validate_task(_state, _step, _task), do: {:error, :recovered_task_data_unavailable}
 
-  defp validate_outcome(%{phase: :outcome, status: status} = step, task, outcome) do
+  @doc false
+  def validate_outcome(%{phase: :outcome, status: status} = step, task, outcome) do
     compatible? =
       case status do
         :ok ->
@@ -213,7 +220,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Restore do
       else: {:error, :recovered_task_outcome_mismatch}
   end
 
-  defp validate_outcome(_step, _task, _outcome), do: :ok
+  def validate_outcome(_step, _task, _outcome), do: :ok
 
   defp retained_assets(state, id, event) do
     step = Map.fetch!(state.recovery.progress.steps, id)
@@ -277,7 +284,8 @@ defmodule FavnOrchestrator.RunServer.Execution.Restore do
 
   defp outcome(_state, _step), do: {:ok, nil}
 
-  defp restore_results(run, progress, details) do
+  @doc false
+  def restore_results(run, progress, details) do
     results =
       Enum.map(details, fn {id, event} ->
         step = Map.fetch!(progress.steps, id)
@@ -296,6 +304,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Restore do
             window: node.window,
             stage: node.stage,
             status: outcome_status(event),
+            attempt_count: field(data, :attempt_count, field(event.data, :attempt, 1)),
             runner_pool: FavnOrchestrator.RunnerPoolSelection.for_node(run, step.node_key),
             execution_pool: Map.get(node, :execution_pool),
             asset_step_id: id

@@ -34,6 +34,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   @type directive ::
           {:await, RunExecutionState.t(), map()}
           | {:cont, RunExecutionState.t()}
+          | {:retry_timer, RunExecutionState.t(), map()}
           | {:terminal, RunState.t()}
           | {:persist_retry, RunExecutionState.t(), PersistenceRetry.t(), term()}
 
@@ -77,7 +78,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     metadata = ResultSanitizer.merge_metadata(state.run.metadata, result.metadata)
 
     retry_delay =
-      if retryable? and
+      if not failed_cleanup?(state.run) and retryable? and
            StepAttemptLifecycle.retry_allowed?(state.run, entry.node_key, entry.attempt) do
         if entry[:recovered_outcome],
           do: Map.get(entry.recovered_outcome.data, "retry_after_ms"),
@@ -217,8 +218,42 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
   def resume_persisted(%RunExecutionState{} = state, %{kind: :step_result} = resume) do
     settled = RunState.transition(resume.run, [])
 
+    settled =
+      if failed_cleanup?(settled) do
+        node_result =
+          ResultBuilder.execution_result(
+            settled,
+            resume.entry,
+            resume.entry.stage,
+            resume.entry.attempt,
+            resume.status,
+            resume.asset_results
+          )
+
+        recorded =
+          if resume.entry[:recovered_outcome],
+            do: ResultBuilder.restore_node_result(settled, node_result),
+            else: ResultBuilder.append_node_result(settled, node_result)
+
+        saved_assets = Map.get(recorded.result, :asset_results, [])
+
+        assets =
+          if resume.entry[:recovered_outcome],
+            do: saved_assets ++ resume.asset_results,
+            else: resume.asset_results ++ saved_assets
+
+        assets = Enum.uniq_by(assets, &cleanup_asset_identity/1)
+
+        Snapshots.snapshot_update(recorded,
+          result:
+            Map.put(recorded.result, :asset_results, ResultBuilder.retain_asset_results(assets))
+        )
+      else
+        settled
+      end
+
     retryable? =
-      resume.retryable? and
+      not failed_cleanup?(settled) and resume.retryable? and
         StepAttemptLifecycle.retry_allowed?(settled, resume.entry.node_key, resume.entry.attempt)
 
     data = %{
@@ -246,6 +281,9 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     state = %{state | run: resume.run}
 
     cond do
+      failed_cleanup?(state.run) ->
+        {:terminal, state.run}
+
       Persistence.externally_cancelled?(state.run) ->
         {:terminal,
          Snapshots.cancelled_terminal(
@@ -369,6 +407,18 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
 
   def refs(%RunState{} = run_state),
     do: [{run_state.asset_ref, {run_state.asset_ref, nil}, 0}]
+
+  defp failed_cleanup?(run),
+    do: run.status == :error and is_map(run.metadata["failure_cleanup"])
+
+  defp cleanup_asset_identity(result) do
+    field = fn key -> Map.get(result, key, Map.get(result, Atom.to_string(key))) end
+
+    identity =
+      field.(:asset_step_id) || {field.(:ref), field.(:started_at), field.(:finished_at)}
+
+    {identity, field.(:attempt_count)}
+  end
 
   defp submit_attempt(
          %RunExecutionState{} = state,
@@ -842,18 +892,7 @@ defmodule FavnOrchestrator.RunServer.Execution.Sequential do
     )
   end
 
-  defp schedule_retry_timer(state, retry) do
-    timer_token = make_ref()
-    timer_ref = Process.send_after(self(), {:retry_attempt, timer_token}, retry.retry_after_ms)
-
-    {:cont,
-     RunExecutionState.put_retry_timer(
-       state,
-       timer_token,
-       timer_ref,
-       retry
-     )}
-  end
+  defp schedule_retry_timer(state, retry), do: {:retry_timer, state, retry}
 
   defp clear_retry_state(metadata) do
     metadata

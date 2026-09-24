@@ -71,6 +71,8 @@ defmodule FavnOrchestrator.RunServer.Snapshots do
   @doc "Updates a snapshot timestamp and hash without advancing its event sequence."
   @spec snapshot_update(RunState.t(), keyword()) :: RunState.t()
   def snapshot_update(%RunState{} = run_state, attrs) when is_list(attrs) do
+    attrs = RunState.preserve_cleanup_outcome(run_state, attrs)
+
     run_state
     |> Map.merge(Enum.into(attrs, %{}))
     |> Map.put(:updated_at, DateTime.utc_now())

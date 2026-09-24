@@ -1,5 +1,6 @@
 defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   use ExUnit.Case, async: false
+  alias FavnTestSupport.ExecutionDriver
   alias Ecto.Adapters.SQL
   alias Ecto.Adapters.SQL.Sandbox
   alias Favn.Contracts.RunnerTask.PersistenceCodec, as: Codec
@@ -274,10 +275,11 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
       )
 
     restored = %{state | run: persisted}
-    assert {:cont, waiting_again} = Sequential.resume_retry(restored, persisted_retry)
-    [second_timer] = Map.values(waiting_again.retry_timers)
-    assert second_timer.payload.admission_deadline_ms == retry.admission_deadline_ms
-    RunExecutionState.cancel_timers(waiting_again)
+
+    assert {:retry_timer, waiting_again, scheduled_retry} =
+             Sequential.resume_retry(restored, persisted_retry)
+
+    assert scheduled_retry.admission_deadline_ms == retry.admission_deadline_ms
     # Wait on the same UTC clock as the runtime deadline guard. A monotonic
     # sleep does not prove a wall-clock deadline expired after clock correction.
     assert Enum.any?(1..200, fn _ ->
@@ -351,7 +353,6 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   end
 
   test "pipeline claim history retry becomes a normal wait for the live target writer", f do
-    alias FavnOrchestrator.RunServer.Execution
     alias FavnOrchestrator.RunServer.Execution.RunExecutionState
     alias FavnOrchestrator.RunServer.Execution.FreshnessContext
     state = sequential_state(f, 5_000, dependencies: :all)
@@ -370,10 +371,10 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
 
     assert {:persist_retry, paused, retry,
             %{details: %{reason_code: "execution_history_owner_busy"}}} =
-             Execution.handle_event(state, :continue)
+             ExecutionDriver.handle_event(state, :continue)
 
     assert retry.event_type == :runner_admission
-    assert {:cont, waiting} = Execution.retry_persistence(paused, retry)
+    assert {:cont, waiting} = ExecutionDriver.retry_persistence(paused, retry)
     assert waiting.paused_admission == nil
     assert waiting.terminal_failure == nil
     assert waiting.stage_state.deferred_node_keys == state.run.plan.target_node_keys
@@ -398,7 +399,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
                occurred_at: f.now
              })
 
-    assert {:cont, admitted} = Execution.handle_event(waiting, :continue)
+    assert {:cont, admitted} = ExecutionDriver.handle_event(waiting, :continue)
     assert admitted.stage_admission_deadline_ms == deadline
     assert [%{attempt: 1}] = Map.values(admitted.work_set.entries)
     RunExecutionState.cancel_timers(admitted)
@@ -885,6 +886,74 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
              )
   end
 
+  for cut <- [:queued, :assigned] do
+    test "failed cleanup fences an asset at the #{cut} start boundary", f do
+      assert {:ok, queued} = Store.enqueue(enqueue(f))
+
+      task =
+        if unquote(cut) == :assigned do
+          assert {:ok, assigned} = Store.claim(claim_task(f))
+          assigned
+        else
+          queued
+        end
+
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.runs SET status='error', snapshot=jsonb_set(snapshot, '{metadata,failure_cleanup}', '{\"version\":1,\"state\":\"pending\"}'::jsonb) WHERE workspace_id=$1 AND run_id=$2",
+        [f.workspace_id, f.work.run_id]
+      )
+
+      if unquote(cut) == :queued do
+        assert {:ok, nil} = Store.claim(claim_task(f, "after-failure"))
+
+        assert {:ok, %{status: :cancelled}} =
+                 Store.get(%Q.GetRunnerTask{
+                   workspace_context: f.workspace_context,
+                   task_id: task.task_id
+                 })
+      else
+        assert {:error, %{kind: :fenced}} = Store.transition(transition(f, task))
+      end
+
+      assert %{rows: [["not_started"]]} = effect(f)
+    end
+  end
+
+  @tag purpose: :materialization
+  test "queued cancellation retains conclusive pre-start proof and permits safe claim settlement",
+       f do
+    assert {:ok, task} = Store.enqueue(enqueue(f))
+
+    assert {:ok, cancelled} =
+             Store.request_cancellation(%C.RequestRunnerTaskCancellation{
+               workspace_context: f.workspace_context,
+               command_id: "cancel-before-start",
+               task_id: task.task_id,
+               reason: :failed_run_cleanup,
+               occurred_at: f.now,
+               issued_at: f.now
+             })
+
+    assert cancelled.status == :cancelled
+    assert cancelled.assignment_generation == 0
+    assert cancelled.retry_class == :unknown_do_not_retry
+    refute FavnOrchestrator.RunServer.FailureCleanup.uncertain_write?(cancelled)
+
+    assert {:ok, %{claim: %{status: :failed}}} =
+             Materialization.finish(%C.FinishMaterialization{
+               workspace_context: f.workspace_context,
+               command_id: "settle-unstarted",
+               claim_key: f.claim.claim_key,
+               owner_id: f.claim.owner_id,
+               fencing_token: f.claim.fencing_token,
+               expected_version: f.claim.version,
+               status: :failed,
+               error: %{reason: "cancelled_before_start"},
+               occurred_at: f.now
+             })
+  end
+
   test "released ownership claims retain their reusable fencing identity", f do
     command = %C.FinishMaterialization{
       workspace_context: f.workspace_context,
@@ -932,7 +1001,6 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
   end
 
   defp continue_after_history_conflict(state) do
-    alias FavnOrchestrator.RunServer.Execution
     alias FavnOrchestrator.RunServer.Execution.Sequential
 
     install_history_conflict_store()
@@ -943,7 +1011,7 @@ defmodule FavnStoragePostgres.StorageV2.WriteResolutionTest do
              Sequential.continue(state)
 
     assert retry.event_type == :runner_admission
-    Execution.retry_persistence(paused, retry)
+    ExecutionDriver.retry_persistence(paused, retry)
   end
 
   defp install_history_conflict_store do

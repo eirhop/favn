@@ -41,8 +41,7 @@ defmodule FavnOrchestrator.RunServer.RecoveryAttention do
           "last_reason" => diagnostic,
           "reports" => Map.get(previous, "reports", 0) + 1,
           "fingerprint" => fingerprint,
-          "last_reported_at" => DateTime.to_iso8601(now),
-          "immediate_retry_budget_ms" => 30_000
+          "last_reported_at" => DateTime.to_iso8601(now)
         }
 
         annotated =

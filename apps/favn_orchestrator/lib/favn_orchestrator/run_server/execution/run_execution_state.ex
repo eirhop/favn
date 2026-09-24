@@ -7,6 +7,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   blocking execution call stack.
   """
 
+  alias FavnOrchestrator.ExecutionAdmission.Coordinator
   alias Favn.Manifest.Index
   alias Favn.Manifest.Version
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
@@ -45,14 +46,20 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   replies.
   """
   @type post_step_continuation :: %{
-          required(:pid) => pid(),
-          required(:pending) => map()
+          required(:pid) => pid() | nil,
+          required(:pending) => map(),
+          optional(:retry) => FavnOrchestrator.RunServer.Execution.RegistrationRetry.t() | nil,
+          optional(:waiting?) => boolean(),
+          optional(:existing_only?) => boolean(),
+          optional(:timer_ref) => reference(),
+          optional(:deadline_token) => reference(),
+          optional(:deadline_timer) => reference() | nil
         }
 
   @type t :: %__MODULE__{
           run: RunState.t(),
           version: Version.t(),
-          manifest_index: Index.t(),
+          manifest_index: Index.t() | FavnOrchestrator.RunServer.Execution.compact_index(),
           mode: mode(),
           status: status(),
           manifest_lease_id: String.t() | nil,
@@ -79,6 +86,10 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
           terminal_failure: map() | nil,
           pipeline_continuation: map() | nil,
           recovery: map() | nil,
+          recovery_queue: :queue.queue(),
+          cancel_requested: term(),
+          cancellation_dispatched?: boolean(),
+          registration_retries: map(),
           paused_admission: map() | nil
         }
 
@@ -96,6 +107,10 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
             admission_timers: %{},
             admission_waiters: %{},
             post_step_continuations: %{},
+            registration_retries: %{},
+            recovery_queue: {[], []},
+            cancel_requested: nil,
+            cancellation_dispatched?: false,
             accumulated_results: [],
             sequential_refs: [],
             sequential_index: 0,
@@ -125,6 +140,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
       mode: Keyword.fetch!(opts, :mode),
       manifest_lease_id: Keyword.fetch!(opts, :manifest_lease_id),
       work_set: ActiveTaskSet.new(run),
+      recovery_queue: :queue.new(),
       sequential_refs: Keyword.get(opts, :sequential_refs, []),
       stage_groups: Keyword.get(opts, :stage_groups, []),
       freshness_context: Keyword.get(opts, :freshness_context),
@@ -248,6 +264,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RunExecutionState do
   @doc "Stores persisted admission waiters owned by this run server."
   @spec put_admission_waiters(t(), [map()]) :: t()
   def put_admission_waiters(%__MODULE__{} = state, waiters) when is_list(waiters) do
+    Enum.each(waiters, fn waiter -> :ok = Coordinator.register(waiter, self()) end)
     next_waiters = Map.new(waiters, &{&1.waiter_id, &1})
     %{state | admission_waiters: Map.merge(state.admission_waiters, next_waiters)}
   end

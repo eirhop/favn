@@ -43,11 +43,17 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetryTest do
           :step_failed,
           :step_timed_out,
           :step_cancelled,
-          :step_settled
+          :step_settled,
+          :registration_retry_scheduled
         ],
         retry = PersistenceRetry.new(struct(RunState), event, %{}, nil),
         pending <- [
-          %{execution_persist_pending: %{retry: retry}}
+          %{
+            execution_persist_pending: %{retry: retry},
+            execution_state: %FavnOrchestrator.RunServer.Execution.RunExecutionState{
+              run: retry.run
+            }
+          }
         ] do
       message = {:favn_run_cancel_requested, :operator}
       assert {:noreply, retained} = RunServer.handle_info(message, pending)

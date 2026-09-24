@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
   releases it, so every wait is deterministic.
   """
 
+  alias FavnTestSupport.ExecutionDriver
+
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerError
@@ -228,7 +230,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     }
 
     assert {:cont, next} =
-             Execution.handle_event(state, {:stage_admission_timeout, timer_token})
+             ExecutionDriver.handle_event(state, {:stage_admission_timeout, timer_token})
 
     assert next.status == :admission_wait
     refute Map.has_key?(next.admission_timers, timer_token)
@@ -270,7 +272,9 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     release_worker(worker, {:ok, %{active_generation_id: "gen-a"}})
     assert_receive {^ref, :ok}
 
-    assert {:terminal, finished} = Execution.handle_event(pending, {:post_step_reply, ref, :ok})
+    assert {:terminal, finished} =
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, :ok})
+
     assert finished.status == :ok
     assert node_result_count(finished) == 1
     refute_receive {:materialization_finished, %{status: :failed}}, 20
@@ -310,7 +314,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
       Process.put({FakeStore, :resource_error}, conflict)
 
       assert {:persist_retry, paused, retry, ^conflict} =
-               Execution.handle_event(pending, {:post_step_reply, ref, :ok})
+               ExecutionDriver.handle_event(pending, {:post_step_reply, ref, :ok})
 
       assert_receive {:resource_outcomes, command}
       assert ResultBuilder.latest_node_status(paused.run, fixture.node_keys.a) == :ok
@@ -320,13 +324,16 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
         case disposition do
           :recover ->
             Process.delete({FakeStore, :resource_error})
-            assert {:ownership_gate, gated, replay} = Execution.retry_persistence(paused, retry)
+
+            assert {:ownership_gate, gated, replay} =
+                     ExecutionDriver.retry_persistence(paused, retry)
+
             assert_receive {:resource_outcomes, ^command}
-            Execution.resume_persisted_retry(gated, replay)
+            ExecutionDriver.resume_persisted_retry(gated, replay)
 
           :exhaust ->
             retry = %{retry | started_ms: System.monotonic_time(:millisecond) - 30_001}
-            Execution.retry_persistence(paused, retry)
+            ExecutionDriver.retry_persistence(paused, retry)
         end
 
       finished =
@@ -373,7 +380,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
 
     assert {:recovery_required, recovering,
             {:resource_outcomes_unavailable, _, %{kind: :timeout}}} =
-             Execution.handle_event(pending, {:post_step_reply, ref, :ok})
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, :ok})
 
     assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
     refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
@@ -430,14 +437,14 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     release_worker(worker, {:ok, %{active_generation_id: "gen-a"}})
     assert_receive {^ref, :ok}
 
-    assert {:cont, after_a} = Execution.handle_event(after_b, {:post_step_reply, ref, :ok})
+    assert {:cont, after_a} = ExecutionDriver.handle_event(after_b, {:post_step_reply, ref, :ok})
     assert after_a.post_step_continuations == %{}
     assert after_a.status == :awaiting
     assert node_result_count(after_a.run) == 2
     assert ResultBuilder.latest_node_status(after_a.run, fixture.node_keys.a) == :ok
     assert ResultBuilder.latest_node_status(after_a.run, fixture.node_keys.b) == :error
 
-    assert {:cont, ^after_a} = Execution.handle_event(after_a, {:post_step_reply, ref, :ok})
+    assert {:cont, ^after_a} = ExecutionDriver.handle_event(after_a, {:post_step_reply, ref, :ok})
 
     assert {:terminal, failed} = deliver_result(after_a, fixture, :c, :ok)
     assert failed.status == :error
@@ -461,13 +468,19 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
 
     release_worker(worker_b, {:ok, %{active_generation_id: "gen-b"}})
     assert_receive {^ref_b, :ok}
-    assert {:cont, after_b} = Execution.handle_event(pending_both, {:post_step_reply, ref_b, :ok})
+
+    assert {:cont, after_b} =
+             ExecutionDriver.handle_event(pending_both, {:post_step_reply, ref_b, :ok})
+
     assert Map.keys(after_b.post_step_continuations) == [ref_a]
     assert after_b.status == :awaiting
 
     release_worker(worker_a, {:ok, %{active_generation_id: "gen-a"}})
     assert_receive {^ref_a, :ok}
-    assert {:terminal, finished} = Execution.handle_event(after_b, {:post_step_reply, ref_a, :ok})
+
+    assert {:terminal, finished} =
+             ExecutionDriver.handle_event(after_b, {:post_step_reply, ref_a, :ok})
+
     assert finished.status == :ok
     assert node_result_count(finished) == 2
   end
@@ -484,7 +497,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     assert_receive {^ref, {:error, reason}}
 
     assert {:terminal, failed} =
-             Execution.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
 
     assert failed.status == :error
 
@@ -492,6 +505,97 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
              type: :post_step_persistence_failed,
              reason: {:initial_target_generation_binding_failed, :binding_unavailable}
            } = failed.error
+  end
+
+  test "retryable registration preserves success and settles once after backoff" do
+    fixture = fixture([:a])
+    assert {:cont, pending} = deliver_result(awaiting_state(fixture, [:a]), fixture, :a, :ok)
+    assert_receive {:worker_binding_read, worker, _}
+    [{ref, _}] = Map.to_list(pending.post_step_continuations)
+    release_worker(worker, {:error, Error.new(:conflict, "temporary", retryable?: true)})
+    assert_receive {^ref, {:error, reason}}
+
+    assert {:cont, waiting} =
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+
+    assert_receive {:commit_transition,
+                    %{event: %{event_type: :registration_retry_scheduled, data: data}}}
+
+    assert data["scheduled_retries"] == 1
+    assert ResultBuilder.latest_node_status(waiting.run, fixture.node_keys.a) == :ok
+    assert node_result_count(waiting.run) == 1
+    assert_receive {:registration_retry, token}, 1_500
+    assert {:cont, retrying} = ExecutionDriver.handle_event(waiting, {:registration_retry, token})
+    assert_receive {:worker_binding_read, next_worker, _}
+    [{next_ref, _}] = Map.to_list(retrying.post_step_continuations)
+    release_worker(next_worker, {:ok, %{active_generation_id: "gen-a"}})
+    assert_receive {^next_ref, :ok}
+
+    assert {:terminal, finished} =
+             ExecutionDriver.handle_event(retrying, {:post_step_reply, next_ref, :ok})
+
+    assert finished.status == :ok
+    assert node_result_count(finished) == 1
+    refute_receive {:materialization_finished, %{status: :failed}}, 20
+  end
+
+  test "a restored evidence-read timeout consumes a slot while original budget remains" do
+    fixture = fixture([:a])
+    assert {:cont, pending} = deliver_result(awaiting_state(fixture, [:a]), fixture, :a, :ok)
+    assert_receive {:worker_binding_read, worker, _}
+    [{ref, _}] = Map.to_list(pending.post_step_continuations)
+    release_worker(worker, {:error, Error.new(:timeout, "temporary", retryable?: true)})
+    assert_receive {^ref, {:error, reason}}
+
+    assert {:cont, waiting} =
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+
+    assert_receive {:registration_retry, token}, 1_500
+    assert {:cont, retrying} = ExecutionDriver.handle_event(waiting, {:registration_retry, token})
+    assert_receive {:worker_binding_read, _next_worker, _}
+    [{next_ref, continuation}] = Map.to_list(retrying.post_step_continuations)
+
+    retrying = %{
+      retrying
+      | post_step_continuations: %{next_ref => Map.put(continuation, :existing_only?, true)}
+    }
+
+    assert {:cont, rescheduled} =
+             ExecutionDriver.handle_event(
+               retrying,
+               {:registration_deadline, continuation.deadline_token}
+             )
+
+    assert rescheduled.registration_retries[continuation.pending.entry.asset_step_id].slots == 2
+    Execution.stop_post_step_workers(rescheduled)
+  end
+
+  test "deadline stops the retry worker and retains accepted success" do
+    fixture = fixture([:a])
+    assert {:cont, pending} = deliver_result(awaiting_state(fixture, [:a]), fixture, :a, :ok)
+    assert_receive {:worker_binding_read, worker, _}
+    [{ref, _}] = Map.to_list(pending.post_step_continuations)
+    release_worker(worker, {:error, Error.new(:timeout, "temporary", retryable?: true)})
+    assert_receive {^ref, {:error, reason}}
+
+    assert {:cont, waiting} =
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+
+    assert_receive {:registration_retry, token}, 1_500
+    assert {:cont, retrying} = ExecutionDriver.handle_event(waiting, {:registration_retry, token})
+    assert_receive {:worker_binding_read, next_worker, _}
+    [{_ref, continuation}] = Map.to_list(retrying.post_step_continuations)
+
+    assert {:recovery_required, exhausted, {:registration_retry_exhausted, data}} =
+             ExecutionDriver.handle_event(
+               retrying,
+               {:registration_deadline, continuation.deadline_token}
+             )
+
+    assert data["scheduled_retries"] == 1
+    refute Process.alive?(next_worker)
+    assert node_result_count(exhausted.run) == 1
+    refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
   end
 
   test "temporary registration failure leaves successful work unsettled for recovery" do
@@ -503,7 +607,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     assert_receive {^ref, {:error, reason}}
 
     assert {:recovery_required, recovering, {:generation_registration_unavailable, _, _}} =
-             Execution.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
 
     assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
     refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
@@ -519,7 +623,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     assert_receive {^ref, {:error, reason}}
 
     assert {:recovery_required, recovering, {:generation_registration_unavailable, _, _}} =
-             Execution.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
+             ExecutionDriver.handle_event(pending, {:post_step_reply, ref, {:error, reason}})
 
     assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
     assert recovering.run.status != :error
@@ -563,7 +667,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
 
     assert {:recovery_required, recovering,
             {:generation_registration_unavailable, _, {:post_step_worker_down, ":forced"}}} =
-             Execution.handle_event(pending, {:post_step_worker_down, ref, :forced})
+             ExecutionDriver.handle_event(pending, {:post_step_worker_down, ref, :forced})
 
     assert ResultBuilder.latest_node_status(recovering.run, fixture.node_keys.a) == :ok
     refute_received {:commit_transition, %{event: %{event_type: :step_settled}}}
@@ -579,7 +683,8 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     [{ref, _continuation}] = Map.to_list(pending.post_step_continuations)
     worker_monitor = Process.monitor(worker)
 
-    assert {:terminal, cancelled} = Execution.cancel(pending, :operator)
+    Application.put_env(:favn_orchestrator, :post_step_continuation_test_run, pending.run)
+    assert {:terminal, cancelled} = ExecutionDriver.cancel(pending, :operator)
 
     assert cancelled.status == :cancelled
     assert_receive {:DOWN, ^worker_monitor, :process, ^worker, :shutdown}
@@ -619,8 +724,10 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
 
     stopped = Execution.stop_post_step_workers(pending)
     assert stopped.post_step_continuations == %{}
-    assert {:cont, ^stopped} = Execution.handle_event(stopped, {:post_step_reply, ref, :ok})
-    assert {:cont, ^stopped} = Execution.handle_event(stopped, {:post_step_worker_down, ref, :x})
+    assert {:cont, ^stopped} = ExecutionDriver.handle_event(stopped, {:post_step_reply, ref, :ok})
+
+    assert {:cont, ^stopped} =
+             ExecutionDriver.handle_event(stopped, {:post_step_worker_down, ref, :x})
   end
 
   test "an admission deadline firing while a continuation is pending keeps waiting" do
@@ -639,7 +746,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
       })
 
     assert {:cont, waiting} =
-             Execution.handle_event(timed, {:stage_admission_timeout, timer_token})
+             ExecutionDriver.handle_event(timed, {:stage_admission_timeout, timer_token})
 
     assert waiting.status == :awaiting
     assert map_size(waiting.post_step_continuations) == 1
@@ -672,7 +779,7 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
         {:stage_admission, 1, {:error, failed_run, [], [], []}}
       )
 
-    assert {:cont, draining} = Execution.retry_persistence(pending, retry)
+    assert {:cont, draining} = ExecutionDriver.retry_persistence(pending, retry)
     assert draining.status == :awaiting
     assert %{status: :error} = draining.terminal_failure
     assert map_size(draining.post_step_continuations) == 1
@@ -681,13 +788,15 @@ defmodule FavnOrchestrator.RunServer.Execution.PostStepContinuationTest do
     release_worker(worker, {:ok, %{active_generation_id: "gen-a"}})
     assert_receive {^ref, :ok}
 
-    assert {:terminal, failed} = Execution.handle_event(draining, {:post_step_reply, ref, :ok})
+    assert {:terminal, failed} =
+             ExecutionDriver.handle_event(draining, {:post_step_reply, ref, :ok})
+
     assert failed.status == :error
     assert node_result_count(failed) == 1
   end
 
   defp deliver_result(state, fixture, name, status) do
-    Execution.handle_event(
+    ExecutionDriver.handle_event(
       state,
       {:runner_result, task_id(name), {:ok, runner_result(fixture, status)}}
     )

@@ -4,6 +4,10 @@ defmodule FavnOrchestrator.RunState do
 
   New runs pin the complete logical runner-pool release map selected by their
   immutable deployment manifest.
+
+  `terminal_at` is hydrated from the authoritative storage row for projection;
+  it is excluded from snapshot encoding and hashing. Cleanup may advance
+  `updated_at` without changing the execution's finish time.
   """
 
   @default_timeout_ms 30 * 60 * 1000
@@ -44,6 +48,7 @@ defmodule FavnOrchestrator.RunState do
           error: term() | nil,
           inserted_at: DateTime.t() | nil,
           updated_at: DateTime.t() | nil,
+          terminal_at: DateTime.t() | nil,
           storage_owner_id: String.t() | nil,
           storage_fencing_token: pos_integer() | nil
         }
@@ -61,6 +66,7 @@ defmodule FavnOrchestrator.RunState do
     :snapshot_hash,
     :inserted_at,
     :updated_at,
+    :terminal_at,
     :storage_owner_id,
     :storage_fencing_token,
     status: :pending,
@@ -217,12 +223,21 @@ defmodule FavnOrchestrator.RunState do
   @spec transition(t(), keyword(), DateTime.t()) :: t()
   def transition(%__MODULE__{} = run, attrs, %DateTime{} = occurred_at) when is_list(attrs) do
     validate_immutable_plan!(run, attrs)
+    attrs = preserve_cleanup_outcome(run, attrs)
 
     run
     |> Map.merge(Enum.into(attrs, %{}))
     |> Map.put(:event_seq, run.event_seq + 1)
     |> Map.put(:updated_at, occurred_at)
     |> with_snapshot_hash()
+  end
+
+  @doc false
+  @spec preserve_cleanup_outcome(t(), keyword()) :: keyword()
+  def preserve_cleanup_outcome(run, attrs) do
+    if finalized?(run) and is_map(run.metadata["failure_cleanup"]),
+      do: Keyword.drop(attrs, [:status, :error]),
+      else: attrs
   end
 
   @doc false
@@ -249,6 +264,7 @@ defmodule FavnOrchestrator.RunState do
       |> Map.delete(:snapshot_hash)
       |> Map.delete(:storage_owner_id)
       |> Map.delete(:storage_fencing_token)
+      |> Map.delete(:terminal_at)
       |> without_immutable_plan_payload(run.plan)
 
     hash =

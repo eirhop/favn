@@ -36,7 +36,7 @@ defmodule FavnOrchestrator.TestSupport.ManagedRun do
         if e.key == key and is_pid(e.coordinator), do: e
       end)
 
-    if entry && RunLeaseKeeper.permit(entry.ownership) == :ok do
+    if entry && RunLeaseKeeper.ready(entry.ownership) == :ok do
       Process.link(entry.coordinator)
       {:ok, entry.coordinator}
     else

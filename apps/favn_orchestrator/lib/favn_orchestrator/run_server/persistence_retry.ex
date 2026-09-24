@@ -7,6 +7,12 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
   alias FavnOrchestrator.RunnerTasks
   alias FavnOrchestrator.RunServer.Persistence
   alias FavnOrchestrator.RunState
+  alias FavnOrchestrator.Runs
+  alias FavnOrchestrator.Projector
+  alias FavnOrchestrator.Persistence.SystemContext
+  alias FavnOrchestrator.RunServer.FailureCleanup
+  alias FavnOrchestrator.Storage.RunEventCodec
+  alias FavnOrchestrator.Storage.RunSnapshotCodec
 
   @retry_budget_ms 30_000
 
@@ -47,7 +53,17 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
   def command(run, operation, command, data, resume),
     do: %{new(run, operation, data, resume) | command: command}
 
-  @spec persist(t()) :: :ok | {:ok, term()} | {:error, term()}
+  @spec persist(t()) :: :ok | {:ok, term()} | {:terminal, RunState.t()} | {:error, term()}
+  def persist(%__MODULE__{resume: :terminal} = retry) do
+    context = SystemContext.workspace(retry.run.workspace_id, :run_worker)
+
+    with {:ok, latest} <- Runs.get(context, retry.run.id) do
+      if RunState.finalized?(latest),
+        do: {:terminal, latest},
+        else: Persistence.persist_run_step(retry.run, retry.event_type, retry.data)
+    end
+  end
+
   def persist(%__MODULE__{command: nil} = retry),
     do: Persistence.persist_run_step(retry.run, retry.event_type, retry.data)
 
@@ -73,11 +89,106 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
   def persist(%__MODULE__{event_type: :resource_recovery_candidate, command: command}),
     do: Stores.stores().resource_circuits.record_recovery_candidate(command)
 
+  @doc "Resolves an exhausted or rejected transition without repeating its write."
+  @spec resolve(t()) ::
+          {:committed, RunState.t()}
+          | {:terminal, RunState.t()}
+          | {:failed, RunState.t()}
+          | {:error, term()}
+  def resolve(retry) do
+    run = retry.run
+    context = SystemContext.workspace(run.workspace_id, :run_worker)
+
+    with :ok <- FavnOrchestrator.RunLeaseKeeper.permit(run),
+         {:ok, latest} <- Runs.get(context, run.id) do
+      cond do
+        RunState.finalized?(latest) ->
+          {:terminal, latest}
+
+        latest.metadata[:cancel_requested] == true or latest.metadata["cancel_requested"] == true ->
+          {:error, :cancellation_race}
+
+        true ->
+          with {:ok, page} <-
+                 Runs.page_events(context, run.id, after_sequence: run.event_seq - 1, limit: 1) do
+            expected = run |> RunState.with_snapshot_hash() |> RunState.for_step_persistence()
+            event = Projector.run_event(expected, retry.event_type, retry.data)
+
+            if latest.event_seq == expected.event_seq and
+                 same_snapshot?(latest, expected) and
+                 Enum.any?(page.items, &same_event?(&1, event)) do
+              {:committed, run}
+            else
+              case FailureCleanup.fail(run, retry.original_error || exhaustion(retry)) do
+                {:ok, failed} -> {:failed, failed}
+                error -> error
+              end
+            end
+          end
+      end
+    end
+  end
+
+  @doc "Rebases a completed outcome only after observing durable cancellation intent."
+  @spec after_cancellation(t()) ::
+          {:retry_command, t()} | {:terminal, RunState.t()} | {:error, term()}
+  def after_cancellation(retry) do
+    context = SystemContext.workspace(retry.run.workspace_id, :run_worker)
+
+    with {:ok, latest} <- Runs.get(context, retry.run.id) do
+      if RunState.finalized?(latest) do
+        {:terminal, latest}
+      else
+        run =
+          latest
+          |> RunState.with_storage_fence(
+            retry.run.storage_owner_id,
+            retry.run.storage_fencing_token
+          )
+          |> RunState.transition(
+            status: retry.run.status,
+            error: retry.run.error,
+            result: retry.run.result,
+            metadata: Map.merge(retry.run.metadata, latest.metadata)
+          )
+          |> Map.put(:updated_at, retry.run.updated_at)
+          |> RunState.with_snapshot_hash()
+
+        {:retry_command, %{retry | run: run}}
+      end
+    end
+  end
+
+  defp same_snapshot?(saved, expected) do
+    with {:ok, left} <- RunSnapshotCodec.encode_run(saved, plan: :reference),
+         {:ok, right} <- RunSnapshotCodec.encode_run(expected, plan: :reference) do
+      # The in-memory term hash is recomputed after decoding; compare persisted data.
+      Map.delete(Jason.decode!(left), "snapshot_hash") ==
+        Map.delete(Jason.decode!(right), "snapshot_hash")
+    else
+      _ -> false
+    end
+  end
+
+  defp same_event?(saved, expected) do
+    with {:ok, encoded} <- RunEventCodec.encode(expected),
+         {:ok, decoded} <- RunEventCodec.decode(encoded) do
+      Map.put(saved, :global_sequence, nil) == decoded
+    else
+      _ -> false
+    end
+  end
+
   @spec replayable?(term()) :: boolean()
   def replayable?(%Error{kind: kind, retryable?: retryable?})
       when kind in [:unavailable, :timeout, :conflict], do: retryable?
 
   def replayable?(_reason), do: false
+
+  @doc "Classifies uncertain run transitions, whose original sequence can be reconciled."
+  @spec transition_retryable?(term()) :: boolean()
+  def transition_retryable?(%Error{kind: kind}) when kind in [:unavailable, :timeout], do: true
+  def transition_retryable?(reason), do: replayable?(reason)
 
   @doc false
   @spec recovery_required?(term()) :: boolean()

@@ -17,6 +17,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgress do
                 stages: [],
                 sequence: 0,
                 steps: %{},
+                registration_retries: %{},
                 position: nil,
                 position_sequence: nil,
                 failure: nil,
@@ -116,6 +117,27 @@ defmodule FavnOrchestrator.RunServer.Execution.RecoveryProgress do
 
   def apply_event(%__MODULE__{}, _event),
     do: {:error, :invalid_recovery_event_identity_or_sequence}
+
+  defp reduce(progress, "registration_retry_scheduled", event) do
+    data = event.data
+    id = field(data, :asset_step_id)
+    normalized = Map.new(data, fn {key, value} -> {to_string(key), value} end)
+
+    with true <- Map.has_key?(progress.nodes, id),
+         {:ok, retry} <-
+           FavnOrchestrator.RunServer.Execution.RegistrationRetry.restore(
+             normalized,
+             progress.steps[id],
+             progress.registration_retries[id]
+           ) do
+      {:ok, %{progress | registration_retries: Map.put(progress.registration_retries, id, retry)}}
+    else
+      _ -> {:error, :invalid_registration_retry_event}
+    end
+  end
+
+  defp reduce(progress, "run_recovery_resumed", _event),
+    do: {:ok, %{progress | registration_retries: %{}}}
 
   defp reduce(progress, "run_execution_position", event) do
     position = field(field(event, :data), :position)

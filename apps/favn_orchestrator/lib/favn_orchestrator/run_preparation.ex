@@ -2,7 +2,6 @@ defmodule FavnOrchestrator.RunPreparation do
   @moduledoc false
   use GenServer
   alias FavnOrchestrator.{ManifestStore, RunManager, RunOwnership, RunnerIdentityVerifier, Runs}
-  alias FavnOrchestrator.RunServer.RecoveryAttention
   alias FavnOrchestrator.RunState
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -61,17 +60,14 @@ defmodule FavnOrchestrator.RunPreparation do
   end
 
   def handle_info(:diagnose, state) do
-    if state.diagnostic_reason,
-      do: RecoveryAttention.require_diagnosis(state.run, to_string(state.diagnostic_reason))
-
     result =
-      RecoveryAttention.record(
+      FavnOrchestrator.RunServer.FailureCleanup.fail(
         state.run,
         state.diagnostic_reason || state.ownership.diagnosis_reason ||
           :automatic_recovery_exhausted
       )
 
-    send(RunManager, {:preparation_failed, state.id, {:recovery_attention, result}})
+    send(RunManager, {:preparation_failed, state.id, {:failure_cleanup, result}})
     {:noreply, state}
   end
 

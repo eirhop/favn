@@ -8,6 +8,8 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   target and evidence generation identities so the claim reaches the store.
   """
 
+  alias FavnTestSupport.ExecutionDriver
+
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.RunnerResult
@@ -20,7 +22,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   alias FavnOrchestrator.Persistence.Stores
   alias FavnOrchestrator.Persistence.TargetIdentity
   alias FavnOrchestrator.RefreshPolicy
-  alias FavnOrchestrator.RunServer.Execution
   alias FavnOrchestrator.RunServer.Execution.ActiveTaskSet
   alias FavnOrchestrator.RunServer.Execution.ResultBuilder
   alias FavnOrchestrator.RunServer.Execution.RunExecutionState
@@ -183,7 +184,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   test "a rejected atomic admission fails only its node and leaves the sibling running", %{
     fixture: fixture
   } do
-    assert {:cont, awaiting} = Execution.handle_event(fixture.state, :continue)
+    assert {:cont, awaiting} = ExecutionDriver.handle_event(fixture.state, :continue)
 
     assert_receive {:commit_transition, %{event: %{event_type: :step_failed}} = command}
     assert command.event.data.node_key == fixture.b_key
@@ -215,10 +216,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     # terminal error proves the FIRST failure wins rather than the last one.
     Process.put({FakeStore, :admission_errors}, %{fixture.d_target_id => @later_conflict})
 
-    assert {:cont, awaiting} = Execution.handle_event(fixture.state, :continue)
+    assert {:cont, awaiting} = ExecutionDriver.handle_event(fixture.state, :continue)
 
     assert {:terminal, failed} =
-             Execution.handle_event(
+             ExecutionDriver.handle_event(
                awaiting,
                {:runner_result, @held_task_id, {:ok, ok_result(fixture)}}
              )
@@ -241,10 +242,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   end
 
   test "only the failed node's dependent is blocked in the next stage", %{fixture: fixture} do
-    assert {:cont, awaiting} = Execution.handle_event(fixture.state, :continue)
+    assert {:cont, awaiting} = ExecutionDriver.handle_event(fixture.state, :continue)
 
     assert {:terminal, _failed} =
-             Execution.handle_event(
+             ExecutionDriver.handle_event(
                awaiting,
                {:runner_result, @held_task_id, {:ok, ok_result(fixture)}}
              )
@@ -268,7 +269,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
       | stage_state: %{fixture.state.stage_state | deferred_node_keys: [fixture.f_key]}
     }
 
-    assert {:cont, awaiting} = Execution.handle_event(state, :continue)
+    assert {:cont, awaiting} = ExecutionDriver.handle_event(state, :continue)
 
     assert_receive {:commit_transition, %{event: %{event_type: :step_failed}} = command}
     assert command.event.data.node_key == fixture.f_key
@@ -301,7 +302,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
     }
 
     assert {:recovery_required, recovering, %{kind: :unavailable}} =
-             Execution.handle_event(state, :continue)
+             ExecutionDriver.handle_event(state, :continue)
 
     assert @held_task_id in ActiveTaskSet.task_ids(recovering.work_set)
     refute_received {:runner_admission, _}
@@ -318,7 +319,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
       )
 
     Process.put({FakeStore, :admission_error}, busy)
-    assert {:persist_retry, paused, retry, ^busy} = Execution.handle_event(f.state, :continue)
+
+    assert {:persist_retry, paused, retry, ^busy} =
+             ExecutionDriver.handle_event(f.state, :continue)
+
     assert retry.event_type == :runner_admission
     assert_receive {:runner_admission, original}
     assert {:error, ^busy} = PersistenceRetry.persist(retry)
@@ -361,13 +365,13 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
           {f.state, retry}
         else
           assert {:persist_retry, paused, retry, ^error} =
-                   Execution.handle_event(f.state, :continue)
+                   ExecutionDriver.handle_event(f.state, :continue)
 
           {paused, retry}
         end
 
       assert {:recovery_required, recovering, _} =
-               Execution.retry_persistence(paused, PersistenceRetry.rejected(retry, error))
+               ExecutionDriver.retry_persistence(paused, PersistenceRetry.rejected(retry, error))
 
       assert @held_task_id in ActiveTaskSet.task_ids(recovering.work_set)
       refute_received {:runner_task_cancellation_requested, _}
@@ -379,13 +383,21 @@ defmodule FavnOrchestrator.RunServer.Execution.StageAdmissionNodeFailureTest do
   test "a lost intent reply replays that exact transition before admission", %{fixture: f} do
     busy = Error.new(:unavailable, "lost reply", retryable?: true)
     Process.put({FakeStore, :commit_results}, [{:error, busy}])
-    assert {:persist_retry, paused, retry, ^busy} = Execution.handle_event(f.state, :continue)
+
+    assert {:persist_retry, paused, retry, ^busy} =
+             ExecutionDriver.handle_event(f.state, :continue)
+
     assert retry.event_type == :step_intended
     assert_receive {:commit_transition, original}
     refute_received {:runner_admission, _}
-    assert {:ownership_gate, gated, replay} = Execution.retry_persistence(paused, retry)
+    assert {:ownership_gate, gated, replay} = ExecutionDriver.retry_persistence(paused, retry)
     assert_receive {:commit_transition, ^original}
-    assert {:cont, resumed} = Execution.resume_persisted_retry(gated, replay)
+
+    assert {:operation, _, {:stage_admission_continuation, :resume_operation, _, _}} =
+             FavnOrchestrator.RunServer.Execution.resume_persisted_retry(gated, replay)
+
+    refute_received {:runner_admission, _}
+    assert {:cont, resumed} = ExecutionDriver.resume_persisted_retry(gated, replay)
     assert_receive {:runner_admission, _}
     assert @held_task_id in ActiveTaskSet.task_ids(resumed.work_set)
     refute_received {:runner_task_cancellation_requested, _}

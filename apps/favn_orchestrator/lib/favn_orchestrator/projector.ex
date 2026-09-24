@@ -57,7 +57,7 @@ defmodule FavnOrchestrator.Projector do
       status: run_state.status,
       event_seq: run_state.event_seq,
       started_at: run_state.inserted_at,
-      finished_at: if(terminal?, do: run_state.updated_at, else: nil),
+      finished_at: if(terminal?, do: run_state.terminal_at || run_state.updated_at, else: nil),
       params: run_state.params,
       trigger: run_state.trigger,
       metadata: run_state.metadata,

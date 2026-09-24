@@ -26,16 +26,41 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
     cleanup_read =
       held.claim_purpose == "cleanup" and
         kind in [:relation_inspection, :generation_capabilities, :generation_marker_read] and
-        FavnStoragePostgres.CancellationOwnership.cancelled?(
-          authority.workspace_id,
-          authority.run_id
-        )
+        (failed_cleanup_pending?(authority.workspace_id, authority.run_id) or
+           FavnStoragePostgres.CancellationOwnership.cancelled?(
+             authority.workspace_id,
+             authority.run_id
+           ))
 
     unless matching_owner?(held, authority) and is_nil(held.released_at) and
              future?(held.expires_at) and
              (cleanup_read or
                 (held.claim_purpose == "execution" and held.recovery_disposition == "automatic")),
            do: Repo.rollback(Error.new(:fenced, "run execution authority unavailable"))
+
+    :ok
+  end
+
+  @doc false
+  def failed_cleanup_pending?(workspace, run_id) do
+    Repo.exists?(
+      from(r in FavnStoragePostgres.Schemas.Run,
+        where:
+          r.workspace_id == ^workspace and r.run_id == ^run_id and r.status == "error" and
+            fragment("? #>> '{metadata,failure_cleanup,state}' = 'pending'", r.snapshot)
+      )
+    )
+  end
+
+  @doc false
+  def validate_failed_cleanup!(authority) do
+    held = lock_ownership!(authority.workspace_id, authority.run_id)
+
+    unless matching_owner?(held, authority) and is_nil(held.released_at) and
+             future?(held.expires_at) and
+             held.claim_purpose == "cleanup" and held.recovery_disposition == "automatic" and
+             failed_cleanup_pending?(authority.workspace_id, authority.run_id),
+           do: Repo.rollback(Error.new(:fenced, "failed cleanup authority unavailable"))
 
     :ok
   end
@@ -416,6 +441,32 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
   end
 
   @impl true
+  def cleanup_candidates(context, limit) do
+    if workspace_context?(context) and is_integer(limit) and limit in 1..64 do
+      %{rows: rows} =
+        SQL.query!(
+          Repo,
+          """
+          SELECT o.run_id FROM favn_control.run_ownerships o
+          JOIN favn_control.runs r USING(workspace_id,run_id)
+          WHERE o.workspace_id=$1 AND o.claim_purpose='cleanup' AND o.recovery_disposition='automatic'
+            AND r.status='error' AND r.snapshot #>> '{metadata,failure_cleanup,state}'='pending'
+            AND (o.next_recovery_at IS NULL OR o.next_recovery_at<=clock_timestamp())
+            AND (o.released_at IS NOT NULL OR o.expires_at<=clock_timestamp())
+          ORDER BY o.next_recovery_at NULLS FIRST,o.run_id LIMIT $2
+          """,
+          [context.workspace_id, limit]
+        )
+
+      {:ok, Enum.map(rows, &hd/1)}
+    else
+      {:error, Error.new(:invalid, "invalid cleanup candidates query")}
+    end
+  rescue
+    error -> {:error, ErrorMapper.map(error)}
+  end
+
+  @impl true
   def claim_run(%ClaimRun{} = command) do
     with :ok <- validate_claim(command),
          {:ok, ownership} <- RunTransaction.transaction(fn -> claim_run!(command) end) do
@@ -480,10 +531,11 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
              ((command.purpose == :execution and
                  ownership.claim_purpose in ["execution", "diagnosis"]) or
                 (command.purpose == :cleanup and ownership.claim_purpose == "cleanup" and
-                   FavnStoragePostgres.CancellationOwnership.cancelled?(
-                     workspace_id,
-                     command.run_id
-                   ))) do
+                   (failed_cleanup_pending?(workspace_id, command.run_id) or
+                      FavnStoragePostgres.CancellationOwnership.cancelled?(
+                        workspace_id,
+                        command.run_id
+                      )))) do
           ownership_result(ownership)
         else
           Repo.rollback(Error.new(:fenced, "replayed run claim has expired"))
@@ -610,11 +662,17 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
           SQL.query!(
             RunLeaseRepo,
             """
+            WITH observed AS MATERIALIZED (SELECT clock_timestamp() AS at)
             UPDATE favn_control.run_ownerships
             SET last_renewal_id = $5,
-                last_renewed_at = clock_timestamp(),
-                expires_at = clock_timestamp() + ($6 * interval '1 millisecond'),
-                updated_at = clock_timestamp()
+                last_renewed_at = observed.at,
+                expires_at = observed.at + ($6 * interval '1 millisecond'),
+                next_recovery_at = observed.at + (($6 +
+                  CASE WHEN claim_purpose = 'cleanup' THEN 5000 ELSE CASE recovery_attempts WHEN 0 THEN 0 WHEN 1 THEN 5000 WHEN 2 THEN 15000 ELSE 60000 END END +
+                  CASE WHEN recovery_attempts = 0 THEN 0 ELSE mod(fencing_token * 137, 1001) END
+                ) * interval '1 millisecond'),
+                updated_at = observed.at
+            FROM observed
             WHERE workspace_id = $1 AND run_id = $2 AND owner_id = $3 AND fencing_token = $4
               AND released_at IS NULL AND expires_at > clock_timestamp()
             RETURNING workspace_id, run_id, owner_id, fencing_token, expires_at
@@ -629,7 +687,6 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
             ]
           )
 
-        pace!(workspace_id, command.run_id, RunLeaseRepo)
         ownership_result(row, RunLeaseRepo)
     end
   end
@@ -732,9 +789,18 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
           [ownership.workspace_id, ownership.run_id]
         )
 
-      rows != []
+      rows != [] or (due? and failed_cleanup_pending?(ownership.workspace_id, ownership.run_id))
     else
-      ownership.recovery_disposition == "automatic" and due?
+      executable? =
+        Repo.exists?(
+          from(r in FavnStoragePostgres.Schemas.Run,
+            where:
+              r.workspace_id == ^ownership.workspace_id and r.run_id == ^ownership.run_id and
+                r.status in ["pending", "running"]
+          )
+        )
+
+      executable? and ownership.recovery_disposition == "automatic" and due?
     end
   end
 
@@ -744,7 +810,7 @@ defmodule FavnStoragePostgres.RunOwnership.Store do
       """
       UPDATE favn_control.run_ownerships SET next_recovery_at =
         COALESCE(released_at, expires_at) +
-        ((CASE recovery_attempts WHEN 0 THEN 0 WHEN 1 THEN 5000 WHEN 2 THEN 15000 ELSE 60000 END
+        ((CASE WHEN claim_purpose = 'cleanup' THEN 5000 ELSE CASE recovery_attempts WHEN 0 THEN 0 WHEN 1 THEN 5000 WHEN 2 THEN 15000 ELSE 60000 END END
           + CASE WHEN recovery_attempts = 0 THEN 0 ELSE mod(fencing_token * 137, 1001) END) * interval '1 millisecond')
       WHERE workspace_id=$1 AND run_id=$2
       """,

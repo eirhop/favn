@@ -89,7 +89,7 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   def error(%{"kind" => kind, "message" => message, "type" => type} = value) do
     %{
       "kind" => scalar_string(kind, "error"),
-      "type" => meaningful_error_type(type, value, kind),
+      "type" => stored_error_type(type, value, kind),
       "message" => safe_error_message(message),
       "reason" => safe_existing_error_reason(Map.get(value, "reason")),
       "redacted" => true,
@@ -417,6 +417,15 @@ defmodule FavnOrchestrator.Storage.JsonSafe do
   end
 
   defp exception_message(_value), do: nil
+
+  defp stored_error_type(type, value, kind) when is_binary(type) do
+    case String.trim(type) do
+      type when type in ["", "nil", "null"] -> meaningful_error_type(type, value, kind)
+      type -> scalar_string(type, "error")
+    end
+  end
+
+  defp stored_error_type(type, value, kind), do: meaningful_error_type(type, value, kind)
 
   defp meaningful_error_type(type, value, kind) do
     details =

@@ -59,7 +59,7 @@ defmodule FavnOrchestrator.RunRecovery do
   @impl true
   def handle_info(:reconcile, state) do
     state = OperationCancellation.start_cleanup(state, &authoritative_workspace_ids/0)
-    _ = Lifecycle.with_admission(fn -> reconcile_workspaces(state.batch_size) end)
+    _ = reconcile_workspaces(state.batch_size)
     Process.send_after(self(), :reconcile, state.interval_ms)
     {:noreply, state}
   end
@@ -74,9 +74,16 @@ defmodule FavnOrchestrator.RunRecovery do
   defp recover_workspace(workspace_id, batch_size) do
     context = SystemContext.workspace(workspace_id, :run_recovery)
 
-    case Persistence.stores().run_ownership.recovery_candidates(context, min(batch_size, 64)) do
-      {:ok, ids} -> Enum.each(ids, &RunManager.recover_candidate(context, &1))
-      {:error, reason} -> emit_failure(nil, {:recovery_candidates_failed, workspace_id, reason})
+    Lifecycle.with_admission(fn ->
+      case Persistence.stores().run_ownership.recovery_candidates(context, min(batch_size, 64)) do
+        {:ok, ids} -> Enum.each(ids, &RunManager.recover_candidate(context, &1))
+        {:error, reason} -> emit_failure(nil, {:recovery_candidates_failed, workspace_id, reason})
+      end
+    end)
+
+    case Persistence.stores().run_ownership.cleanup_candidates(context, min(batch_size, 2)) do
+      {:ok, ids} -> Enum.each(ids, &RunManager.recover_cleanup(context, &1))
+      {:error, reason} -> emit_failure(nil, {:cleanup_candidates_failed, workspace_id, reason})
     end
   end
 

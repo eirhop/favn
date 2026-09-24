@@ -202,7 +202,7 @@ defmodule FavnStoragePostgres.Runs.Store do
          {:ok, encoded} <- encode_write(command.run, command.event),
          {:ok, result} <-
            RunTransaction.transaction(fn ->
-             FavnStoragePostgres.RunIdentity.lock!(
+             CancellationOwnership.lock!(
                command.workspace_context.workspace_id,
                command.run.id
              )
@@ -1339,6 +1339,7 @@ defmodule FavnStoragePostgres.Runs.Store do
       %Run{} = existing ->
         ensure_same_run_identity!(existing, command.run)
         validate_fence!(command)
+        validate_cleanup_transition!(existing, command, encoded)
 
         event_id = next_event_id!()
 
@@ -1380,11 +1381,105 @@ defmodule FavnStoragePostgres.Runs.Store do
     end
   end
 
+  defp validate_cleanup_transition!(existing, command, encoded) do
+    previous = get_in(existing.snapshot, ["metadata", "failure_cleanup"])
+    next = get_in(encoded.snapshot, ["metadata", "failure_cleanup"])
+
+    if previous do
+      unless command.owner_id && existing.status == "error" && command.run.status == :error &&
+               encoded.snapshot["error"] == existing.snapshot["error"] &&
+               get_in(encoded.snapshot, ["metadata", "terminal_event_type"]) ==
+                 get_in(existing.snapshot, ["metadata", "terminal_event_type"]) &&
+               command.event.event_type in [
+                 :step_finished,
+                 :step_failed,
+                 :step_timed_out,
+                 :step_cancelled,
+                 :step_settled,
+                 :stage_draining_after_failure,
+                 :run_cleanup_completed,
+                 :run_cleanup_attention,
+                 :run_cleanup_progress
+               ],
+             do: Repo.rollback(Error.new(:fenced, "failed run permits cleanup settlement only"))
+
+      FavnStoragePostgres.RunOwnership.Store.validate_failed_cleanup!(%{
+        workspace_id: command.workspace_context.workspace_id,
+        run_id: command.run.id,
+        owner_id: command.owner_id,
+        fencing_token: command.fencing_token
+      })
+
+      expected_state =
+        case command.event.event_type do
+          :run_cleanup_completed -> "complete"
+          :run_cleanup_attention -> "attention"
+          _ -> "pending"
+        end
+
+      unless is_map(next) and next["version"] == 1 and next["state"] == expected_state and
+               Map.take(next, ["started_at", "reason_code"]) ==
+                 Map.take(previous, ["started_at", "reason_code"]),
+             do: Repo.rollback(Error.new(:invalid, "invalid cleanup state"))
+
+      if command.event.event_type in [:run_cleanup_completed, :run_cleanup_attention] do
+        FavnStoragePostgres.Admission.Store.assert_no_active_tasks!(
+          command.workspace_context.workspace_id,
+          command.run.id
+        )
+
+        FavnStoragePostgres.Admission.Store.assert_no_cleanup_resources!(
+          command.workspace_context.workspace_id,
+          command.run.id
+        )
+
+        if command.event.event_type == :run_cleanup_completed,
+          do:
+            FavnStoragePostgres.Admission.Store.assert_no_unresolved_write_holds!(
+              command.workspace_context.workspace_id,
+              command.run.id
+            )
+      end
+    else
+      if next do
+        unless command.owner_id && existing.status in ["pending", "running"] &&
+                 command.event.event_type == :run_failed && command.run.status == :error &&
+                 next["version"] == 1 && next["state"] == "pending" &&
+                 not CancellationOwnership.cancelled?(
+                   command.workspace_context.workspace_id,
+                   command.run.id
+                 ),
+               do:
+                 Repo.rollback(
+                   Error.new(:conflict, "failure cleanup requires uncancelled run authority")
+                 )
+      end
+    end
+  end
+
   defp update_recovery_state!(command) do
     workspace = command.workspace_context.workspace_id
     event = command.event.event_type
 
     cond do
+      event == :run_failed and is_map(command.run.metadata["failure_cleanup"]) ->
+        SQL.query!(
+          Repo,
+          """
+          UPDATE favn_control.run_ownerships SET claim_purpose='cleanup', recovery_disposition='automatic',
+            attention_revision=NULL, next_recovery_at=expires_at
+          WHERE workspace_id=$1 AND run_id=$2
+          """,
+          [workspace, command.run.id]
+        )
+
+      event == :run_cleanup_attention ->
+        SQL.query!(
+          Repo,
+          "UPDATE favn_control.run_ownerships SET recovery_disposition='attention', attention_revision=fencing_token WHERE workspace_id=$1 AND run_id=$2",
+          [workspace, command.run.id]
+        )
+
       event == :run_recovery_required ->
         if is_nil(command.owner_id),
           do: Repo.rollback(Error.new(:fenced, "attention requires an owner"))
@@ -1404,6 +1499,7 @@ defmodule FavnStoragePostgres.Runs.Store do
           """
           UPDATE favn_control.run_ownerships SET recovery_attempts=0, next_recovery_at=expires_at
           WHERE workspace_id=$1 AND run_id=$2 AND recovery_disposition='automatic'
+            AND claim_purpose='execution'
           """,
           [workspace, command.run.id]
         )
@@ -1563,7 +1659,7 @@ defmodule FavnStoragePostgres.Runs.Store do
     run =
       Run
       |> where([run], run.workspace_id == ^workspace_id and run.run_id == ^command.run_id)
-      |> lock("FOR UPDATE")
+      |> lock("FOR NO KEY UPDATE")
       |> Repo.one()
 
     case {ownership, run} do
@@ -1865,9 +1961,18 @@ defmodule FavnStoragePostgres.Runs.Store do
   end
 
   defp lock_run(workspace_id, run_id) do
+    # Ownership comes first even for exact replay; validation still happens only
+    # before a new mutation. Run identity is immutable, so FK readers may proceed.
+    Repo.one(
+      from(ownership in RunOwnership,
+        where: ownership.workspace_id == ^workspace_id and ownership.run_id == ^run_id,
+        lock: "FOR UPDATE"
+      )
+    )
+
     from(run in Run,
       where: run.workspace_id == ^workspace_id and run.run_id == ^run_id,
-      lock: "FOR UPDATE"
+      lock: "FOR NO KEY UPDATE"
     )
     |> Repo.one()
   end

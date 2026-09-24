@@ -23,6 +23,10 @@ defmodule FavnOrchestrator.Persistence.AdmissionStore do
               {:ok, CapacityRelease.t()} | {:error, Error.t()}
   @callback release_run_leases(ReleaseRunLeases.t()) ::
               {:ok, CapacityRelease.t()} | {:error, Error.t()}
+  @callback release_failed_run(
+              FavnOrchestrator.Persistence.Commands.ReleaseFailedRunResources.t()
+            ) ::
+              {:ok, CapacityRelease.t()} | {:error, Error.t()}
   @callback expire(ExpireAdmission.t()) ::
               {:ok, CapacityRelease.t()} | {:error, Error.t()}
 end

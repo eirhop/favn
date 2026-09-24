@@ -95,10 +95,30 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
   @spec append_node_result(RunState.t(), NodeResult.t()) :: RunState.t()
   def append_node_result(%RunState{} = run_state, %NodeResult{} = result) do
     count = node_result_count(run_state) + 1
+    put_node_result(run_state, result, count, run_state.metadata)
+  end
+
+  @doc "Restores detail for an already-counted outcome without duplicating its node and attempt."
+  @spec restore_node_result(RunState.t(), NodeResult.t()) :: RunState.t()
+  def restore_node_result(%RunState{} = run_state, %NodeResult{} = result) do
+    existing? =
+      Enum.any?(node_results(run_state), fn saved ->
+        node_result_field(saved, :node_key) == result.node_key and
+          node_result_field(saved, :attempt_count) == result.attempt_count
+      end)
+
+    metadata = Map.merge(run_state.metadata, Map.get(run_state.result || %{}, :metadata, %{}))
+
+    if existing?,
+      do: run_state,
+      else: put_node_result(run_state, result, max(node_result_count(run_state), 1), metadata)
+  end
+
+  defp put_node_result(run_state, result, count, metadata) do
     retained = Enum.take([result | node_results(run_state)], @max_retained_results)
 
     metadata =
-      put_retention_metadata(run_state.metadata, %{
+      put_retention_metadata(metadata, %{
         node_result_count: count,
         retained_node_result_count: length(retained),
         truncated: count > length(retained)
@@ -216,7 +236,9 @@ defmodule FavnOrchestrator.RunServer.Execution.ResultBuilder do
   defp retention_key(key), do: key
 
   defp put_retention_metadata(metadata, retention) do
-    Map.put(metadata, :result_retention, retention)
+    metadata
+    |> Map.drop([:result_retention, "result_retention"])
+    |> Map.put(:result_retention, retention)
   end
 
   defp node_result_field(nil, _field), do: nil

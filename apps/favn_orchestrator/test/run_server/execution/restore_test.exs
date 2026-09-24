@@ -1,4 +1,6 @@
 defmodule FavnOrchestrator.RunServer.Execution.RestoreTest do
+  alias FavnTestSupport.ExecutionDriver
+
   use ExUnit.Case, async: false
 
   alias Favn.Contracts.{RunnerResult, RunnerWork}
@@ -109,7 +111,7 @@ defmodule FavnOrchestrator.RunServer.Execution.RestoreTest do
     assert {:recovery_required, ^state,
             {:recovered_terminal_read_failed, "terminal",
              {:error, :recovered_terminal_data_unavailable}}} =
-             FavnOrchestrator.RunServer.Execution.handle_event(
+             ExecutionDriver.handle_event(
                state,
                {:runner_task_result, task.task_id, :read_terminal}
              )
