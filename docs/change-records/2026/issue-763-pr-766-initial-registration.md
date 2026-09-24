@@ -897,7 +897,7 @@ sequenceDiagram
     R->>P: Original task result with typed generation evidence
     P->>P: Atomically accept receipt, resolve write hold and activate binding
     P-->>R: Idempotent completion acknowledgement
-    Note over P,R: Run settlement observes the original durable result; no registration helper tasks
+    Note over P,R: Run settlement observes the original durable result without registration helper tasks
 ```
 
 1. Require explicit adapter support for atomic generation publication before a
@@ -1029,3 +1029,7 @@ assignment-time precondition correction, then rechecked the written changes on
 2026-09-24. Verdict: **approved**, with no blocking plan findings. This approves
 implementation and deletion scope, not production readiness. Native DuckDB/
 DuckLake qualification and the fresh workload comparison remain required.
+
+The reviewed revision is commit `972c05b4012e670a35d4ab6534202e17cec509bd`.
+GitHub treated the semicolon in the sequence note as a statement delimiter;
+replace it with “without” as a syntax-only correction, retaining the same meaning.
