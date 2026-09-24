@@ -529,3 +529,101 @@ missing-marker bug is fixed.
 The reviewed harness corrections were independently approved. The current
 scope is manual-only and the supporting-code variance was accepted. Baseline
 and candidate volumes and raw evidence remain retained locally.
+
+
+## Fresh 0.25-vCPU case (ongoing)
+
+On user request, the recovery case quota was changed in place to `25000 100000`
+without restarting it. A later fresh `favn-763-quarter` case uses the same candidate
+control image and five fixed runner images, with a Compose override preserving
+0.25 CPU. All prior volumes are retained. Password-mode workspace bootstrap
+succeeded using a private local file; no credential is included in this record.
+The user explicitly authorized starting all five runners. View is healthy but the
+browser still refuses the local certificate, so there is no authenticated browser
+subscription load.
+
+The control-plane image's 10-second RPC health probe repeatedly exceeds its
+5-second deadline at this quota, while the authenticated API returns 200 and the
+application reports accepting. The original health probe remains enabled. Setup
+continued using explicit `--no-deps` commands after verifying API readiness;
+its initial `--wait` attempt failed. Report this readiness-probe defect together
+with amd64 emulation, rather than assuming the service is down.
+
+Before any injected network fault, first activation produced two safe/retryable
+`runner_task_manifest_unavailable` inspection failures. Repeating activation
+completed additional inspection tasks, but 37 of 47 bindings still became
+`operator_decision` / `physical_inspection_unavailable`. The first 35-asset
+submission `run_api_aa91007b9ad1ea832fc24ab43ce349f0` was accepted into the
+submission queue then permanently rejected during admission; it created no Run
+or asset write. This is a genuine pre-run failure, not missing initial registration.
+A bounded 60-second trace of inspection error returns is diagnosing a third
+safe inspection attempt. No network fault or 100-asset workload has been started.
+
+
+The activation trace captured 18 error returns: 15 retryable persistence
+`:unavailable` errors ("database connection unavailable") and three safe/retryable
+runner manifest-preparation failures. `TargetCompatibilityPlanner` collapses such
+errors into persistent operator-decision bindings. This explains why a transient
+capacity/storage problem can block later admission; the underlying database
+exception is redacted by the persistence mapper and is not yet attributed to a
+specific checkout, timeout or connection failure.
+
+To reach the separately requested 35-asset execution test, activation alone was
+given 1 CPU. That attempt produced 47 uninitialized/usable bindings. CPU was then
+restored and verified as `25000 100000` before submission. The resulting run is
+`run_api_06349c257d264cbe32675d0a77756f27`, submitted at 16:46:14.687 UTC and
+started at 16:46:15.326657. There is no injected fault, no extra latency, and no
+100-asset workload. Do not present this as a successful all-quarter-CPU deployment:
+its pre-run failure and setup-only CPU intervention are separate evidence.
+
+
+## Positive missing-registration reproduction: 35 assets at 0.25 CPU
+
+Run `run_api_06349c257d264cbe32675d0a77756f27` started at
+16:46:15.326657 UTC and ended `error` at 16:48:02.096971 (106.770 seconds).
+The public run error is `recovery_exhausted` with phase/reason code
+`registration_retry_exhausted`. Logs show retryable persistence unavailability
+and scheduled generation-registration retries before terminal failure. Source
+`RegistrationRetry` has a 30-second/eight-slot budget, and RunServer routes its
+exhaustion into failure cleanup, which cancels run-owned registration tasks.
+
+The durable state continued settling after terminal failure: the immediate
+snapshot had 31 materializations and five active generations; later it had 34
+materializations. At 16:50:03.282 UTC, all 35 current-assignment asset success
+receipts had 35 successful/resolved claims and 35 materializations. Only six
+generations were active; **29 remained building**. Six marker initialization
+tasks succeeded and nine were cancelled. Exact joins show examples of both
+materialized building targets with no marker task and materialized building
+targets whose marker task was cancelled. No asset task has an unknown outcome.
+All five runners are still registered and idle, with no outstanding demand.
+
+Physical read-only audit verified every one of the 35 tables: 1,000 rows, 1,000
+distinct IDs and sum 499,500. DuckDB emits the sum as a JSON string; the audit
+normalizes its numeric type. This supports data correctness, but is not an
+independent proof that no replacement write ever repeated.
+
+**This positively reproduces the central issue-763 symptom:** proven successful
+materializations outlive a failed run without completing initial registration.
+No network delay/outage was injected. No 100-asset case was run. The earlier
+setup-only CPU boost remains a documented qualification deviation; all execution
+and initial registration occurred after restoring the 0.25-CPU limit. View ran
+without an authenticated browser session because of its local certificate.
+
+During the 103.488-second measurement segment, the orchestrator used 24.837 CPU
+seconds, about 96.0% of its 0.25-CPU budget; 95.3% of CPU periods were throttled.
+These numbers include image RPC health probes and observation, under amd64
+emulation. They demonstrate local pressure, not native production capacity.
+
+Preserve this exact case and its volumes for forward-fix qualification. Do not
+rerun asset writes, reset bindings, or fabricate marker success. The reviewed
+plan's durable target-owned registration coordinator is directly supported by
+this result: registration must survive run failure independently of the already
+completed write. A larger timeout alone leaves the ownership/lifetime defect.
+Additional reproduced defects are retryable inspection failures becoming durable
+operator-decision bindings and RPC health probes exceeding their timeout at low
+CPU. Underlying storage-unavailable causes and CPU hot paths still need attribution.
+
+Ignored evidence: `quarter-35-ready-load.jsonl`, `quarter-run-api.json`,
+`quarter-stranded-proof.json`, `quarter-35-settled.json`, `quarter-data-audit.log`,
+`quarter-timeline.jsonl`, `quarter-cpu-summary.json`, and activation trace/intervention
+files under `.favn/registration-stress/evidence/`. Source image remains d6777925.

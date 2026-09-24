@@ -775,3 +775,32 @@ terminal error. The former registry-wide crash cascade did not recur, but this
 is not a successful missing-marker reproduction. The durable-registration and
 performance implementation slices remain outstanding. See the scratchpad for
 exact run IDs, timestamps, constraints and the user's manual-login fallback.
+
+
+### Positive reproduction at 0.25 CPU (2026-09-24)
+
+The 35-asset case now positively reproduces the missing-registration defect.
+Candidate run `run_api_06349c257d264cbe32675d0a77756f27` ended after 106.770
+seconds with `registration_retry_exhausted`. After post-terminal settlement,
+all 35 asset tasks had exact successful receipts, successful/resolved claims,
+and materializations, but only six generations were active and 29 remained
+building. Marker tasks include both cancelled work and absent tasks for proven
+materializations. All five runners remained registered/idle. All 35 physical
+tables passed the row/distinct-ID/sum audit. No unknown write is being waived.
+
+There was no injected outage or network delay. This case ran with 0.25 CPU,
+unchanged runner fixtures, amd64 emulation and original image health probes;
+View had no authenticated browser session. Activation itself failed at this
+quota because retryable inspection storage errors became operator-decision
+bindings. Activation alone was temporarily given 1 CPU, then the quota was
+restored/verified before execution. This deliberate setup-only deviation lets
+the runtime failure be evaluated separately; it is not an all-quarter-CPU
+successful deployment claim. The execution sample consumed 96.0% of available
+CPU and was throttled in 95.3% of periods.
+
+The positive case supports the existing target-owned durable-registration plan:
+run-scoped retry exhaustion can abandon registration after write success. Preserve
+the case for forward-upgrade qualification and do not enlarge the workload to
+100 assets before resolving this failure. Additional activation classification
+and health-probe defects require follow-up, while native CPU attribution remains
+outstanding. Full timestamped evidence and local filenames are in the scratchpad.
