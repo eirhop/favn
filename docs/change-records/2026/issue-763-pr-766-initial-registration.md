@@ -570,3 +570,45 @@ workflow status advancing when the draft PR was opened.
 - No 60–120-second end-to-end outage test or 0.5-vCPU release benchmark has run.
 - The proposed migration, registration lifecycle and operator repair are not implemented.
 - Broader projection and workspace-discovery risks have not been reproduced at scale.
+
+
+## Approved-baseline deviations during implementation
+
+### Manual local qualification instead of a CI simulation
+
+At the user's request on 2026-09-24, the constrained-resource and fault simulation
+runs locally on OrbStack. It does not add a CI job. Focused owning-layer regression
+tests remain required. The local topology uses a 0.5-vCPU/1-GiB orchestrator and
+five separately identified runners. The original four-slots-per-runner case is
+invalid under the existing one-slot RunnerTask contract; replace it with actual
+five-runner admitted concurrency and report offered and completed rates.
+
+Independent reviewer `review_763_plan` approved this qualification adjustment,
+subject to durable receipt-based fault triggers, measured CPU throttling and
+proxy latency, equal before/after settings, data-plane checks for effect replay,
+and retention of the failed baseline for forward upgrade/repair. Preserve all
+other correctness and unknown-outcome gates from the approved baseline.
+
+Use the tutorial with 35 independent SQL targets and shared DuckLake storage.
+Proxy only the orchestrator's control-database traffic; evidence and data-plane
+metadata bypass it. The host is ARM and supported release images are amd64; the
+local Erlang `+JMsingle true` compatibility setting is required. These results can
+establish failure/recovery behavior under a quota, not native production capacity.
+Canonical image health checks remain enabled and must be included in resource
+accounting. No global Docker cleanup or native PostgreSQL installation is used.
+
+The baseline's resident-pool boot bug requires five fixed elastic runners with
+one-hour idle grace and no autoscaler. Use the same pool policy for comparisons.
+The scratchpad records the reproduced double-normalization failure; its focused
+fix and independent scope review are pending.
+
+
+### Resident-pool normalization correction
+
+Independent reviewer `review_763_plan` approved this narrow additional fix on
+2026-09-24 after separately reproducing the actual production configuration path
+through Tidewave. Make resident normalization accept its canonical atom
+`:infinity` as well as omitted grace. Continue rejecting finite values, `nil`,
+string `"infinity"`, and infinity for elastic mode. Verify mixed-pool idempotence
+and production JSON validation followed by runtime normalization. This startup
+bug is independent of registration recovery and does not justify a larger design.

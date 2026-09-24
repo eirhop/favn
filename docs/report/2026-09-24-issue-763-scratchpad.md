@@ -265,3 +265,81 @@ then requested five corrections before approval:
 
 These corrections change the proposed design and qualification, not the observed
 incident evidence. No application implementation was performed during review.
+
+
+## Manual OrbStack qualification (in progress)
+
+The user requested a local simulation, not a CI simulation: a 0.5-vCPU
+orchestrator and five runner images, network fault injection, then the same test
+after fixes. The independently reviewed qualification adjustment preserves
+focused regression tests, durable fault triggers, before/after evidence and a
+retained failing database for forward-repair testing. Four slots per runner in
+the original plan is invalid: the current RunnerTask contract requires one slot.
+The local qualification uses five distinct runner sessions and five admitted
+independent targets instead.
+
+The isolated Compose project is `favn-763-local`, using only OrbStack containers.
+Its PostgreSQL is separate from the existing development and user databases.
+The baseline control-plane image is published rc19, digest
+`sha256:641d01af54cc11264b5a16e459d460ba48f2ac9b80709b81e935a4e7399a2beb`.
+The generated CRM tutorial profile adds 35 independent SQL targets, a pool and
+pipeline concurrency of five, and shared DuckLake metadata/data. A Toxiproxy
+endpoint carries only the orchestrator's control-database connections; bootstrap,
+evidence reads and DuckLake metadata use PostgreSQL directly. Directional
+latency/jitter and measured round-trip overhead must be recorded separately.
+
+Initial startup findings:
+
+- The amd64 Erlang JIT failed under this ARM Mac's compatibility layer with
+  `prim_tty:isatty/1`, `erlang:nif_error/1` and `nouser`. The OTP-maintainer
+  workaround `+JMsingle true` allowed the unchanged release bootstrap to complete.
+  This local setting is in the harness only. It means CPU measurements include
+  emulation and cannot establish native production capacity. See
+  [OTP issue 10355](https://github.com/erlang/otp/issues/10355).
+- Docker's kernel cgroup reports `cpu.max = 50000 100000` for the orchestrator.
+- **Additional confirmed production startup bug:** a valid resident pool is
+  accepted by `RunnerPools.normalize/1`, producing `idle_grace_ms: :infinity`.
+  `ProductionRuntimeConfig` installs that normalized value; `RuntimeConfig`
+  normalizes it again and rejects the generated infinity as user-supplied grace.
+  The actual rc19 container aborts with `resident_idle_grace_not_allowed`.
+  A side-effect-free Tidewave call reproduced normalize(normalize(input)).
+  Fix normalization idempotence while continuing to reject finite resident grace;
+  add a production-config-through-runtime regression test. The unchanged baseline
+  instead uses five fixed elastic runners with a one-hour idle grace and no
+  autoscaler; candidate comparisons must retain that configuration.
+
+No application fix or end-to-end workload result is claimed by these startup
+checks. Image build corrections (explicit amd64 build platform and the supported
+`query do ~SQL"..." end` fixture syntax) are harness setup corrections.
+
+
+Additional setup evidence, before the first workload:
+
+- `favn.build.manifest` reached public catalog export and crashed at
+  `Favn.Catalog.Artifact.selector/1` on the tutorial's documented shorthand
+  `assets([Engagement, ExecutiveOverview])`: `Snapshot.ref/1` only accepts tuples.
+  The local profile selects only its stress pipeline and uses explicit
+  `{Module, :asset}` refs to keep the release baseline unchanged. This is a
+  separate authoring/export regression, not evidence for issue #763's cause.
+- All five runner sessions registered durably. Their canonical image RPC health
+  probes nevertheless fail with `:noconnection`. The release uses a dynamic
+  `undefined@host` node; local EPMD reports no registered static name. Investigate
+  the health probe's incompatibility with dynamic naming before production use;
+  do not count a registered session as a passing image health check. Leave probes
+  enabled equally in baseline/candidate resource measurements.
+- The existing Compose operator helper captures `mix run` stdout as the manifest
+  ID. A native dependency's compile output contaminated the capture and caused
+  `invalid --manifest-version`. An explicit known ID activated successfully.
+  The local harness reads the single publication directory name instead.
+- The first shared-storage profile inherited the tutorial's `database_path`
+  script parameter because Config merges nested keyword lists. Activation's
+  relation-inspection tasks correctly failed with `unused_script_parameters`.
+  Use an isolated generated compile profile rather than merge file-backed and
+  DuckLake resource definitions. Discard these setup attempts from throughput
+  evidence; the actual baseline requires a fresh Compose project.
+
+Independent reviewer `review_763_plan` approved the resident normalization fix
+on 2026-09-24 after reproducing it separately through Tidewave. Required cases:
+resident/mixed normalization idempotence, production JSON validation followed by
+runtime normalization, and rejection of finite/nil/string infinity resident grace
+and infinity elastic grace. No broader architecture change is needed for this bug.
