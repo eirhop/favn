@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#764](https://github.com/eirhop/favn/issues/764) |
-| Pull request | Pending |
+| Pull request | [#765](https://github.com/eirhop/favn/pull/765) |
 | Related work | None |
 | Affected areas | Orchestrator command outcomes; PostgreSQL and View regression coverage |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `be771610` |
 | Last updated | 2026-09-24 |
 
 ## One-minute summary
