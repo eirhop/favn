@@ -1902,7 +1902,8 @@ defmodule FavnOrchestrator do
   Returns whether a failed browser command must retain its exact idempotency key.
 
   `true` means the durable outcome is unknown, so issuing a new key could repeat
-  a write that already happened. Proven rejections return `false`.
+  a write that already happened. Proven rejections, including invalid window
+  values rejected before backfill submission, return `false`.
   """
   @spec operator_command_retryable?(term()) :: boolean()
   def operator_command_retryable?(reason), do: operator_error_outcome(reason) == "unknown"
@@ -2631,7 +2632,7 @@ defmodule FavnOrchestrator do
     |> maybe_put_opt(:refresh, operator_refresh(request.refresh_mode))
     |> maybe_put_opt(:retry_policy, request.retry_policy)
     |> maybe_put_opt(:timeout_ms, request.timeout_ms)
-    |> maybe_put_opt(:combine_windows, request.combine_windows)
+    |> maybe_put_opt(:combine_windows, Map.get(request, :combine_windows))
     |> Keyword.put(
       :metadata,
       Map.merge(request.metadata || %{}, %{
@@ -2800,10 +2801,14 @@ defmodule FavnOrchestrator do
     end
   end
 
+  defp operator_error_code({:invalid_window_value, _kind, _value}), do: "invalid_window_value"
+
   defp operator_error_code(%PersistenceError{kind: kind}), do: Atom.to_string(kind)
   defp operator_error_code(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp operator_error_code({kind, _detail}) when is_atom(kind), do: Atom.to_string(kind)
   defp operator_error_code(_reason), do: "operator_command_failed"
+
+  defp operator_error_outcome({:invalid_window_value, _kind, _value}), do: "rejected"
 
   defp operator_error_outcome(%PersistenceError{retryable?: true}), do: "unknown"
 

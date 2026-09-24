@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Implementing |
+| Status | Implemented |
 | Type | Bug fix |
 | Primary issue | [#764](https://github.com/eirhop/favn/issues/764) |
 | Pull request | [#765](https://github.com/eirhop/favn/pull/765) |
@@ -153,20 +153,78 @@ this focused change. Record actual checks and any environment limitations.
 
 ## Implementation outcome
 
-Not implemented yet.
+The facade now recognizes only the three-element `invalid_window_value` reason
+as rejected and records its stable code. Existing finish/acknowledgement paths
+release the browser key after durable rejection. The shared backfill option
+builder now safely omits the pipeline-only option on asset requests.
+
+Production changes are confined to `FavnOrchestrator`; no UI production code,
+storage code, schema, or public return shape changed. Regression tests exercise
+the public facade with PostgreSQL, the outcome classifier, and View events.
+The saved Node harness executes the actual registry section from `app.js` with
+DOM/storage doubles and checks key retention across reload and terminal release.
+It is a harness check, not a live browser integration test.
+
+Implementation complexity is low; recovery complexity is moderate because the
+original principal, exact request, and retained key remain required. Canonical
+operator guidance was added to `docs/operators/runs-and-schedules.md`.
+
+Actual slice 1 size: 7 production lines added, 2 deleted; 300 supporting lines
+added, 0 deleted. Counts exclude this record; new test/checker files are included.
+All categories remain within the approved budget.
 
 ## Deviations from the approved plan
 
-None recorded.
+| Planned | Implemented | Reason | Impact | Reviewer verdict |
+| --- | --- | --- | --- | --- |
+| Classifier correction only | Also read optional `combine_windows` with `Map.get` in shared backfill options | Baseline asset regression exposed a preexisting KeyError because AssetBackfillRequest has no pipeline-only field | One-line correction omits absent asset option; pipeline semantics unchanged; no contract/schema change | Independent reviewer approved before edit |
 
 ## Decision log
 
-None recorded.
+| Date | Decision | Reason | Review |
+| --- | --- | --- | --- |
+| 2026-09-24 | Use a disposable native PostgreSQL 18 cluster on port 55464 | Docker socket unavailable; repository container setup was attempted first | Verification environment only; same database major version |
+| 2026-09-24 | Keep browser registry coverage as a standalone Node checker | No production JS change or new browser framework dependency needed | Explicitly distinguish mocked DOM execution from live browser proof |
 
 ## Verification evidence
 
-Source inspection only at planning time.
+| Check | Result | Evidence boundary |
+| --- | --- | --- |
+| Baseline outcome regression | Failed as expected: invalid-window tuple classified unknown | Before production edit |
+| Baseline PostgreSQL regressions | Pipeline/historical replay stored unknown + generic code; asset exposed KeyError | Real disposable PostgreSQL 18 |
+| Fixed outcome regression | 2 passed | Public classifier |
+| Fixed PostgreSQL regressions | 3 passed | Invalid/corrected pipeline and asset; historical exact replay with conflict guards |
+| Related PostgreSQL tests | 9 passed | Existing backfill, combine-windows, audit replay, unknown recovery, lost completion |
+| Focused View tests | 17 passed, including 3 doctests | Event handling/acknowledgement with facade doubles |
+| Browser registry | Passed `node scripts/check_operator_command_registry.cjs` | Actual JS registry with DOM/storage doubles |
+| Test compilation | Passed `MIX_ENV=test mix compile --warnings-as-errors` | Local automated qualification |
+| GitHub diagrams | Both rendered successfully before implementation | GitHub preview of PR-number record; diagrams unchanged from approved baseline |
+| Development compilation | Passed `mix compile --warnings-as-errors` | Local automated qualification |
+| Formatting / whitespace | Passed targeted `mix format --check-formatted` and `git diff --check` | Static checks |
+| Test tier guard | Passed `elixir scripts/check_test_tag_tiers.exs` | CI tier coverage |
+
+The affected fast suites ran with acceptance, container, slow, and browser tiers
+excluded. Orchestrator: **999 passed**, 5 excluded. View: initially **847/848
+passed**, 1 excluded; the unchanged raw-HTML `refute html =~ "T1"` assertion in
+`window_semantics_test.exs:552` failed. That test passed in isolation and the
+full View rerun passed **848 tests/doctests**, 1 excluded. A random CSRF-token
+substring collision is plausible but unproven because the original output was
+truncated; no unrelated test or UI changes were made.
+
+### Not verified
+
+No live production incident reproduction, authenticated end-to-end browser flow,
+container deployment, acceptance/slow suites, or general repair of unrelated
+unknown commands. Original-request recovery was proven only for the specific
+invalid-window rejection; no bulk repair is performed.
 
 ## Final review
 
-Not started.
+| Field | Result |
+| --- | --- |
+| Reviewer | Independent agent `review_764` |
+| Compared | Approved baseline `be771610`, complete implementation/tests/docs, deviation, complexity, and actual test logs |
+| Deviations complete | Yes; asset-helper correction approved before implementation and verified afterward |
+| Findings | No implementation findings; required accurate recording of final suite/static results |
+| Findings addressed and rechecked | Final evidence independently rechecked and accepted on 2026-09-24; includes initial intermittent View failure and passing reruns |
+| Verdict | Approved; no remaining findings |
