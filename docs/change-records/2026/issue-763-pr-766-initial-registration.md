@@ -733,3 +733,45 @@ the skipped-owner-row ambiguity described above; re-review confirmed the shared
 helper and real row-lock test resolve it, and approved the canonical docs.
 The original registration-lifecycle and performance slices still require their
 own implementation, verification and final baseline comparison.
+
+
+### Manual qualification supporting-code budget
+
+The local harness currently adds approximately 900 supporting lines, compared
+with slice 8's original 350–550 estimate. It reuses the existing Compose TLS,
+bootstrap, images, builder and secrets. The additional code supplies source-pinned
+short-asset fixture staging, a candidate-only image build, durable receipt-based
+fault triggers, bounded backlog submission with unknown-outcome preservation,
+container/cgroup/registry evidence and physical-table checks. Those pieces were
+not covered by the original in-test-fixture estimate, and the user's manual
+OrbStack and live-View requirements replace the planned CI simulation. Raw logs,
+generated images/contexts and credentials remain ignored. There is no application
+production-code increase from this harness. The revised supporting budget is
+750–950 added lines, zero deleted; independent variance/harness review is requested
+before committing it. The original table remains the approved baseline.
+
+
+### Manual harness review and candidate qualification (2026-09-24)
+
+The independent reviewer approved the 750–950-line supporting-code variance and
+re-reviewed corrections for exact Compose proxy ownership/network namespace,
+restoration-independent watcher cleanup, archived runner source identity, and
+current-assignment receipt joins. Python syntax and whitespace checks pass; the
+live wrong-port guard rejected access before mutation. This approves the harness,
+not completion of the registration architecture or production capacity.
+
+Candidate d6777925 completed two no-fault 35-asset runs in 61.411 and 24.468 seconds.
+A warm run with 10 ms ±3 ms latency per database direction completed successfully
+in 456.294 seconds; after removing the delay, runs returned to 25.168 and 24.069
+seconds without runner restarts. All five runners remained registered throughout
+the latency case. This reproduces severe latency amplification, not stranded
+initial registration. Images ran under amd64 emulation with no authenticated
+browser connected; measurements are local comparisons only.
+
+A subsequent 90-second warm-generation outage ended with 34 successful tasks and
+one protected unknown outcome. Four runners remained registered; the runner with
+the expired assignment stopped. No manual replacement was needed to reach the
+terminal error. The former registry-wide crash cascade did not recur, but this
+is not a successful missing-marker reproduction. The durable-registration and
+performance implementation slices remain outstanding. See the scratchpad for
+exact run IDs, timestamps, constraints and the user's manual-login fallback.

@@ -1,0 +1,111 @@
+services:
+  postgres:
+    networks:
+      - favn-private
+      - stress-observe
+    ports:
+      - "127.0.0.1:8476:8474"
+  database-proxy:
+    restart: unless-stopped
+    image: ghcr.io/shopify/toxiproxy:2.12.0@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e
+    network_mode: service:postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["-host=0.0.0.0", "-config=/etc/toxiproxy.json"]
+    volumes:
+      - ./registration-stress/toxiproxy.json:/etc/toxiproxy.json:ro
+  database-bootstrap:
+    image: ${FAVN_STRESS_CONTROL_IMAGE}
+    platform: linux/amd64
+    environment:
+      ERL_FLAGS: +JMsingle true
+  control-plane:
+    image: ${FAVN_STRESS_CONTROL_IMAGE}
+    platform: linux/amd64
+    cpus: 0.5
+    mem_limit: 1g
+    environment:
+      ERL_FLAGS: +JMsingle true
+      FAVN_DATABASE_URL: ecto://favn_runtime:${FAVN_RUNTIME_DATABASE_PASSWORD}@postgres:15432/favn
+      FAVN_RUNNER_POOLS: '{"default":{"mode":"elastic","idle_grace_ms":3600000}}'
+    depends_on:
+      database-proxy:
+        condition: service_started
+    networks:
+      favn-private:
+        aliases: [control-plane.favn.local]
+      stress-observe:
+  view:
+    image: ${FAVN_STRESS_CONTROL_IMAGE}
+    platform: linux/amd64
+    environment:
+      ERL_FLAGS: +JMsingle true
+      FAVN_VIEW_PUBLIC_ORIGIN: https://favn.localhost:4443
+  https-proxy:
+    networks:
+      favn-edge:
+        ipv4_address: 172.31.58.2
+      stress-observe:
+  operator:
+    image: favn-763-operator:${FAVN_STRESS_TAG}
+    platform: linux/amd64
+    build:
+      platforms: [linux/amd64]
+      context: ${FAVN_STRESS_CONTEXT}
+      dockerfile: RunnerDockerfile
+      target: local-operator
+      args:
+        FAVN_CUSTOMER_APP: crm_demo
+        FAVN_PROJECT_ROOT: examples/basic-workflow-tutorial
+        FAVN_RUNNER_RELEASE_ID: ${FAVN_RUNNER_RELEASE_ID}
+    environment:
+      ERL_FLAGS: +JMsingle true
+  runner:
+    image: favn-763-runner:${FAVN_STRESS_TAG}
+    platform: linux/amd64
+    build:
+      platforms: [linux/amd64]
+      context: ${FAVN_STRESS_CONTEXT}
+      dockerfile: RunnerDockerfile
+      target: runtime
+      args:
+        FAVN_CUSTOMER_APP: crm_demo
+        FAVN_PROJECT_ROOT: examples/basic-workflow-tutorial
+        FAVN_RUNNER_RELEASE_ID: ${FAVN_RUNNER_RELEASE_ID}
+        FAVN_SOURCE_REVISION: ${FAVN_SOURCE_REVISION}
+    environment:
+      ERL_FLAGS: +JMsingle true
+      FAVN_RUNNER_LIFECYCLE_MODE: elastic
+      FAVN_RUNNER_MAX_UPTIME_MS: "7200000"
+      DUCKDB_ADBC_DRIVER: /opt/duckdb/1.5.5/libduckdb.so
+      FAVN_STRESS_CATALOG: ducklake:postgres:host=postgres port=5432 dbname=stress_lake user=favn_bootstrap password=${FAVN_BOOTSTRAP_DATABASE_PASSWORD} sslmode=verify-full sslrootcert=/etc/favn/tls/ca.crt
+    volumes:
+      - stress-data:/var/lib/favn/stress
+    cpus: 1
+    mem_limit: 1g
+  catalog-tool:
+    image: favn-763-operator:${FAVN_STRESS_TAG}
+    platform: linux/amd64
+    entrypoint: ["/bin/sh", "/local/catalog.sh"]
+    command: ["init"]
+    environment:
+      FAVN_STRESS_CATALOG: ducklake:postgres:host=postgres port=5432 dbname=stress_lake user=favn_bootstrap password=${FAVN_BOOTSTRAP_DATABASE_PASSWORD} sslmode=verify-full sslrootcert=/etc/favn/tls/ca.crt
+    volumes:
+      - ./registration-stress/catalog.sh:/local/catalog.sh:ro
+      - control-plane-certificates:/etc/favn/tls:ro
+      - stress-data:/var/lib/favn/stress
+    networks: [favn-private]
+    profiles: [operations]
+    restart: "no"
+  data-init:
+    image: alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce
+    command: ["sh", "-ec", "mkdir -p /data/landing /data/source /data/core /data/mart; chown -R 10001:10001 /data"]
+    volumes:
+      - stress-data:/data
+    restart: "no"
+volumes:
+  stress-data:
+
+networks:
+  stress-observe:

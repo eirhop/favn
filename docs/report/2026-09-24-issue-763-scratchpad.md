@@ -472,3 +472,60 @@ implementation and canonical documentation. Test-environment compilation with
 warnings as errors, the CI tag-tier guard and diff whitespace checks passed.
 Candidate image comparison and the remaining registration/performance slices
 are still outstanding.
+
+
+## Candidate warm-run latency and credential decision
+
+Candidate d67779259be37a2913190814b8d81189acfdd252 used the same five baseline
+runner images and 0.5-CPU control-plane limit. Its cold no-fault run completed in
+61.411 seconds; the following warm run took 24.468 seconds. Both produced all 35
+successful materializations. Data audit found all 35 tables with 1,000 distinct
+rows and the expected sum; this does not independently prove no repeated writes.
+
+Adding 10 ms latency with 3 ms jitter in each control-database direction made
+warm run `run_api_90e4e01bd988e45415a30467efa60777` take 456.294 seconds
+(16:13:43.678502 to 16:21:19.972544 UTC). The external driver timed out at 180
+seconds, but did not cancel or resubmit the accepted run. It subsequently ended
+`ok`, with 35 successful receipts/materializations and all five runners still
+registered. Intermittent samples with all runners idle were not a permanent lost
+wake: work continued. This is a performance reproduction, not evidence of the
+missing-marker correctness defect. Individual SQL operations remained short.
+
+After explicitly clearing the latency, two further runs completed in 25.168 and
+24.069 seconds without restarting runners. This reversible approximately 19x
+warm-run slowdown points to database-latency amplification; the dominant query
+paths still need measurement. Observation itself adds reads, and these amd64
+images run under ARM emulation. Do not extrapolate native production capacity.
+
+The user approved adding a local password, but the documented release command
+returned `password_input_failed` / `stdin_unavailable` before changing credentials.
+The user then explicitly chose to skip login setup and continue testing. Do not
+retry credential recovery. If reproduction remains inconclusive, the authorized
+fallback is a fresh password-authentication deployment with the View open, with
+the user starting runners personally. Existing tests still have no authenticated
+LiveView browser connected. Preserve current evidence and volumes when switching.
+
+Independent harness review requested exact proxy ownership/namespace checks,
+restoration-independent watcher cleanup, archived revision in build.env, and
+current-assignment receipt joins. These are applied; re-review is pending. A live
+wrong-port test was rejected before mutation; the correct project's latency was
+then cleared. The support-budget variance was accepted as justified.
+
+
+## Candidate warm-generation 90-second outage
+
+A separate bounded diagnostic cut the same verified proxy after the first exact
+success receipt of `run_api_6170cfba47715b341b88b2843ef9c701`. This was a warm
+generation test, explicitly not the original first-marker trigger. Connectivity
+was disabled at 16:27:14.149 and restored at 16:28:44.201 UTC. No runner was
+manually restarted. The run ended `error` at 16:29:34.126 with 34 successful asset
+tasks and one protected unknown outcome. Four runners remained registered/idle;
+the runner with the expired assignment rejected registration and exited. The
+registry-wide loss seen with rc19 did not recur in this test. An unknown write
+requires reconciliation; neither a table count nor runner replacement permits
+blind retry. Do not report this as all-success recovery or proof the original
+missing-marker bug is fixed.
+
+The reviewed harness corrections were independently approved. The current
+scope is manual-only and the supporting-code variance was accepted. Baseline
+and candidate volumes and raw evidence remain retained locally.
