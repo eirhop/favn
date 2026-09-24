@@ -59,6 +59,9 @@ jobs:
       - name: Check for repository Python dependencies
         run: elixir scripts/check_no_repo_python.exs
 
+      - name: Test local stress tooling safeguards
+        run: elixir scripts/registration_stress_test.exs
+
       - name: Test umbrella runner
         run: elixir scripts/umbrella_test_runner_test.exs
 

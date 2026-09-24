@@ -6,12 +6,10 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
   alias Ecto.Adapters.SQL
   alias FavnStoragePostgres.Config
   alias FavnStoragePostgres.Migrations.AddAssetEvidenceBindingsV2
-  alias FavnStoragePostgres.Migrations.AddRetentionV2
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @migration_version 20_260_728_010_000
   @migration {@migration_version, AddAssetEvidenceBindingsV2}
-  @retention_version 20_260_915_010_000
   @evidence_generation_id "ag_#{String.duplicate("a", 64)}"
   @runner_release_id "rr_#{String.duplicate("b", 64)}"
   @workspace_id "evidence-migration"
@@ -25,7 +23,7 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
       adapter: Ecto.Adapters.Postgres
   end
 
-  test "seeds active non-persisted assets and downgrades cleanly" do
+  test "isolated evidence migration seeds active non-persisted assets" do
     source_url =
       System.get_env("FAVN_DATABASE_URL") ||
         raise "FAVN_DATABASE_URL is required for PostgreSQL migration tests"
@@ -59,12 +57,14 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
     end)
 
     assert :ok = Migrations.migrate!(UpgradeRepo)
-    assert [@retention_version, @migration_version] = migrate(:down)
+    retention_ddl = evidence_retention_ddl()
+    assert [@migration_version] = migrate(:down)
     refute table_present?()
 
     insert_active_deployment()
 
-    assert :ok = Migrations.migrate!(UpgradeRepo)
+    assert [@migration_version] = migrate(:up)
+    Enum.each(retention_ddl, &SQL.query!(UpgradeRepo, &1, []))
     assert table_present?()
 
     assert %{rows: [[@evidence_generation_id, @manifest_id]]} =
@@ -87,7 +87,7 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
               definition_fingerprint_matches?: true
             }} = Migrations.diagnostics(UpgradeRepo)
 
-    assert [@retention_version, @migration_version] = migrate(:down)
+    assert [@migration_version] = migrate(:down)
     refute table_present?()
   end
 
@@ -173,10 +173,33 @@ defmodule FavnStoragePostgres.StorageV2.AssetEvidenceBindingMigrationTest do
     )
   end
 
+  # Round-trip only the owning migration. Replaying the whole retention migration
+  # against today's schema would incorrectly require the retired repair table.
+  defp evidence_retention_ddl do
+    %{rows: rows} =
+      SQL.query!(
+        UpgradeRepo,
+        """
+        SELECT pg_get_indexdef(indexrelid)
+        FROM pg_index
+        WHERE indexrelid = 'favn_control.asset_evidence_bindings_initial_manifest_id_index'::regclass
+        UNION ALL
+        SELECT pg_get_triggerdef(oid)
+        FROM pg_trigger
+        WHERE tgrelid = 'favn_control.asset_evidence_bindings'::regclass
+          AND tgname = 'retention_initial_manifest_id'
+        """,
+        []
+      )
+
+    assert length(rows) == 2
+    List.flatten(rows)
+  end
+
   defp migrate(direction) do
     Ecto.Migrator.run(
       UpgradeRepo,
-      [@migration, {@retention_version, AddRetentionV2}],
+      [@migration],
       direction,
       all: true,
       prefix: "favn_control"

@@ -41,7 +41,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   @release "rr_" <> String.duplicate("a", 64)
   @other_release "rr_" <> String.duplicate("b", 64)
-  @distributed_test_address {127, 0, 0, 2}
+  @distributed_test_address {127, 0, 0, 1}
   @distributed_test_host ~c"control-plane.favn.test"
 
   setup_all do

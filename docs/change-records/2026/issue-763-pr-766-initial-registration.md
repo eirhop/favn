@@ -1220,3 +1220,55 @@ assignment/claim/receipt counts, physical data, restored proxy, runner sessions,
 Git budget totals and deviations. The verdict accepts this fix; it does not
 claim complete production qualification or close the explicitly remaining
 health, performance and longer-duration/browser qualification work.
+
+### CI follow-up: local tooling and slow-test fixtures
+
+The first full GitHub run at `f28638db` passed fast tests, acceptance, native
+macOS, Dialyzer, semantic parity, HTTP boundary and image qualification. It failed
+Quick checks because the manual harness introduced forbidden repository-owned
+Python sources, and Slow tests exposed two fixture defects missed by the earlier
+focused qualification. The CI guards were not relaxed.
+
+- Replaced the four manual scripts with standalone Elixir/OTP tools and shared
+  support. Preserve pinned archives, exclusive evidence, durable idempotency-key
+  reservations and stop-on-uncertain submission behavior. Disable HTTP automatic
+  retry/redirect; explicitly qualify SIGTERM restoration and document that Ctrl-C
+  abort/SIGKILL need manual fault clearing. Watchers retain one psql session, use
+  an exclusive application identity, and terminate both the database session and
+  local subprocess on exit. Review caught these HTTP/shutdown details before push.
+- The evidence-binding migration test now round-trips only its owning migration,
+  restoring its current retention index/trigger and checking exact diagnostics.
+  It no longer replays historical retention against the retired repair table.
+- The distributed simulated runner regenerated timestamps inside a retry while
+  retaining command identity. Pin Claim and Started messages before retry; a
+  deterministic test verifies exact message equality after an unavailable reply.
+  Report remote exceptions/exits to the test owner. Use portable loopback
+  `127.0.0.1`: the old `127.0.0.2` timed out on this Mac without an extra alias.
+
+Local verification: the two CI regressions plus deterministic retry test pass
+(three tests; 333 distributed simulated runners, p95 Started 1,217ms). Four
+standalone tooling tests cover no automatic POST retry/redirect, malformed
+responses, evidence exclusivity and SIGTERM unwinding; Quick checks now runs
+these unit tests, with no Docker simulation CI job. Format, no-Python/legacy/tag
+checks, umbrella-runner tests, compile warnings and quick static/security checks
+pass. Source preparation matches six original fixture/build inputs byte-for-byte.
+Read-only snapshot/observe, a one-second fault, trigger timeout, SIGTERM fault
+restoration and absence of retained watcher sessions were checked locally. One
+additional 35-asset run through the Elixir driver passed; the original eight-run /
+280-task evidence remains the original harness's historical result, not a claim
+that it used the port. No production implementation changed.
+
+Additional support budget: 1,108 formatted Elixir tooling lines replace 604
+Python lines, plus 119 standalone safeguard-test lines. This is a material
+support-only increase for the repository language policy and explicit cleanup /
+HTTP safety; no production coordination or recovery code was added. Earlier raw
+scripts and evidence remain in ignored local storage. Four leaked watcher
+sessions found during shutdown qualification (including one original-harness
+session) were explicitly terminated in the isolated case; the revised watcher
+checks finish with zero matching sessions. Treat observer overhead in earlier
+post-outage measurements as inclusive of that retained observer.
+
+Independent reviewer `review_763_plan` accepted this 18-file CI follow-up on
+2026-09-24 after checking the source, focused tests, smoke evidence and support
+budget. No blocking findings remain; production implementation approval is
+unchanged. Full GitHub rerun remains the final CI gate.

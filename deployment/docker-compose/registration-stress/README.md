@@ -18,10 +18,11 @@ Only one case may use the fixed loopback ports and proxy subnet at a time. Keep
 server is running. The investigation used API `4102`, direct View `4174`, HTTPS
 `4443` and the Toxiproxy control port `8476`.
 
-From the repository root:
+The manual tools use Elixir/OTP from the repository toolchain, with no Mix
+dependencies. From the repository root:
 
 ```sh
-python3 deployment/docker-compose/registration-stress/prepare.py --revision HEAD
+elixir deployment/docker-compose/registration-stress/prepare.exs --revision HEAD
 docker --context orbstack compose \
   --env-file deployment/docker-compose/.env.local \
   --env-file .favn/registration-stress/build.env \
@@ -29,7 +30,7 @@ docker --context orbstack compose \
   -f deployment/docker-compose/compose.yml \
   -f deployment/docker-compose/registration-stress/compose.yml \
   build --builder favn-qualification-v1 --provenance=false certificates postgres operator runner
-python3 deployment/docker-compose/registration-stress/control.py --project favn-763-example up
+elixir deployment/docker-compose/registration-stress/control.exs --project favn-763-example up
 ```
 
 Preparation archives an exact source commit and records its fixture hash and
@@ -53,14 +54,14 @@ An uncertain response stops submission. Resolve the original key and exact body
 before any retry; do not hide an uncertain request behind a new key.
 
 ```sh
-python3 deployment/docker-compose/registration-stress/control.py --project favn-763-example \
+elixir deployment/docker-compose/registration-stress/control.exs --project favn-763-example \
   observe --seconds 300 --interval 5 --output .favn/registration-stress/evidence/example-timeline.jsonl
 ```
 
 Run the observer in a separate terminal, then submit a bounded backlog:
 
 ```sh
-python3 deployment/docker-compose/registration-stress/load.py --project favn-763-example \
+elixir deployment/docker-compose/registration-stress/load.exs --project favn-763-example \
   --runs 10 --max-in-flight 2 --timeout 900 --key-prefix example-short-assets \
   --output .favn/registration-stress/evidence/example-load.jsonl
 ```
@@ -75,19 +76,21 @@ for before/after comparisons. Do not compile images during a measurement window.
 Add delay in each direction, then explicitly clear it:
 
 ```sh
-python3 deployment/docker-compose/registration-stress/control.py --project favn-763-example latency --ms 10 --jitter 3
-python3 deployment/docker-compose/registration-stress/control.py --project favn-763-example clear-faults
+elixir deployment/docker-compose/registration-stress/control.exs --project favn-763-example latency --ms 10 --jitter 3
+elixir deployment/docker-compose/registration-stress/control.exs --project favn-763-example clear-faults
 ```
 
 For an outage, arm this command **before** submitting the first run in a fresh
 case. It waits for a durable successful materialization with a building generation
 and no marker task, records the evidence, then disconnects only the orchestrator's
 control-database traffic. Runner data/catalog connections and evidence reads remain
-available. It restores the proxy on ordinary completion or termination; inspect
-and clear faults explicitly after host shutdown or forced process termination.
+available. It restores the proxy on completion or `SIGTERM`. To stop an armed
+outage, send `kill -TERM PID`; do not use the Erlang Ctrl-C abort menu. Ctrl-C
+abort, SIGKILL and host shutdown do not unwind cleanup: inspect the proxy and
+run `clear-faults` explicitly before starting another case.
 
 ```sh
-python3 deployment/docker-compose/registration-stress/control.py --project favn-763-example \
+elixir deployment/docker-compose/registration-stress/control.exs --project favn-763-example \
   outage-after-receipt --next-run --phase materialized --seconds 90 --timeout 300 \
   --output .favn/registration-stress/evidence/example-outage.jsonl
 ```
@@ -106,7 +109,7 @@ distinct IDs and sum 499,500. Data existence alone cannot resolve an unknown wri
 ## Compare a candidate and retain failures
 
 ```sh
-python3 deployment/docker-compose/registration-stress/build-control.py --revision HEAD
+elixir deployment/docker-compose/registration-stress/build-control.exs --revision HEAD
 ```
 
 Use its printed immutable local image tag through `FAVN_STRESS_CONTROL_IMAGE` when
@@ -118,7 +121,7 @@ The builder records source revision, Dockerfile hash, local adjustment and image
 Stop all profiles with the same Compose arguments plus `--profile '*'` and
 `down --remove-orphans`. Do not add `--volumes`: retain failed case data and raw
 evidence for upgrade/repair qualification. Full `up` initializes a fresh case;
-Use `control.py --compose-override /absolute/path/to/case.json` when a case overrides
+Use `control.exs --compose-override /absolute/path/to/case.json` when a case overrides
 CPU quota or password bootstrap configuration; the driver applies the same file
 to startup and observation commands. The issue #763 candidate uses `cpus: 0.25`,
 a fresh Compose project, and runner/operator/control images from the same commit.

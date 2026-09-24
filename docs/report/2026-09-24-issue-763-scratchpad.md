@@ -958,3 +958,24 @@ No repair/replay/reset and no 100-asset test.
 The readonly Tidewave check after restart confirms the development server still
 runs from the implementation folder with repo/orchestrator alive. Docker restart
 only affected the isolated qualification control-plane container.
+
+### CI correction evidence
+
+GitHub run `36051515480`: Quick checks rejected four tracked manual Python
+scripts. Slow tests failed evidence-binding migration replay after target repair
+retirement and simulated-runner identity replay with regenerated timestamps.
+Local corrections and scope are recorded in the change record's CI follow-up.
+
+Logs: `/tmp/favn-766-ci-regressions-final.log` (3 pass, distributed333),
+`/tmp/favn-766-harness-unit-final.log` (4 pass), `/tmp/favn-766-security.log`,
+`/tmp/favn-766-prepare-smoke.json`, `/tmp/favn-766-watch-final-{term,timeout}.log`.
+The first SIGTERM smoke exposed VM shutdown racing cleanup; corrected callback
+waits for the script to unwind. Explicitly restored the proxy after that failed
+smoke. Subsequent termination and trigger-timeout checks restored the proxy and
+left zero watcher application sessions. Four older trigger sessions were
+identified and terminated only in `favn-763-atomic`.
+
+Port-driven run `run_api_8873c0c3235c38209739adb3f07ba342` passed (35 assets,
+63.008736s execution). This is tooling smoke on the unchanged production images,
+separate from the original qualification. Source preparation was compared and
+active build.env/build.json restored afterward; no images or manifests changed.
