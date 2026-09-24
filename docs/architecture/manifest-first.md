@@ -143,7 +143,7 @@ The SQL engine receives the same rendered SQL and binding order.
 ### SQL package compatibility
 
 Current SQL packages use schema 6; runtime publication requires manifest runner
-contract 17, manifest index schema 21 and runner task message protocol 15. Unsupported package schemas
+contract 18, manifest index schema 21 and runner task message protocol 16. Unsupported package schemas
 are rejected before template rehydration; unsupported runner contracts are
 rejected by the existing manifest/release compatibility boundaries. Compiler
 metadata is not a compatibility gate. New package bytes have new hashes; previously

@@ -92,6 +92,11 @@ python3 deployment/docker-compose/registration-stress/control.py --project favn-
   --output .favn/registration-stress/evidence/example-outage.jsonl
 ```
 
+For the atomic-publication candidate add `--generation-state active`: the accepted
+receipt and active generation are committed together, so the historical `building`
+trigger must never fire. This exercises control-database loss after acceptance,
+not the removed gap. Keep `building` for reproducing the historical baseline.
+
 For a known run use `--run-id` instead. `--phase receipt` targets the earlier gap
 between the durable asset receipt and materialization settlement. No qualifying
 receipt means no fault. Audit physical data with the same Compose arguments and

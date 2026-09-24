@@ -11,7 +11,7 @@ SELECT jsonb_build_object('candidate', (
     AND g.target_id = c.target_id AND g.target_generation_id = c.target_generation_id
   LEFT JOIN favn_control.materializations m ON m.workspace_id = c.workspace_id AND m.claim_key = c.claim_key
   WHERE t.run_id = :run_id AND t.task_kind = 'asset_attempt' AND t.status = 'succeeded'
-    AND o.assignment_generation = t.assignment_generation AND o.error IS NULL AND g.status = 'building' AND :phase_predicate
+    AND o.assignment_generation = t.assignment_generation AND o.error IS NULL AND g.status = :generation_state AND :phase_predicate
     AND NOT EXISTS (SELECT 1 FROM favn_control.runner_tasks marker
       WHERE marker.workspace_id = c.workspace_id AND marker.write_target_id = c.target_id
         AND marker.task_kind = 'generation_marker_initialize')

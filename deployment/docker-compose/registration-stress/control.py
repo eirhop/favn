@@ -150,6 +150,7 @@ def trigger_outage():
     if not proxy()["enabled"]:
         raise SystemExit("Restore the proxy before arming an outage")
     sql = (HERE / "trigger.sql").read_text()
+    sql = sql.replace(":generation_state", "'" + ARGS.generation_state + "'")
     if ARGS.next_run:
         if query("SELECT count(*) FROM favn_control.runs;") != 0:
             raise SystemExit("--next-run requires a fresh project with no runs")
@@ -243,6 +244,8 @@ fault = sub.add_parser("outage-after-receipt")
 fault_run = fault.add_mutually_exclusive_group(required=True)
 fault_run.add_argument("--run-id")
 fault_run.add_argument("--next-run", action="store_true")
+fault.add_argument("--generation-state", choices=["building", "active"], default="building",
+                   help="building for the historical defect; active for atomic-publication candidates")
 fault.add_argument("--phase", choices=["receipt", "materialized"], default="materialized")
 fault.add_argument("--seconds", type=int, default=90)
 fault.add_argument("--timeout", type=int, default=300)

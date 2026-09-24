@@ -827,3 +827,32 @@ and final evidence acceptance remain outstanding.
 The local control driver now accepts an explicit case Compose override so quota
 and password bootstrap settings apply consistently to startup and observations.
 Historical case volumes remain untouched.
+
+
+### Independent review and candidate qualification
+
+Committed the first implementation candidate as `386ca964378ffd72f403320ed8daa868dce51764`
+and built matched control, runner and operator images. Before running it, review
+identified a proven pre-BEGIN capability rejection being classified as unknown.
+The correction marks only known pre-write errors as `not_started`; actual
+transaction uncertainty remains unknown. The worker-to-PostgreSQL regression now
+covers unsupported transactions alongside both confirmed rollback cases: all
+three pass, release the write hold, preserve independent work and admit a later
+claim. Missing runtime-publication intent and unsupported group replacement also
+carry the explicit pre-write classification. Managed group replacement now tests
+its generation receipt and preserves the unknown-commit regression with a pinned
+assignment. All 289 runner fast tests pass. These review fixes require rebuilt
+matched images before stress qualification.
+
+The umbrella fast suite completed with 960/961 orchestrator and 614/615 PostgreSQL
+cases passing; all other apps passed, including 844 View checks. The removed-phase
+cleanup test is corrected and its 11-test module passes. The remaining deployment
+inspection timeout passes individually; its full module is being rerun with the
+original seed to investigate a SQL Sandbox owner-lifecycle failure. Do not count
+the umbrella run as clean yet.
+
+Review also corrected current documentation that retained initial-registration
+workers/repair promises or old protocol numbers. Candidate fault injection now
+requires explicit `--generation-state active`: accepted result and active
+generation are atomic, so the historical `building` trigger cannot fire on a
+correct candidate. This tests database loss after acceptance, not the removed gap.

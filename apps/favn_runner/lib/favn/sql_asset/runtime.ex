@@ -230,7 +230,8 @@ defmodule Favn.SQLAsset.Runtime do
            %Error{
              type: :invalid_runtime_publication,
              phase: :materialize,
-             message: "Managed SQL work requires matching pinned runtime publication intent"
+             message: "Managed SQL work requires matching pinned runtime publication intent",
+             details: %{asset_write_outcome: :not_started}
            }}
       end
     else
@@ -801,6 +802,7 @@ defmodule Favn.SQLAsset.Runtime do
        details: %{
          connection: session.resolved.name,
          missing_capability: :group_replacement,
+         asset_write_outcome: :not_started,
          group_replacement: session.capabilities.group_replacement
        }
      }}
@@ -1571,7 +1573,11 @@ defmodule Favn.SQLAsset.Runtime do
        phase: :materialize,
        asset_ref: rendered.asset_ref,
        message: "checked SQL assets require transactional table materialization",
-       details: %{connection: session.resolved.name, missing_capability: capability}
+       details: %{
+         connection: session.resolved.name,
+         missing_capability: capability,
+         asset_write_outcome: :not_started
+       }
      }}
   end
 
@@ -2187,12 +2193,15 @@ defmodule Favn.SQLAsset.Runtime do
          %Definition{} = definition,
          %Render{} = rendered
        ) do
-    results = complete_check_results(definition, [], :transaction_failed)
-    emit_check_telemetry(definition, results, :unknown, :unknown)
+    outcome =
+      if error.details[:asset_write_outcome] == :not_started, do: :not_started, else: :unknown
+
+    results = complete_check_results(definition, [], failed_check_reason(outcome))
+    emit_check_telemetry(definition, results, outcome, outcome)
 
     meta =
       rendered
-      |> failed_check_metadata(results, :unknown, :unknown)
+      |> failed_check_metadata(results, outcome, outcome)
       |> attach_contract_validation_evidence(error)
 
     {:error, error, meta}

@@ -1,6 +1,6 @@
 defmodule FavnRunner.RunnerAgent do
   @moduledoc """
-  One-slot pull/execute/report loop for durable protocol-15 runner tasks.
+  One-slot pull/execute/report loop for durable protocol-16 runner tasks.
 
   Failure results are always classified from their error envelope through
   `Favn.Contracts.RunnerTask.classify_failure/2`, so every result the agent

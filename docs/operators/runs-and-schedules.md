@@ -279,19 +279,6 @@ the recorded generation and investigate out-of-band DDL. For
 unmanaged relation automatically. Repeated ordinary runs cannot clear any of
 these blocking states.
 
-### Missing Initial Marker
-
-The former console repair script has been removed. It dispatched run-associated
-marker work outside the run's ownership lifecycle and could not safely operate
-under the current fencing contract. There is currently no supported in-place
-repair for a terminal failed run whose initial marker was never created.
-
-Preserve its successful materialization, original task evidence and unresolved
-write holds. Do not rerun the asset, clear locks or manufacture a marker as a
-registration repair. Restoring this capability requires a separately authorized
-target-owned repair lifecycle. The recovery workflow below remains supported
-when a matching marker already exists; it is not a missing-marker repair.
-
 ### Initial Materialization And Unknown Writes
 
 A successful first materialization activates its generation when the orchestrator

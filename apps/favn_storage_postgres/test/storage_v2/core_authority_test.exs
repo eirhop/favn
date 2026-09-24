@@ -9939,7 +9939,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     def asset(_), do: raise("blocked dependent executed")
   end
 
-  for outcome <- [:check_rollback, :rejected_commit] do
+  defp assert_sql_transaction_outcome(:unsupported_transaction) do
+    refute_received :sql_transaction_started
+    refute_received {:confirmed_sql_rollback, _}
+  end
+
+  defp assert_sql_transaction_outcome(_) do
+    assert_receive :sql_transaction_started
+    assert_receive {:confirmed_sql_rollback, _}
+  end
+
+  for outcome <- [:check_rollback, :rejected_commit, :unsupported_transaction] do
     @tag sql_rollback: true
     @tag committed_lifecycle: true
     test "#{outcome} settles ownership and preserves independent work with node retries enabled" do
@@ -9947,7 +9957,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
       expected_error_type =
         unquote(
-          if outcome == :rejected_commit, do: :backend_execution_failed, else: :check_failed
+          case outcome do
+            :rejected_commit -> :backend_execution_failed
+            :unsupported_transaction -> :unsupported_materialization
+            :check_rollback -> :check_failed
+          end
         )
 
       adapter = FavnStoragePostgres.TestSupport.CheckedSQLAdapter
@@ -10226,7 +10240,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           result
         end)
 
-      assert_receive {:confirmed_sql_rollback, _}
+      assert_sql_transaction_outcome(outcome)
 
       assert [%{error: %{type: ^expected_error_type, retryable?: false, outcome: :safe_failure}}] =
                Enum.filter(results, &(&1.status == :error))

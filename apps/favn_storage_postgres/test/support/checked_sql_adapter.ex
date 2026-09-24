@@ -11,6 +11,9 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
 
   def disconnect({pid, _}, _), do: GenServer.stop(pid)
 
+  def capabilities(%{config: %{transaction_outcome: :unsupported_transaction}}, _),
+    do: {:ok, %Capabilities{replace_table: :supported}}
+
   def capabilities(_, _),
     do: {:ok, %Capabilities{transactions: :supported, replace_table: :supported}}
 
@@ -54,6 +57,7 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
   end
 
   def transaction({pid, observer} = conn, fun, _) do
+    send(observer, :sql_transaction_started)
     Postgrex.query!(pid, "BEGIN", [])
 
     case fun.(conn) do

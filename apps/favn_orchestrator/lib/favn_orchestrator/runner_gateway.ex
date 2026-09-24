@@ -1,6 +1,6 @@
 defmodule FavnOrchestrator.RunnerGateway do
   @moduledoc """
-  Stable distributed-BEAM endpoint for protocol-15 runner messages.
+  Stable distributed-BEAM endpoint for protocol-16 runner messages.
 
   Calls that may touch PostgreSQL pass an explicit concurrency ceiling before
   executing under a task supervisor, so a slow claim or result write cannot

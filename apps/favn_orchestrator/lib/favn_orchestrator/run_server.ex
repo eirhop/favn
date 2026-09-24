@@ -3,7 +3,7 @@ defmodule FavnOrchestrator.RunServer do
   Process owner for one manifest-pinned orchestrator run.
 
   The server advances the non-blocking execution state machine from runner,
-  retry, admission, cancellation, and post-step worker messages. Terminal
+  retry, admission, cancellation, and persistence helper messages. Terminal
   persistence preserves the original command within a 30-second retry budget.
   Permanent rejection or exhaustion reconciles durable state before failure cleanup;
   an already-saved terminal result is never replaced. A write rejected by the run-ownership fence on the
