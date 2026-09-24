@@ -135,6 +135,48 @@ defmodule FavnView.PipelineDetailLiveTest do
       refute refused.assigns.run_config_valid?
     end
 
+    test "invalid backfill acknowledges the browser key before a corrected submission" do
+      test_pid = self()
+
+      Application.put_env(:favn_view, :submit_operator_pipeline_backfill_fun, fn
+        _context, _manifest, _target, input, opts ->
+          send(test_pid, {:backfill_attempt, input.range.from, opts[:idempotency_key]})
+
+          if input.range.from == "2026-01-32",
+            do: {:error, {:invalid_window_value, :day, "2026-01-32"}},
+            else: {:error, :forbidden}
+      end)
+
+      key = "pipeline_backfill_submit:browser:invalid-first-command"
+
+      params = %{
+        "run_config" => %{"from" => "2026-01-32", "to" => "2026-02-01"},
+        "idempotency_key" => key
+      }
+
+      assert {:noreply, rejected} =
+               PipelineDetailLive.handle_event("submit_pipeline_run", params, socket())
+
+      assert_received {:backfill_attempt, "2026-01-32", ^key}
+      assert rejected.assigns.run_attempt == nil
+      assert rejected.assigns.run_dialog_open?
+
+      assert Phoenix.LiveView.Utils.get_push_events(rejected) ==
+               [["operator-command-terminal", %{idempotency_key: key}]]
+
+      corrected_key = "pipeline_backfill_submit:browser:corrected-command"
+
+      corrected = %{
+        "run_config" => %{"from" => "2026-01-01", "to" => "2026-02-01"},
+        "idempotency_key" => corrected_key
+      }
+
+      assert {:noreply, _socket} =
+               PipelineDetailLive.handle_event("submit_pipeline_run", corrected, rejected)
+
+      assert_received {:backfill_attempt, "2026-01-01", ^corrected_key}
+    end
+
     test "a rejected submission keeps the dialog open with the reason" do
       expect_run(fn _input -> :ok end)
 
