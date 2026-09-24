@@ -549,10 +549,13 @@ production observations remain separately labelled.
 
 ## Implementation outcome
 
-Application implementation has not started. This pull request initially contains
-the investigation and reviewed plan. The approved baseline will remain intact;
-implementation outcome, deviations, actual complexity, verification evidence and
-independent final review will be added before marking the PR ready.
+Implementation is in progress. The resident-pool normalization correction and
+storage-consumer containment slice are implemented and independently reviewed.
+The reviewed claim-reservation/empty-replay correction is implemented and has
+passed its focused tests; independent implementation review is in progress.
+The durable registration handoff and repair lifecycle are not implemented yet.
+This partial outcome does not close issue #763 or qualify the PR for release.
+The approved baseline above remains unchanged.
 
 ## Verification evidence
 
@@ -561,13 +564,28 @@ failure mechanisms and repeated work described above, not the proposed fix.
 
 Documentation validation: relative links resolve, `git diff --check` passes, and
 both Mermaid diagrams in the approved baseline rendered on GitHub without syntax
-or layout corrections. Application implementation has not started despite the
-workflow status advancing when the draft PR was opened.
+or layout corrections.
+
+| Completed check | Evidence / limit |
+| --- | --- |
+| Resident normalization and production configuration | 26 focused tests passed; independent implementation review approved |
+| Sequencer and notification recovery | 5 PostgreSQL tests passed: checkout backoff, statement timeout, unexpected invariant failure, sibling restart isolation, deferred subscription delivery after reconnect; independent implementation review approved |
+| Claim facade and registry | 15 tests passed, including a real elastic RunnerAgent retaining its wait after transient failure |
+| Durable runner task store | 90 passed, 2 excluded; empty-receipt reconciliation preserves the exact task, lease, fence, receipt and demand, and rejects incompatible/other-session adoption |
+| Manual unchanged-release outage | 90.005-second durable-receipt-triggered proxy outage reproduced the supervision cascade; 34 successful writes activated after explicit runner restart, one unknown effect stayed protected |
+
+Raw logs and snapshots are retained locally under the ignored
+`.favn/registration-stress/evidence/` directory. The image-level candidate replay
+has not run yet, and the browser has not connected an authenticated runners page.
 
 ### Not verified
 
 - The production incident has not been replayed against its real data or logs.
-- No 60–120-second end-to-end outage test or 0.5-vCPU release benchmark has run.
+- The candidate image has not completed the same constrained-resource/outage cases.
+- The observed baseline cascade is not a reproduction of a stranded proven write;
+  the missing-marker production case still needs an end-to-end reproduction.
+- The requested authenticated live runners page is pending local certificate and
+  simulation-login approval; earlier measurements exclude that subscription load.
 - The proposed migration, registration lifecycle and operator repair are not implemented.
 - Broader projection and workspace-discovery risks have not been reproduced at scale.
 
@@ -600,7 +618,8 @@ accounting. No global Docker cleanup or native PostgreSQL installation is used.
 The baseline's resident-pool boot bug requires five fixed elastic runners with
 one-hour idle grace and no autoscaler. Use the same pool policy for comparisons.
 The scratchpad records the reproduced double-normalization failure; its focused
-fix and independent scope review are pending.
+fix has passed 26 tests and independent implementation review. Comparisons still
+retain the same elastic policy.
 
 
 ### Resident-pool normalization correction
@@ -683,3 +702,22 @@ The reviewer required valid `{:stop, reason}` for real listener init failures an
 retention of periodic reconciliation: subscriptions reconnect, but notifications
 missed during the outage are not replayed. Existing outbox, projection and
 admission pollers remain. This review supplements baseline `f0b5ae52`.
+
+
+### Reviewed claim-owner contention refinement
+
+Implementation review found that the existing fresh-claim helper also treats an
+active rebuild-validation task as absent when its owner row is skipped by
+`FOR UPDATE SKIP LOCKED`. Empty-receipt replay inherited that ambiguity. A fresh
+claim can then fall through to queued work; replay can cache NoWork despite a
+still-owned assignment. Independent reviewer `review_763_plan` approved a bounded
+shared-helper correction on 2026-09-24: once an active exact-session candidate
+exists, unconfirmed owner validation returns a retryable conflict. Only an absent
+or concurrently released assignment returns nil. The error must not assert that
+lock contention is the only cause; expired/invalid owner validation also fails.
+Existing fenced recovery resolves the assignment. Do not release it, renew its
+lease or alter its fence. A real owner-row-lock test must cover fresh and earlier
+empty-receipt claims with another compatible queued task, then unlock and verify
+that both recover the original assignment with unchanged durable state and demand.
+This adds approximately 5 production and 50–80 supporting lines to the claim
+correction, within its reviewed budget.

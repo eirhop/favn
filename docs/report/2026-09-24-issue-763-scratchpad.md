@@ -423,3 +423,41 @@ the false-NoWork bug: replaying an earlier empty subattempt can hide a later
 committed assignment. The revised plan checks exact-session existing assignment
 on empty-receipt replay and fences local reservations with fresh tokens, without
 new task acquisition, lease renewal, receipt rewriting or old-session adoption.
+
+
+## First implementation slices and evidence bookkeeping
+
+The resident-pool normalization correction passed 26 focused tests and independent
+implementation review. Storage-consumer containment passed five focused tests
+against a separate `favn_test_763` database in the existing OrbStack PostgreSQL
+container. No native database was installed. Tests exercise a held one-connection
+checkout, a real statement timeout, invariant-error rollback, consumer sibling
+PID preservation, and a Postgrex notification connection initially pointed at an
+unavailable endpoint before reconnecting and delivering a real notification.
+Independent review approved this slice without actionable findings.
+
+Claim recovery now uses fresh local reservation tokens and releases a failed
+reservation without manufacturing NoWork. Fifteen registry/facade tests pass,
+including a real elastic RunnerAgent retrying the identical command and retaining
+60 seconds of idle grace. Ninety PostgreSQL task-store tests pass (two excluded),
+including ordinary and final-subattempt empty-receipt recovery with unchanged
+task/lease/fence/receipt/demand, queued-only empty replay and old-session or
+incompatible assignment rejection. Independent review is pending. The durable
+registration ownership change is still outstanding.
+
+A bookkeeping bug in the local load driver was found: API idempotency keys are
+hashed in `run_submissions`, so filtering that column with the raw key prefix
+missed accepted runs. The earlier driver therefore timed out even though its run
+had already reached a terminal error. It now tracks returned run IDs and records
+a local exclusive key-prefix reservation plus fsynced intent before submission.
+Do not treat the earlier timeout as proof that a run remained nonterminal. This
+is a bounded-backlog driver, not a fixed offered-rate benchmark.
+
+
+Independent review found one more claim-owner ambiguity: active rebuild-validation
+work can be hidden when its owner row is locked, because candidate validation
+uses SKIP LOCKED. This affects both the existing fresh claim and the new empty
+receipt replay. The approved shared-helper refinement returns an explicit
+retryable conflict while ownership cannot be confirmed and leaves the existing
+assignment for fenced recovery. A locked-owner regression is being added before
+claim implementation review can be accepted.
