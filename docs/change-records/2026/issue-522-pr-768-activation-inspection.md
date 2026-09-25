@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Plan reviewed |
+| Status | Implementing |
 | Type | Bug fix |
 | Primary issue | [#522 — production deployment](https://github.com/eirhop/favn/issues/522), follow-up to its closed release work |
-| Pull request | Pending |
+| Pull request | [#768](https://github.com/eirhop/favn/pull/768) — plan-only draft |
 | Related work | [#525 — performance](https://github.com/eirhop/favn/issues/525), merged [#766](https://github.com/eirhop/favn/pull/766) and [#767](https://github.com/eirhop/favn/pull/767) |
 | Affected areas | Orchestrator activation and operation-task reads; PostgreSQL error diagnostics; activation CLI |
-| Approved plan commit | Pending independent review |
+| Approved plan commit | `d4cbcfc4` |
 | Last updated | 2026-09-25 |
 
 ## One-minute summary
