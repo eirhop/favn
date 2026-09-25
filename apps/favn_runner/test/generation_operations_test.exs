@@ -11,8 +11,6 @@ defmodule FavnRunner.GenerationOperationsTest do
   alias Favn.Contracts.GenerationDiscardResult
   alias Favn.Contracts.GenerationMarkerReadRequest
   alias Favn.Contracts.GenerationMarkerReadResult
-  alias Favn.Contracts.GenerationMarkerInitializationRequest
-  alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RunnerTask.Assignment
@@ -39,7 +37,6 @@ defmodule FavnRunner.GenerationOperationsTest do
     alias Favn.SQL.GenerationCapabilities
     alias Favn.SQL.GenerationInspection
     alias Favn.SQL.GenerationMarker
-    alias Favn.SQL.GenerationMarkerInitializationResult
 
     @impl true
     def connect(%Resolved{}, _opts), do: {:ok, :generation_conn}
@@ -81,30 +78,13 @@ defmodule FavnRunner.GenerationOperationsTest do
     end
 
     @impl Favn.SQL.GenerationAdapter
-    def bind_relation_instance(:generation_conn, _relation, _instance_id, _opts), do: :ok
+    def prepare_generation_write(_conn, _precondition, _opts), do: {:error, :unsupported}
 
     @impl Favn.SQL.GenerationAdapter
-    def initialize_generation_marker(:generation_conn, request, _opts) do
-      notify_operation(:generation_marker_initialize)
+    def publish_generation_write(_conn, _precondition, _opts), do: {:error, :unsupported}
 
-      marker = %GenerationMarker{
-        logical_target_id: request.logical_target_id,
-        active_relation: request.stable_relation,
-        active_generation_id: request.active_generation_id,
-        activation_operation_id: request.initialization_operation_id,
-        activation_token: request.initialization_token,
-        activated_at: request.initialized_at
-      }
-
-      Application.put_env(:favn_runner, :generation_operations_test_marker, marker)
-
-      {:ok,
-       %GenerationMarkerInitializationResult{
-         marker: marker,
-         physical_fingerprint: request.expected_physical_fingerprint,
-         inspection: inspection(request.stable_relation)
-       }}
-    end
+    @impl Favn.SQL.GenerationAdapter
+    def bind_relation_instance(:generation_conn, _relation, _instance_id, _opts), do: :ok
 
     defp notify_operation(kind) do
       case Application.get_env(:favn_runner, :generation_operations_test_observer) do
@@ -125,6 +105,8 @@ defmodule FavnRunner.GenerationOperationsTest do
 
     @impl Favn.SQL.GenerationAdapter
     def activate_generation(:generation_conn, request, _opts) do
+      notify_operation(:generation_activate)
+
       case Application.get_env(:favn_runner, :generation_operations_test_activation_error) do
         nil ->
           marker = %GenerationMarker{
@@ -247,14 +229,9 @@ defmodule FavnRunner.GenerationOperationsTest do
     assert capabilities.atomic_swap == :supported
     assert capabilities.marker_reconciliation == :supported
 
-    initialization = initialization_request(version, asset)
+    marker = seed_active_marker(asset)
 
-    assert {:ok, %GenerationMarkerInitializationResult{outcome: :succeeded} = initialized} =
-             FavnRunner.initialize_generation_marker(initialization)
-
-    assert initialized.physical_fingerprint == @active_fingerprint
-
-    assert {:ok, initialized.observed_marker} ==
+    assert {:ok, marker} ==
              FavnRunner.generation_marker(manifest_identity, asset.ref)
 
     assert Application.fetch_env!(
@@ -262,7 +239,7 @@ defmodule FavnRunner.GenerationOperationsTest do
              :generation_operations_test_reconciliation_request
            ).require_relation_instance?
 
-    assert {:ok, initialized.observed_marker} ==
+    assert {:ok, marker} ==
              FavnRunner.generation_marker(manifest_identity, asset.ref,
                require_relation_instance?: false
              )
@@ -272,7 +249,7 @@ defmodule FavnRunner.GenerationOperationsTest do
              :generation_operations_test_reconciliation_request
            ).require_relation_instance?
 
-    request = activation_request(version, asset, initialized.observed_marker)
+    request = activation_request(version, asset, marker)
 
     assert {:ok, %GenerationActivationResult{outcome: :succeeded} = result} =
              FavnRunner.activate_generation(request)
@@ -400,8 +377,7 @@ defmodule FavnRunner.GenerationOperationsTest do
 
   test "durable marker reads preserve the managed-rebuild relation policy" do
     {version, asset} = registered_target()
-    initialization = initialization_request(version, asset)
-    assert {:ok, _initialized} = FavnRunner.initialize_generation_marker(initialization)
+    seed_active_marker(asset)
 
     payload = %GenerationMarkerReadRequest{
       manifest: %{version | manifest: nil},
@@ -547,12 +523,12 @@ defmodule FavnRunner.GenerationOperationsTest do
     assert_receive {:runner_task_finished, ^read_executor,
                     %Result{outcome: :failed, retry_class: :safe_to_retry}}
 
-    write_payload = initialization_request(version, asset)
+    write_payload = activation_request(version, asset, seed_active_marker(asset))
 
     write_assignment = %{
       generation_assignment(version, write_payload)
-      | task_id: "rt_generation_initialize",
-        task_kind: :generation_marker_initialize,
+      | task_id: "rt_generation_activate",
+        task_kind: :generation_activate,
         retry_class: :reconcile_before_retry,
         payload: write_payload
     }
@@ -564,7 +540,9 @@ defmodule FavnRunner.GenerationOperationsTest do
                owner: self()
              )
 
-    assert_receive {:generation_operation_started, :generation_marker_initialize, _adapter_worker}
+    assert_receive {:generation_operation_started, :generation_capabilities, capability_worker}
+    send(capability_worker, {:release_generation_operation, :generation_capabilities})
+    assert_receive {:generation_operation_started, :generation_activate, _adapter_worker}
     Process.exit(:sys.get_state(write_executor).worker, :kill)
 
     assert_receive {:runner_task_finished, ^write_executor,
@@ -574,10 +552,9 @@ defmodule FavnRunner.GenerationOperationsTest do
   test "adapter-proven safe generation failures enter the durable retry lifecycle" do
     {version, asset} = registered_target()
 
-    initialization = initialization_request(version, asset)
-    assert {:ok, initialized} = FavnRunner.initialize_generation_marker(initialization)
+    marker = seed_active_marker(asset)
 
-    payload = activation_request(version, asset, initialized.observed_marker)
+    payload = activation_request(version, asset, marker)
 
     Application.put_env(
       :favn_runner,
@@ -618,12 +595,12 @@ defmodule FavnRunner.GenerationOperationsTest do
       Application.delete_env(:favn_runner, :generation_operations_test_observer)
     end)
 
-    payload = initialization_request(version, asset)
+    payload = activation_request(version, asset, seed_active_marker(asset))
 
     assignment = %{
       generation_assignment(version, payload)
-      | task_id: "rt_generation_initialize_cancel",
-        task_kind: :generation_marker_initialize,
+      | task_id: "rt_generation_activate_cancel",
+        task_kind: :generation_activate,
         retry_class: :reconcile_before_retry,
         payload: payload
     }
@@ -631,7 +608,9 @@ defmodule FavnRunner.GenerationOperationsTest do
     assert {:ok, executor} =
              TaskExecutor.start_link(assignment: assignment, payload: payload, owner: self())
 
-    assert_receive {:generation_operation_started, :generation_marker_initialize, _worker}
+    assert_receive {:generation_operation_started, :generation_capabilities, capability_worker}
+    send(capability_worker, {:release_generation_operation, :generation_capabilities})
+    assert_receive {:generation_operation_started, :generation_activate, _worker}
     assert :ok = TaskExecutor.cancel(executor, :operator_request)
 
     assert_receive {:runner_task_finished, ^executor,
@@ -658,7 +637,7 @@ defmodule FavnRunner.GenerationOperationsTest do
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
         manifest_schema_version: 21,
-        runner_contract_version: 17
+        runner_contract_version: 18
       )
 
     asset = %{asset | target_descriptor: descriptor}
@@ -666,7 +645,7 @@ defmodule FavnRunner.GenerationOperationsTest do
     manifest =
       %Manifest{
         schema_version: 21,
-        runner_contract_version: 17,
+        runner_contract_version: 18,
         runner_releases: %{"default" => FavnTestSupport.runner_release_id()},
         assets: [asset],
         graph: %Graph{nodes: [ref], topo_order: [ref]}
@@ -704,7 +683,7 @@ defmodule FavnRunner.GenerationOperationsTest do
           generation_warehouse: %{adapter: Adapter, module: __MODULE__}
         },
         manifest_schema_version: 21,
-        runner_contract_version: 17
+        runner_contract_version: 18
       )
 
     asset = %{asset | target_descriptor: descriptor}
@@ -729,13 +708,13 @@ defmodule FavnRunner.GenerationOperationsTest do
               generation_warehouse: %{adapter: Adapter, module: __MODULE__}
             },
             manifest_schema_version: 21,
-            runner_contract_version: 17
+            runner_contract_version: 18
           )
     }
 
     manifest = %Manifest{
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{
         "default" => FavnTestSupport.runner_release_id(:alternate),
         "duckdb_image" => FavnTestSupport.runner_release_id()
@@ -778,18 +757,25 @@ defmodule FavnRunner.GenerationOperationsTest do
     }
   end
 
-  defp initialization_request(version, asset) do
-    %GenerationMarkerInitializationRequest{
-      manifest_version_id: version.manifest_version_id,
-      manifest_content_hash: version.content_hash,
-      required_runner_release_id: Map.fetch!(version.runner_releases, "default"),
-      target_id: asset.target_descriptor.target_id,
-      target_generation_id: @previous_generation_id,
+  defp seed_active_marker(asset) do
+    marker = %Favn.SQL.GenerationMarker{
+      logical_target_id: asset.target_descriptor.target_id,
       active_relation: asset.relation,
-      expected_physical_fingerprint: @active_fingerprint,
-      initialization_operation_id: "initialization-generation-operations",
-      initialization_token: "initialization-token-generation-operations"
+      active_generation_id: @previous_generation_id,
+      activation_operation_id: "initial-generation-operations",
+      activation_token: "initial-token-generation-operations",
+      activated_at: ~U[2026-09-24 12:00:00Z]
     }
+
+    Application.put_env(:favn_runner, :generation_operations_test_marker, marker)
+
+    struct!(
+      Favn.Contracts.GenerationMarker,
+      marker
+      |> Map.from_struct()
+      |> Map.delete(:logical_target_id)
+      |> Map.put(:target_id, marker.logical_target_id)
+    )
   end
 
   defp activation_request(version, asset, expected_marker) do

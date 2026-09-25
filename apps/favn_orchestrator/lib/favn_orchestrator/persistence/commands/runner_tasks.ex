@@ -323,6 +323,7 @@ defmodule FavnOrchestrator.Persistence.Results.RunnerTask do
     :assigned_runner_instance_id,
     :assigned_runner_session_generation,
     :assignment_generation,
+    :generation_precondition,
     :assigned_at,
     :assignment_expires_at,
     :cancellation_requested_at,

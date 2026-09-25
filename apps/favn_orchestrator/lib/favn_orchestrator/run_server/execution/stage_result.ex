@@ -7,21 +7,12 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   Failed siblings are remembered while already-submitted work in the same stage
   drains to a known outcome.
 
-  A successful node whose claim pins an uninitialized persisted generation
-  settles in two parts. Its step outcome and claim completion are persisted
-  synchronously, then `process/4` returns `{:post_step_pending, state, pending}`
-  so the caller can run `InitialTargetGenerationReconciler.reconcile/1` in a
-  worker. `finish_post_step/3` completes the settlement from the worker's reply
-  using the current stage state. The node's result is already appended to the
-  stage run and its task removed from the pending set at that point, so sibling
-  settlements use the correct sequence while the worker is running.
   """
 
   alias FavnOrchestrator.RunServer.Execution.RecoveredTask
   alias Favn.Contracts.RunnerResult
   alias FavnOrchestrator.CancellationOutcome
   alias FavnOrchestrator.Freshness.StateWriter
-  alias FavnOrchestrator.InitialTargetGenerationReconciler
   alias FavnOrchestrator.MaterializationClaims
   alias FavnOrchestrator.ResourceCircuits
   alias FavnOrchestrator.RunServer.Cancellation
@@ -40,25 +31,10 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
           required(:attempt) => pos_integer()
         }
 
-  @typedoc """
-  Settlement continuation for a node whose reconciliation runs in a worker.
-
-  `entry` carries the pinned version, manifest index, and freshness context the
-  reconciler needs. `post_step_value` is the successful runner result.
-  """
-  @type post_step_pending :: %{
-          required(:entry) => map(),
-          required(:stage) => non_neg_integer(),
-          required(:attempt) => pos_integer(),
-          required(:post_step_value) => RunnerResult.t(),
-          required(:node_status) => atom()
-        }
-
   @type settlement_result ::
           {:cont, StageAttemptState.t()}
           | {:halt, {:error, RunState.t(), [term()], [Favn.Plan.node_key()]}}
           | {:persist_retry, PersistenceRetry.t(), term()}
-          | {:post_step_pending, StageAttemptState.t(), post_step_pending()}
           | {:recovery_required, RunState.t(), term()}
 
   @doc "Builds a timed-out terminal result for work still waiting on admission."
@@ -149,45 +125,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
   def resume_persisted(%StageAttemptState{}, %{kind: :stage_state, state: next_state}),
     do: {:cont, next_state}
 
-  @doc """
-  Completes a node settlement deferred by `{:post_step_pending, _, pending}`.
-
-  `result` is the reconciler's reply, or an error built from a worker exit.
-  The node's result is not appended again. On `:ok` the node settles as it
-  would have synchronously. Conclusive errors retain a bounded post-step failure;
-  uncertain replies leave the accepted result recoverable. Resource-circuit
-  settlement and result recording may replay idempotently after a lost reply.
-  """
-  @spec finish_post_step(StageAttemptState.t(), post_step_pending(), :ok | {:error, term()}) ::
-          settlement_result()
-  def finish_post_step(%StageAttemptState{run: current_run} = state, pending, :ok) do
-    finished =
-      settle_resources(current_run, pending.entry, :ok, pending.post_step_value, [], pending)
-
-    settle_finished_step(state, finished, pending.entry, pending)
-  end
-
-  def finish_post_step(%StageAttemptState{run: current_run} = state, pending, {:error, reason}) do
-    if PersistenceRetry.recovery_required?(reason) do
-      {:recovery_required, current_run,
-       {:generation_registration_unavailable, pending.entry.asset_ref, reason}}
-    else
-      settle_finished_step(
-        state,
-        {:settled,
-         post_step_persistence_failure(
-           current_run,
-           reason,
-           pending.entry,
-           :ok,
-           :generation_registration
-         ), :error, []},
-        pending.entry,
-        pending
-      )
-    end
-  end
-
   defp settle_finished_step(_state, {:recovery_required, _, _} = result, _entry, _context),
     do: result
 
@@ -195,21 +132,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
 
   defp settle_finished_step(state, {:settled, next_run, outcome, step_results}, entry, context) do
     settle_processed_result(state, next_run, outcome, step_results, entry, context)
-  end
-
-  defp settle_finished_step(state, {:post_step_pending, step_state, pending}, entry, _context) do
-    next_state =
-      StageAttemptState.record_result(
-        state,
-        step_state,
-        Enum.reverse(pending.step_results, state.results),
-        state.retry_refs,
-        state.retry_delays,
-        state.terminal_failure,
-        MapSet.delete(state.pending_ids, entry.task_id)
-      )
-
-    {:post_step_pending, next_state, Map.delete(pending, :step_results)}
   end
 
   defp settle_processed_result(state, next_run, outcome, results, entry, context) do
@@ -573,33 +495,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
           resume
         )
 
-      :post_step_pending ->
-        if Persistence.externally_cancelled?(step_state) do
-          step_state = %{
-            step_state
-            | metadata: Map.put(step_state.metadata, "cancellation_needs_attention", true)
-          }
-
-          settle_resources(
-            step_state,
-            resume.entry,
-            :ok,
-            resume.post_step_value,
-            resume.asset_results,
-            resume
-          )
-        else
-          {:post_step_pending, step_state,
-           %{
-             entry: resume.entry,
-             stage: resume.stage,
-             attempt: resume.attempt,
-             post_step_value: resume.post_step_value,
-             node_status: resume.status,
-             step_results: resume.asset_results
-           }}
-        end
-
       {:error, reason} ->
         if PersistenceRetry.recovery_required?(reason) or
              is_map(step_state.metadata["failure_cleanup"]) do
@@ -679,8 +574,6 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
     end
   end
 
-  # Runner-backed reconciliation never runs here: it would block the run process
-  # past its ownership lease. The caller runs it in a worker instead.
   defp persist_post_step_state(%RunState{} = step_state, entry, :ok, %RunnerResult{} = result) do
     with {:ok, freshness_state} <- record_freshness(step_state, entry, :ok),
          :ok <-
@@ -689,7 +582,7 @@ defmodule FavnOrchestrator.RunServer.Execution.StageResult do
              result,
              freshness_state
            ) do
-      if InitialTargetGenerationReconciler.applicable?(entry), do: :post_step_pending, else: :ok
+      :ok
     else
       {:error, reason} -> {:error, reason}
     end

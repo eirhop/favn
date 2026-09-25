@@ -65,6 +65,13 @@ The PostgreSQL backend supervisor owns:
 - bounded projection and maintenance workers;
 - node-local bounded manifest caching.
 
+Database providers, Repo, schema readiness, the dedicated lease pool and manifest
+cache retain dependency-ordered restarts. Outbox sequencing, projection,
+notifications and maintenance are sibling consumers under a separate supervisor;
+a consumer restart does not restart its siblings or the pools. Expected transient
+Sequencer failures retry with exponential backoff and jitter, capped at 30 seconds.
+Wake hints cannot bypass that backoff. Unexpected defects remain visible failures.
+
 Runtime nodes never migrate automatically. A separate migration command runs
 with migration privileges before runtime deployment.
 
@@ -229,7 +236,10 @@ Caches are bounded, node-local accelerators:
 
 PostgreSQL `NOTIFY` and local PubSub only reduce wake-up latency. Durable outbox
 rows and persisted cursors make restart and missed-notification recovery correct.
-Redis is not required for correctness or initial multi-node scale.
+The listener retains deferred Postgrex subscriptions while disconnected and
+installs them on reconnect. Missed notifications are not replayed, so periodic
+outbox, projection and admission reconciliation remains necessary. Redis is not
+required for correctness or initial multi-node scale.
 
 ## Failure and recovery behavior
 

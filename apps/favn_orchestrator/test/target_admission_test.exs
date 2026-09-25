@@ -39,7 +39,6 @@ defmodule FavnOrchestrator.TargetAdmissionTest do
       admission: FakeStore,
       resource_circuits: FakeStore,
       target_generations: FakeStore,
-      target_recovery: FakeStore,
       rebuilds: FakeStore,
       target_operation_locks: FakeStore,
       materialization: FakeStore,

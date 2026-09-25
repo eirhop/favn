@@ -6,8 +6,6 @@ defmodule FavnRunner.GenerationOperations do
   alias Favn.Contracts.GenerationDiscardRequest
   alias Favn.Contracts.GenerationDiscardResult
   alias Favn.Contracts.GenerationMarker, as: ContractMarker
-  alias Favn.Contracts.GenerationMarkerInitializationRequest
-  alias Favn.Contracts.GenerationMarkerInitializationResult, as: ContractInitializationResult
   alias Favn.Contracts.GenerationReconciliationRequest
   alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RunnerError
@@ -22,8 +20,6 @@ defmodule FavnRunner.GenerationOperations do
   alias Favn.SQL.GenerationDiscard
   alias Favn.SQL.GenerationInspection
   alias Favn.SQL.GenerationMarker, as: SQLMarker
-  alias Favn.SQL.GenerationMarkerInitialization
-  alias Favn.SQL.GenerationMarkerInitializationResult, as: SQLInitializationResult
   alias Favn.SQL.GenerationReconciliation
   alias Favn.SQL.GenerationRelation
 
@@ -37,24 +33,6 @@ defmodule FavnRunner.GenerationOperations do
         with {:ok, capabilities} <- Client.generation_capabilities(session) do
           {:ok, Map.from_struct(capabilities)}
         end
-      after
-        Client.disconnect(session)
-      end
-    end
-  end
-
-  @spec initialize_marker(GenerationMarkerInitializationRequest.t(), Version.t()) ::
-          {:ok, ContractInitializationResult.t()} | {:error, term()}
-  def initialize_marker(%GenerationMarkerInitializationRequest{} = request, %Version{} = version) do
-    with :ok <- GenerationMarkerInitializationRequest.validate(request),
-         {:ok, asset, stable_relation} <- target_asset(version, request.target_id),
-         :ok <- same_relation(request.active_relation, stable_relation),
-         {:ok, session} <- connect(asset, stable_relation) do
-      try do
-        request
-        |> sql_initialization()
-        |> then(&Client.initialize_generation_marker(session, &1))
-        |> initialization_result(request)
       after
         Client.disconnect(session)
       end
@@ -435,50 +413,6 @@ defmodule FavnRunner.GenerationOperations do
       activation_token: request.activation_token,
       activated_at: DateTime.utc_now()
     }
-  end
-
-  defp sql_initialization(request) do
-    %GenerationMarkerInitialization{
-      logical_target_id: request.target_id,
-      stable_relation: request.active_relation,
-      active_generation_id: request.target_generation_id,
-      expected_physical_fingerprint: request.expected_physical_fingerprint,
-      initialization_operation_id: request.initialization_operation_id,
-      initialization_token: request.initialization_token,
-      initialized_at: DateTime.utc_now()
-    }
-  end
-
-  defp initialization_result({:ok, %SQLInitializationResult{} = result}, request) do
-    {:ok,
-     %ContractInitializationResult{
-       required_runner_release_id: request.required_runner_release_id,
-       target_id: request.target_id,
-       target_generation_id: request.target_generation_id,
-       initialization_token: request.initialization_token,
-       outcome: :succeeded,
-       observed_marker: contract_marker(result.marker),
-       physical_fingerprint: result.physical_fingerprint,
-       completed_at: DateTime.utc_now(),
-       error: nil
-     }}
-  end
-
-  defp initialization_result({:error, %SQLError{} = error}, request) do
-    outcome = if unknown_sql_outcome?(error), do: :outcome_unknown, else: :safe_failure
-
-    {:ok,
-     %ContractInitializationResult{
-       required_runner_release_id: request.required_runner_release_id,
-       target_id: request.target_id,
-       target_generation_id: request.target_generation_id,
-       initialization_token: request.initialization_token,
-       outcome: outcome,
-       observed_marker: nil,
-       physical_fingerprint: nil,
-       completed_at: DateTime.utc_now(),
-       error: runner_error(error, outcome)
-     }}
   end
 
   defp candidate_marker?(marker, activation) do

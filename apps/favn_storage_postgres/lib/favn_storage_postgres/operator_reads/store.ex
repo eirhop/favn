@@ -1547,7 +1547,6 @@ defmodule FavnStoragePostgres.OperatorReads.Store do
                  'cleanup_reason', selected_run.snapshot #>> '{metadata,failure_cleanup,reason_code}',
                  'unresolved_count', selected_run.snapshot #> '{metadata,failure_cleanup,unresolved_count}',
                  'unresolved', selected_run.snapshot #> '{metadata,failure_cleanup,unresolved}',
-                 'scheduled_registration_retries', selected_run.snapshot #> '{metadata,registration_retry,scheduled_retries}',
                  'disposition', ownership.recovery_disposition,
                  'attempts', ownership.recovery_attempts,
                  'revision', ownership.attention_revision,

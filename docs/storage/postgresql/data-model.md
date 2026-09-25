@@ -311,6 +311,13 @@ hash and exact claim/lock linkage. Task details use the current typed format;
 scalar receipts do not require executable payloads. Unreadable details preserve
 committed lifecycle state and expose a fixed failure category.
 
+For normal SQL writes, `runner_tasks.generation_precondition` stores the bounded,
+typed generation identity pinned at assignment. Claim receipts retain that exact
+assignment pin independently of immutable runner work. Completion validates the
+runner's commit receipt, activates an initial binding, and resolves write
+ownership in one PostgreSQL transaction. See
+[atomic generation publication](../../architecture/target-generations-and-rebuilds.md#atomic-generation-publication).
+
 `materialization_claims` and `target_operation_locks` retain `effect_state`
 (`not_started`, `in_flight`, `outcome_unknown`, `resolved`), task ID, original
 started assignment generation/time, and optional administrator resolution proof.
@@ -653,13 +660,6 @@ and other rebuilds with expiring, fenced ownership. Operator histories page on
 workspace plus descending insertion/operation identity, with a separate state
 prefix index.
 
-`target_recovery_operations` stores planning intent before runner evidence is
-requested, then immutable plans and the durable `planning` → `planned` →
-`applying` → `succeeded | failed | outcome_unknown` lifecycle for
-interrupted initial-generation recovery. Each operation references its exact
-generation and successful materialization. It shares `target_operation_locks`
-with rebuilds so activation is fenced against concurrent writes.
-
 ## Identity, audit, maintenance, and projections
 
 ```mermaid
@@ -834,7 +834,7 @@ tagged password credential or Entra link all exist.
 | Scheduling | `schedule_cursors`, `schedule_occurrences` | Authoritative |
 | Admission | `capacity_scopes`, `execution_leases`, `execution_lease_scopes`, `admission_waiters` | Authoritative coordination |
 | Resource circuits | `resource_circuits`, `resource_circuit_outcomes`, `resource_recovery_candidates` | Authoritative coordination |
-| Target generations and rebuilds | `asset_evidence_bindings`, `asset_target_generations`, `asset_target_bindings`, `target_recovery_operations`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
+| Target generations and rebuilds | `asset_evidence_bindings`, `asset_target_generations`, `asset_target_bindings`, `rebuild_operations`, `rebuild_plan_actions`, `rebuild_windows`, `target_operation_locks` | Authoritative state and coordination |
 | Materialization | `materialization_claims`, `materializations`, `coverage_baselines` | Authoritative |
 | Backfills | `backfills`, `backfill_plan_batches`, `backfill_windows` | Authoritative |
 | Logs | `log_batches`, `log_entries` | Independent diagnostic history subject to retention; lifecycle messages derive from `run_events` |

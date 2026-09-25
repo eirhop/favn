@@ -9,6 +9,20 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
   @retry_delay_ms 20
 
   def claim_and_start(owner, cohort_ref, gateway, runner_id, runner_pool, release_id) do
+    do_claim_and_start(owner, cohort_ref, gateway, runner_id, runner_pool, release_id)
+  rescue
+    error ->
+      send(
+        owner,
+        {:distributed_runner_failed, cohort_ref, runner_id,
+         {:exception, Exception.format(:error, error, __STACKTRACE__)}}
+      )
+  catch
+    kind, reason ->
+      send(owner, {:distributed_runner_failed, cohort_ref, runner_id, {kind, reason}})
+  end
+
+  defp do_claim_and_start(owner, cohort_ref, gateway, runner_id, runner_pool, release_id) do
     registration = %RunnerTask.Registration{
       runner_instance_id: runner_id,
       boot_id: "boot-#{runner_id}",
@@ -30,21 +44,7 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
              release_id,
              ack.runner_session_generation
            ),
-         {:ok, %{status: :running}} <-
-           retry(fn ->
-             RunnerGateway.request(
-               gateway,
-               %RunnerTask.Started{
-                 workspace_id: assignment.workspace_id,
-                 task_id: assignment.task_id,
-                 runner_instance_id: runner_id,
-                 runner_session_generation: ack.runner_session_generation,
-                 assignment_generation: assignment.assignment_generation,
-                 issued_at: DateTime.utc_now(),
-                 occurred_at: DateTime.utc_now()
-               }
-             )
-           end) do
+         {:ok, %{status: :running}} <- start_assignment(gateway, runner_id, ack, assignment) do
       {:message_queue_len, mailbox_len} = Process.info(self(), :message_queue_len)
 
       send(
@@ -74,22 +74,18 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
        ) do
     attempt = @retry_attempts - attempts + 1
 
-    result =
-      retry(fn ->
-        RunnerGateway.request(
-          gateway,
-          %RunnerTask.ClaimRequest{
-            command_id: "claim-#{runner_id}-#{attempt}",
-            issued_at: DateTime.utc_now(),
-            runner_instance_id: runner_id,
-            runner_session_generation: runner_session_generation,
-            runner_pool: runner_pool,
-            required_runner_release_id: release_id,
-            supported_task_kinds: [:relation_inspection],
-            capabilities: ["relation_inspection"]
-          }
-        )
-      end)
+    request = %RunnerTask.ClaimRequest{
+      command_id: "claim-#{runner_id}-#{attempt}",
+      issued_at: DateTime.utc_now(),
+      runner_instance_id: runner_id,
+      runner_session_generation: runner_session_generation,
+      runner_pool: runner_pool,
+      required_runner_release_id: release_id,
+      supported_task_kinds: [:relation_inspection],
+      capabilities: ["relation_inspection"]
+    }
+
+    result = retry(fn -> RunnerGateway.request(gateway, request) end)
 
     case result do
       {:ok, %RunnerTask.NoWork{action: :wait}} when attempts > 1 ->
@@ -107,6 +103,20 @@ defmodule FavnStoragePostgres.TestSupport.DistributedRunnerAgent do
       result ->
         result
     end
+  end
+
+  defp start_assignment(gateway, runner_id, ack, assignment) do
+    request = %RunnerTask.Started{
+      workspace_id: assignment.workspace_id,
+      task_id: assignment.task_id,
+      runner_instance_id: runner_id,
+      runner_session_generation: ack.runner_session_generation,
+      assignment_generation: assignment.assignment_generation,
+      issued_at: DateTime.utc_now(),
+      occurred_at: DateTime.utc_now()
+    }
+
+    retry(fn -> RunnerGateway.request(gateway, request) end)
   end
 
   defp retry(fun, attempts \\ @retry_attempts)

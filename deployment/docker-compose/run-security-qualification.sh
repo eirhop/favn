@@ -196,11 +196,7 @@ WITH snapshots(name, fingerprint) AS (
     SELECT string_agg(row_to_json(t)::text, E'\n' ORDER BY row_to_json(t)::text)
     FROM favn_control.rebuild_operations AS t
   ), ''))
-  UNION ALL
-  SELECT 'target_recovery_operations', md5(coalesce((
-    SELECT string_agg(row_to_json(t)::text, E'\n' ORDER BY row_to_json(t)::text)
-    FROM favn_control.target_recovery_operations AS t
-  ), ''))
+
 )
 SELECT string_agg(name || chr(58) || fingerprint, '|' ORDER BY name)
 FROM snapshots;

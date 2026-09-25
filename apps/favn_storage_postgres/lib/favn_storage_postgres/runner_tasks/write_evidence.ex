@@ -1,7 +1,6 @@
 defmodule FavnStoragePostgres.RunnerTasks.WriteEvidence do
   @moduledoc false
   alias Favn.Contracts, as: C
-  alias Favn.TargetCompatibility.PhysicalFingerprint
 
   def validate(%{task_kind: :asset_attempt}, %{disposition: :verified_no_effect}, []),
     do: {:ok, %{"disposition" => "administrator_verified_no_effect"}}
@@ -22,11 +21,8 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteEvidence do
   end
 
   def validate(%{task_kind: kind, payload: request} = task, command, [marker_task, inspection])
-      when kind in [:generation_marker_initialize, :generation_discard] do
-    relation =
-      if kind == :generation_discard,
-        do: request.candidate_relation,
-        else: request.active_relation
+      when kind == :generation_discard do
+    relation = request.candidate_relation
 
     with true <- fresh?(marker_task, command) and fresh?(inspection, command),
          %{
@@ -44,8 +40,7 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteEvidence do
          :ok <- domain_outcome(kind, request, marker, inspection.result, inspection.terminal_at) do
       {:ok,
        %{
-         "disposition" =>
-           if(kind == :generation_discard, do: "candidate_absent", else: "marker_initialized")
+         "disposition" => "candidate_absent"
        }}
     else
       _invalid -> {:error, :write_resolution_outcome_unproved}
@@ -61,25 +56,6 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteEvidence do
   end
 
   defp fresh?(_observation, _command), do: false
-
-  defp domain_outcome(:generation_marker_initialize, request, marker, inspection, observed_at) do
-    with {:ok, %PhysicalFingerprint{} = fingerprint} <-
-           PhysicalFingerprint.from_inspection(inspection) do
-      C.GenerationMarkerInitializationResult.validate(
-        %C.GenerationMarkerInitializationResult{
-          required_runner_release_id: request.required_runner_release_id,
-          target_id: request.target_id,
-          target_generation_id: request.target_generation_id,
-          initialization_token: request.initialization_token,
-          outcome: :succeeded,
-          observed_marker: marker,
-          physical_fingerprint: fingerprint.fingerprint,
-          completed_at: observed_at
-        },
-        request
-      )
-    end
-  end
 
   defp domain_outcome(:generation_discard, request, marker, inspection, observed_at) do
     if absent?(inspection) do

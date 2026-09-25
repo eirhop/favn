@@ -15,14 +15,20 @@ defmodule FavnOrchestrator.RunnerPoolsTest do
     assert pools["duckdb"] == %{mode: :elastic, idle_grace_ms: 15_000}
     assert pools["pure_elixir"] == %{mode: :resident, idle_grace_ms: :infinity}
     assert pools["gpu_a10"] == %{mode: :elastic, idle_grace_ms: 45_000}
+    assert {:ok, ^pools} = RunnerPools.normalize(pools)
   end
 
   test "rejects infrastructure details and resident idle grace" do
     assert {:error, {:invalid_runner_pool_policy, :duckdb, _reason}} =
              RunnerPools.normalize(duckdb: [mode: :elastic, cpu: 4])
 
-    assert {:error, {:invalid_runner_pool_policy, :resident, :resident_idle_grace_not_allowed}} =
-             RunnerPools.normalize(resident: [mode: :resident, idle_grace_ms: 1])
+    for grace <- [0, 1, nil, "infinity"] do
+      assert {:error, {:invalid_runner_pool_policy, :resident, :resident_idle_grace_not_allowed}} =
+               RunnerPools.normalize(resident: [mode: :resident, idle_grace_ms: grace])
+    end
+
+    assert {:error, {:invalid_runner_pool_policy, :elastic, {:invalid_idle_grace_ms, :infinity}}} =
+             RunnerPools.normalize(elastic: [mode: :elastic, idle_grace_ms: :infinity])
   end
 
   test "runtime configuration freezes normalized pool policy" do

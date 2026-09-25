@@ -250,28 +250,29 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
     )
 
     f = %{f | version: version}
-    first = marker_command(f, "target-one")
+    first = mutation_command(f, "target-one")
     assert {:ok, queued} = Store.enqueue(first)
-    {:ok, payload} = Codec.decode_payload(:generation_marker_initialize, first.payload, version)
+    {:ok, payload} = Codec.decode_payload(:generation_discard, first.payload, version)
 
     {:ok, encoded, hash} =
       Codec.encode_payload(
-        :generation_marker_initialize,
+        :generation_discard,
         %{
           payload
           | target_id: Favn.TargetIdentity.for_asset(second_ref),
-            initialization_operation_id: "other-operation"
+            rebuild_operation_id: "other-operation"
         }
       )
 
     second = %{
-      marker_command(f, "target-two")
+      mutation_command(f, "target-two")
       | payload: encoded,
         payload_hash: hash,
         write_target_id: Favn.TargetIdentity.for_asset(second_ref),
         write_operation_id: "other-operation"
     }
 
+    ensure_mutation_lock!(f, second.write_target_id, second.write_operation_id)
     assert {:ok, healthy} = Store.enqueue(second)
 
     SQL.query!(
@@ -388,7 +389,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
   end
 
   test "an interrupted mutation remains excluded after task and owner leases expire", f do
-    command = marker_command(f, "mutation")
+    command = mutation_command(f, "mutation")
     assert {:ok, _queued} = Store.enqueue(command)
     assert {:ok, assigned} = Store.claim(claim(f, "writer"))
     assert {:ok, running} = Store.transition(transition(f, assigned))
@@ -405,7 +406,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
       command_id: "takeover",
       target_ids: [command.write_target_id],
       operation_id: "new-operation",
-      operation_type: :target_recovery,
+      operation_type: :rebuild,
       lease_owner: "new-owner",
       lease_duration_ms: 30_000,
       occurred_at: DateTime.add(f.now, 62, :second)
@@ -449,7 +450,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
              })
 
     assert effect(f) == {"outcome_unknown", assigned.task_id, 1}
-    assert {:error, _} = Store.enqueue(marker_command(f, "competitor"))
+    assert {:error, _} = Store.enqueue(mutation_command(f, "competitor"))
 
     assert {:error, %{details: %{reason_code: "target_write_outcome_unknown"}}} =
              FavnStoragePostgres.TargetOperationLocks.Store.acquire_many(takeover)
@@ -459,16 +460,16 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
     assert effect(f) == {"outcome_unknown", assigned.task_id, 1}
   end
 
-  test "only a matching committed mutation result releases the task-owned marker lock", f do
-    assert {:ok, _queued} = Store.enqueue(marker_command(f, "complete"))
+  test "only a matching committed mutation result releases the mutation write hold", f do
+    assert {:ok, _queued} = Store.enqueue(mutation_command(f, "complete"))
     assert {:ok, assigned} = Store.claim(claim(f, "writer"))
     assert {:ok, _running} = Store.transition(transition(f, assigned))
 
     {kind, _payload, result} =
-      Enum.find(Fixture.tasks(f.version), &(elem(&1, 0) == :generation_marker_initialize))
+      Enum.find(Fixture.tasks(f.version), &(elem(&1, 0) == :generation_discard))
 
     {:ok, wrong} =
-      Codec.encode_result(kind, :succeeded, %{result | initialization_token: "wrong"})
+      Codec.encode_result(kind, :succeeded, %{result | discard_token: "wrong"})
 
     complete = %C.CompleteRunnerTask{
       workspace_context: f.context,
@@ -558,7 +559,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
 
   test "fenced takeover clears an unstarted binding and old cancellation cannot clear its replacement",
        f do
-    assert {:ok, _} = Store.enqueue(marker_command(f, "old"))
+    assert {:ok, _} = Store.enqueue(mutation_command(f, "old"))
     assert {:ok, old} = Store.claim(claim(f, "old-writer"))
 
     SQL.query!(
@@ -574,7 +575,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
                  command_id: "takeover",
                  target_ids: [old.write_target_id],
                  operation_id: "replacement",
-                 operation_type: :target_recovery,
+                 operation_type: :rebuild,
                  lease_owner: "replacement",
                  lease_duration_ms: 30_000,
                  occurred_at: f.now
@@ -582,13 +583,13 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
              )
 
     assert replacement.fencing_token == old.write_lock_fence + 1
-    command = marker_command(f, "replacement")
+    command = mutation_command(f, "replacement")
     {:ok, request} = Codec.decode_payload(command.task_kind, command.payload, f.version)
 
     {:ok, encoded, hash} =
       Codec.encode_payload(command.task_kind, %{
         request
-        | initialization_operation_id: "replacement"
+        | rebuild_operation_id: "replacement"
       })
 
     assert {:error, _} = Store.enqueue(%{command | write_operation_id: "replacement"})
@@ -621,7 +622,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
 
   test "preparation failure and safe recovery terminalize a missing unstarted owner", f do
     for action <- [:complete, :recover] do
-      assert {:ok, _} = Store.enqueue(marker_command(f, Atom.to_string(action)))
+      assert {:ok, _} = Store.enqueue(mutation_command(f, Atom.to_string(action)))
       assert {:ok, task} = Store.claim(claim(f, Atom.to_string(action)))
 
       SQL.query!(Repo, "DELETE FROM favn_control.target_operation_locks WHERE workspace_id=$1", [
@@ -654,11 +655,74 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
     end
   end
 
+  test "preparation failure retains exact rebuild authority for a proven-safe retry", f do
+    assert {:ok, _} = Store.enqueue(mutation_command(f, "prepare-retry"))
+    assert {:ok, task} = Store.claim(claim(f, "prepare-retry"))
+    assert {:ok, failed} = Store.complete(completion(f, task, :failed))
+    assert effect(f) == {"not_started", task.task_id, nil}
+
+    assert {:ok, %{status: :queued}} = Store.retry(retry_command(f, failed))
+    assert {:ok, retried} = Store.claim(claim(f, "retried"))
+    assert retried.task_id == task.task_id
+    assert retried.assignment_generation == task.assignment_generation + 1
+
+    assert {:ok, _} =
+             Store.transition(%{
+               transition(f, retried)
+               | assignment_generation: retried.assignment_generation
+             })
+
+    assert effect(f) == {"in_flight", task.task_id, retried.assignment_generation}
+  end
+
+  for replacement? <- [false, true] do
+    test "safe preparation retry rejects lost authority, replacement=#{replacement?}", f do
+      assert {:ok, _} = Store.enqueue(mutation_command(f, "lost-retry"))
+      assert {:ok, task} = Store.claim(claim(f, "lost-retry"))
+      assert {:ok, failed} = Store.complete(completion(f, task, :failed))
+
+      SQL.query!(
+        Repo,
+        "UPDATE favn_control.target_operation_locks SET lease_expires_at='2000-01-01' WHERE workspace_id=$1",
+        [f.id]
+      )
+
+      if unquote(replacement?) do
+        assert {:ok, [_]} =
+                 FavnStoragePostgres.TargetOperationLocks.Store.acquire_many(
+                   %C.AcquireTargetOperationLocks{
+                     workspace_context: f.context,
+                     command_id: "replacement-for-retry",
+                     target_ids: [task.write_target_id],
+                     operation_id: "replacement",
+                     operation_type: :rebuild,
+                     lease_owner: "replacement",
+                     lease_duration_ms: 30_000,
+                     occurred_at: f.now
+                   }
+                 )
+      end
+
+      assert {:error, %{kind: :conflict}} = Store.retry(retry_command(f, failed))
+    end
+  end
+
+  defp retry_command(f, task),
+    do: %C.RetryRunnerTask{
+      workspace_context: f.context,
+      command_id: "retry-#{task.task_id}",
+      task_id: task.task_id,
+      expected_assignment_generation: task.assignment_generation,
+      expected_result_version: task.result_version,
+      issued_at: f.now,
+      occurred_at: f.now
+    }
+
   test "cancellation before Started releases its owner while cancellation after Started holds it",
        f do
     for started? <- [false, true] do
       suffix = if started?, do: "started", else: "unstarted"
-      assert {:ok, _} = Store.enqueue(marker_command(f, suffix))
+      assert {:ok, _} = Store.enqueue(mutation_command(f, suffix))
       assert {:ok, task} = Store.claim(claim(f, suffix))
       if started?, do: assert({:ok, _} = Store.transition(transition(f, task)))
 
@@ -672,17 +736,31 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
                  occurred_at: f.now
                })
 
+      before_lock =
+        SQL.query!(
+          Repo,
+          "SELECT operation_id,lease_owner,fencing_token,lease_expires_at FROM favn_control.target_operation_locks WHERE workspace_id=$1",
+          [f.id]
+        ).rows
+
       assert {:ok, %{status: :cancelled}} = Store.complete(completion(f, task, :cancelled))
+
+      assert SQL.query!(
+               Repo,
+               "SELECT operation_id,lease_owner,fencing_token,lease_expires_at FROM favn_control.target_operation_locks WHERE workspace_id=$1",
+               [f.id]
+             ).rows == before_lock
+
       assert effect(f) == if(started?, do: {"outcome_unknown", task.task_id, 1}, else: nil)
     end
   end
 
   test "success before Started cannot clear a declared writer", f do
-    assert {:ok, _} = Store.enqueue(marker_command(f, "premature"))
+    assert {:ok, _} = Store.enqueue(mutation_command(f, "premature"))
     assert {:ok, task} = Store.claim(claim(f, "premature"))
 
     {kind, _, result} =
-      Enum.find(Fixture.tasks(f.version), &(elem(&1, 0) == :generation_marker_initialize))
+      Enum.find(Fixture.tasks(f.version), &(elem(&1, 0) == :generation_discard))
 
     {:ok, encoded} = Codec.encode_result(kind, :succeeded, result)
 
@@ -746,7 +824,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
 
       FavnStoragePostgres.TestSupport.TaskManifest.retain(fixture, version)
       phase_fixture = %{phase_fixture | version: version}
-      assert {:ok, task} = Store.enqueue(marker_command(phase_fixture, phase))
+      assert {:ok, task} = Store.enqueue(mutation_command(phase_fixture, phase))
       SQL.query!(Repo, "INSERT INTO public.favn_crash_probe VALUES ($1, 0)", [task.task_id])
       file = Path.join(System.tmp_dir!(), "favn-crash-" <> task.task_id <> ".json")
 
@@ -818,7 +896,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
 
         if expected == :unknown do
           assert {:error, _} =
-                   Store.enqueue(marker_command(phase_fixture, phase <> "-competitor"))
+                   Store.enqueue(mutation_command(phase_fixture, phase <> "-competitor"))
         end
       end
 
@@ -1074,9 +1152,11 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
   defp get(f, task_id),
     do: Store.get(%Q.GetRunnerTask{workspace_context: f.context, task_id: task_id})
 
-  defp marker_command(f, suffix) do
+  defp mutation_command(f, suffix) do
     {kind, payload, _} =
-      Enum.find(Fixture.tasks(f.version), &(elem(&1, 0) == :generation_marker_initialize))
+      Enum.find(Fixture.tasks(f.version), &(elem(&1, 0) == :generation_discard))
+
+    ensure_mutation_lock!(f, payload.target_id, payload.rebuild_operation_id)
 
     {:ok, encoded, hash} = Codec.encode_payload(kind, payload)
 
@@ -1087,8 +1167,36 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
         payload_hash: hash,
         retry_class: Favn.Contracts.RunnerTask.default_retry_class(kind),
         write_target_id: payload.target_id,
-        write_operation_id: payload.initialization_operation_id
+        write_operation_id: payload.rebuild_operation_id
     }
+  end
+
+  defp ensure_mutation_lock!(f, target_id, operation_id) do
+    # Rebuilds retain their own operation lock; runner tasks no longer create one.
+    case SQL.query!(
+           Repo,
+           "SELECT 1 FROM favn_control.target_operation_locks WHERE workspace_id=$1 AND target_id=$2",
+           [f.id, target_id]
+         ).rows do
+      [] ->
+        assert {:ok, [_]} =
+                 FavnStoragePostgres.TargetOperationLocks.Store.acquire_many(
+                   %C.AcquireTargetOperationLocks{
+                     workspace_context: f.context,
+                     command_id:
+                       "fixture-lock-#{target_id}-#{System.unique_integer([:positive])}",
+                     target_ids: [target_id],
+                     operation_id: operation_id,
+                     operation_type: :rebuild,
+                     lease_owner: "fixture-rebuild",
+                     lease_duration_ms: 120_000,
+                     occurred_at: DateTime.utc_now()
+                   }
+                 )
+
+      [_] ->
+        :ok
+    end
   end
 
   defp transition(f, assigned),
@@ -1107,7 +1215,7 @@ defmodule FavnStoragePostgres.StorageV2.CrashRecoveryTest do
   defp effect(f) do
     case SQL.query!(
            Repo,
-           "SELECT effect_state,effect_task_id,effect_assignment_generation FROM favn_control.target_operation_locks WHERE workspace_id=$1",
+           "SELECT effect_state,effect_task_id,effect_assignment_generation FROM favn_control.target_operation_locks WHERE workspace_id=$1 AND effect_state <> 'resolved' AND effect_task_id IS NOT NULL",
            [f.id]
          ).rows do
       [] -> nil

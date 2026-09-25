@@ -129,7 +129,14 @@ defmodule FavnRunner.Worker do
           end
 
         :sql ->
-          execute_sql_asset(asset, manifest, relation_by_module, work, execution_id)
+          execute_sql_asset(
+            asset,
+            manifest,
+            relation_by_module,
+            work,
+            execution_id,
+            Map.get(state, :generation_precondition)
+          )
 
         _ ->
           {:error,
@@ -261,7 +268,7 @@ defmodule FavnRunner.Worker do
   defp catalog_name(_catalog), do: nil
 
   defp redact_execution_result({:ok, meta}, %Asset{} = asset, %Context{} = context) do
-    {:ok, RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.runtime_config)}
+    {:ok, redact_asset_metadata(meta, asset, context.runtime_config)}
   end
 
   defp redact_execution_result({:error, error}, %Asset{} = asset, %Context{} = context) do
@@ -274,8 +281,24 @@ defmodule FavnRunner.Worker do
          %Context{} = context
        ) do
     {:error, RuntimeConfigRedactor.redact(error, asset.runtime_config, context.runtime_config),
-     RuntimeConfigRedactor.redact(meta, asset.runtime_config, context.runtime_config)}
+     redact_asset_metadata(meta, asset, context.runtime_config)}
   end
+
+  # SQL runtime owns this receipt; it contains pinned public identity, not user
+  # metadata. Redacting its fields would corrupt proof after the write committed.
+  defp redact_asset_metadata(
+         %{generation_commit: %Favn.Contracts.GenerationCommit{} = receipt} = meta,
+         %Asset{type: :sql} = asset,
+         resolved
+       ) do
+    meta
+    |> Map.delete(:generation_commit)
+    |> RuntimeConfigRedactor.redact(asset.runtime_config || %{}, resolved)
+    |> Map.put(:generation_commit, receipt)
+  end
+
+  defp redact_asset_metadata(meta, asset, resolved),
+    do: RuntimeConfigRedactor.redact(meta, asset.runtime_config || %{}, resolved)
 
   defp invoke_asset(module, entrypoint, %Context{} = context) do
     case apply(module, entrypoint, [context]) do
@@ -338,7 +361,7 @@ defmodule FavnRunner.Worker do
          meta,
          error
        ) do
-    meta = RuntimeConfigRedactor.redact(meta, asset.runtime_config || %{})
+    meta = redact_asset_metadata(meta, asset, %{})
 
     {meta, evidence} =
       if asset.type in [:sql, :source],
@@ -578,12 +601,19 @@ defmodule FavnRunner.Worker do
          %Version{} = version,
          _relation_by_module,
          %RunnerWork{} = work,
-         execution_id
+         execution_id,
+         generation_precondition
        ) do
     case ContextBuilder.build(work, asset, execution_id) do
       {:ok, context} ->
-        asset
-        |> SQLAssetRuntime.run_manifest(work.execution_package, version, work, context)
+        SQLAssetRuntime.run_manifest(
+          asset,
+          work.execution_package,
+          version,
+          work,
+          context,
+          generation_precondition
+        )
         |> redact_execution_result(asset, context)
 
       {:error, error} ->
@@ -603,7 +633,8 @@ defmodule FavnRunner.Worker do
          %ManifestHandle{} = manifest,
          relation_by_module,
          %RunnerWork{} = work,
-         execution_id
+         execution_id,
+         generation_precondition
        )
        when is_map(relation_by_module) do
     case ContextBuilder.build(work, asset, execution_id) do
@@ -614,7 +645,8 @@ defmodule FavnRunner.Worker do
           manifest,
           relation_by_module,
           work,
-          context
+          context,
+          generation_precondition
         )
         |> redact_execution_result(asset, context)
 

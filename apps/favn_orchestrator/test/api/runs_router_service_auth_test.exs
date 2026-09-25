@@ -155,7 +155,6 @@ defmodule FavnOrchestrator.API.RunsRouterServiceAuthTest do
       admission: EmptyRunsStore,
       resource_circuits: EmptyRunsStore,
       target_generations: EmptyRunsStore,
-      target_recovery: EmptyRunsStore,
       rebuilds: EmptyRunsStore,
       target_operation_locks: EmptyRunsStore,
       materialization: EmptyRunsStore,

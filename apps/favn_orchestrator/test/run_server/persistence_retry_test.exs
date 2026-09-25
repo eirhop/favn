@@ -43,8 +43,7 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetryTest do
           :step_failed,
           :step_timed_out,
           :step_cancelled,
-          :step_settled,
-          :registration_retry_scheduled
+          :step_settled
         ],
         retry = PersistenceRetry.new(struct(RunState), event, %{}, nil),
         pending <- [

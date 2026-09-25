@@ -38,6 +38,7 @@ defmodule FavnStoragePostgres.Schemas.RunnerTask do
     field(:assigned_runner_instance_id, :string)
     field(:assigned_runner_session_generation, :integer)
     field(:assignment_generation, :integer)
+    field(:generation_precondition, :map)
     field(:assigned_at, :utc_datetime_usec)
     field(:assignment_expires_at, :utc_datetime_usec)
     field(:cancellation_requested_at, :utc_datetime_usec)

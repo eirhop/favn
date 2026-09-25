@@ -202,8 +202,7 @@ defmodule FavnOrchestrator.RunServer.PersistenceRetry do
       when kind in [
              :runner_task_waiter_unavailable,
              :runner_task_waiter_stopped,
-             :runner_task_data_unavailable,
-             :post_step_worker_down
+             :runner_task_data_unavailable
            ],
       do: true
 

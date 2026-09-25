@@ -240,7 +240,12 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
     # Started is the durable write barrier. Preparation failure can settle even
     # when its unstarted owner has expired or been replaced.
     if command.outcome == :succeeded, do: fenced!()
-    finish_unstarted!(task)
+
+    retain_for_retry? =
+      is_nil(task.write_claim_key) and command.outcome == :failed and
+        command.retry_class == :safe_to_retry
+
+    unless retain_for_retry?, do: finish_unstarted!(task)
   end
 
   def complete!(%{status: "cancelling"} = task, command) do
@@ -325,20 +330,6 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
     end
   end
 
-  def prepare_retry!(
-        %{
-          task_kind: "generation_marker_initialize",
-          status: "failed",
-          retry_class: "safe_to_retry"
-        } = task
-      ) do
-    # Only an explicitly safe terminal task can restore a deleted task-owned
-    # lock. The task generation still fences every old assignment.
-    rebound = bind!(task)
-    unless rebound.write_lock_fence == task.write_lock_fence, do: fenced!()
-    guard_requeue!(task)
-  end
-
   def prepare_retry!(task), do: guard_requeue!(task)
 
   def resolve!(task, command, evidence) do
@@ -414,7 +405,18 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
     :ok
   end
 
-  defp release_owner!(task, owner), do: release_task_lock!(task, owner)
+  defp release_owner!(task, %TargetOperationLock{effect_state: "not_started"} = lock) do
+    unless lock.effect_task_id == task.task_id and lock.fencing_token == task.write_lock_fence,
+      do: fenced!()
+
+    lock
+    |> Ecto.Changeset.change(effect_task_id: nil)
+    |> Repo.update!()
+
+    :ok
+  end
+
+  defp release_owner!(_task, _owner), do: :ok
 
   # An expired lease cannot invalidate a success already committed with the exact
   # original owner. This permits settlement, never renewed execution authority.
@@ -450,19 +452,6 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
     end
   end
 
-  defp release_task_lock!(task, %TargetOperationLock{} = lock) do
-    if task.task_kind == "generation_marker_initialize" and lock.lease_owner == task.task_id and
-         lock.effect_task_id == task.task_id and lock.fencing_token == task.write_lock_fence and
-         lock.effect_state in ["not_started", "resolved"] do
-      guard_target!(task.workspace_id, task.write_target_id)
-      Repo.delete!(lock)
-    end
-
-    :ok
-  end
-
-  defp release_task_lock!(_task, _owner), do: :ok
-
   defp owner!(task), do: find_owner(task) || fenced!()
 
   defp find_owner(%{write_claim_key: key} = task) when is_binary(key) do
@@ -493,23 +482,6 @@ defmodule FavnStoragePostgres.RunnerTasks.WriteOwnership do
       )
 
     case existing do
-      nil when task.task_kind == "generation_marker_initialize" ->
-        guard_target!(task.workspace_id, task.write_target_id)
-        now = now!()
-
-        Repo.insert!(%TargetOperationLock{
-          workspace_id: task.workspace_id,
-          target_id: task.write_target_id,
-          operation_id: task.write_operation_id,
-          operation_type: "target_recovery",
-          fencing_token: 1,
-          lease_owner: task.task_id,
-          lease_expires_at: DateTime.add(now, 3_600, :second),
-          version: 1,
-          inserted_at: now,
-          updated_at: now
-        })
-
       %TargetOperationLock{} = lock ->
         unless lock.operation_id == task.write_operation_id and live?(lock.lease_expires_at),
           do: fenced!()

@@ -6,7 +6,6 @@ defmodule FavnRunner.TaskExecutor do
   alias Favn.Contracts.GenerationCapabilitiesResult
   alias Favn.Contracts.GenerationActivationRequest
   alias Favn.Contracts.GenerationDiscardRequest
-  alias Favn.Contracts.GenerationMarkerInitializationRequest
   alias Favn.Contracts.GenerationMarkerReadRequest
   alias Favn.Contracts.GenerationMarkerReadResult
   alias Favn.Contracts.GenerationReconciliationRequest
@@ -260,6 +259,7 @@ defmodule FavnRunner.TaskExecutor do
              server: {:bounded, self()},
              execution_id: assignment.task_id,
              work: work,
+             generation_precondition: assignment.generation_precondition,
              manifest: manifest,
              asset: asset,
              relation_by_module: relations,
@@ -405,18 +405,6 @@ defmodule FavnRunner.TaskExecutor do
       else
         {:error, reason} -> operation_error(:generation_marker_read, reason)
       end
-    end)
-  end
-
-  defp execute_operation(
-         %Assignment{task_kind: :generation_marker_initialize} = assignment,
-         %GenerationMarkerInitializationRequest{} = request
-       ) do
-    with_operation_version(assignment, request, fn version ->
-      operation_result(
-        :generation_marker_initialize,
-        GenerationOperations.initialize_marker(request, version)
-      )
     end)
   end
 

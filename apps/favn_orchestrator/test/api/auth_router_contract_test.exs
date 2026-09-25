@@ -91,7 +91,6 @@ defmodule FavnOrchestrator.API.AuthRouterContractTest do
       admission: IdentityStore,
       resource_circuits: IdentityStore,
       target_generations: IdentityStore,
-      target_recovery: IdentityStore,
       rebuilds: IdentityStore,
       target_operation_locks: IdentityStore,
       materialization: IdentityStore,

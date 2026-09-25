@@ -76,19 +76,6 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
       activated_at: now
     }
 
-    initialize =
-      struct!(
-        C.GenerationMarkerInitializationRequest,
-        Map.merge(pin, %{
-          target_id: target,
-          target_generation_id: previous,
-          active_relation: relation,
-          expected_physical_fingerprint: fingerprint,
-          initialization_operation_id: "initialize",
-          initialization_token: "initial-token"
-        })
-      )
-
     activation =
       struct!(
         C.GenerationActivationRequest,
@@ -245,6 +232,7 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
        %C.GenerationCapabilitiesResult{
          capabilities: %{
            transactional_ddl: :supported,
+           atomic_publication: :supported,
            isolated_candidates: :supported,
            physical_inspection: :supported,
            atomic_swap: :supported,
@@ -260,17 +248,6 @@ defmodule FavnTestSupport.RunnerTaskPersistence do
          asset_ref: ref,
          require_relation_instance?: false
        }, %C.GenerationMarkerReadResult{marker: marker}},
-      {:generation_marker_initialize, initialize,
-       %C.GenerationMarkerInitializationResult{
-         required_runner_release_id: release,
-         target_id: target,
-         target_generation_id: previous,
-         initialization_token: "initial-token",
-         outcome: :succeeded,
-         observed_marker: marker,
-         physical_fingerprint: fingerprint,
-         completed_at: now
-       }},
       {:generation_activate, activation,
        %C.GenerationActivationResult{
          required_runner_release_id: release,

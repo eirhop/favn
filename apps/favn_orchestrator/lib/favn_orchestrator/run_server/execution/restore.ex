@@ -127,7 +127,6 @@ defmodule FavnOrchestrator.RunServer.Execution.Restore do
          state
          | run: run,
            recovery: nil,
-           registration_retries: progress.registration_retries,
            accumulated_results: recovery.asset_results
        }, %{progress | failure: failure}, Enum.reverse(recovery.tasks)}
     end

@@ -92,41 +92,44 @@ A target without an active generation has nothing to rebuild. Operator views
 must offer activation/inspection retry guidance for that state, not a rebuild
 action. Rebuild remains available only when an active generation exists.
 
-## Interrupted initial-generation recovery
+## Atomic generation publication
 
-Initial activation happens after the first successful write. The run process
-persists the step outcome and the completed materialization claim, then a
-supervised worker inspects the physical relation through runner tasks and asks
-the generation store to record the fingerprint and active binding. The run
-process never blocks on those tasks, so its ownership lease keeps renewing while
-an inspection is queued behind other runner work. If the run is cancelled while
-the worker is pending, the binding stays `uninitialized` and the recovery
-workflow below applies.
+The first SQL write creates its table, physical-instance identity, generation
+marker, and runtime catalog publication in the same managed SQL transaction.
+The adapter must explicitly support `atomic_publication`; an unsupported adapter
+fails before mutation. A skipped first write or a missing table cannot activate
+a generation.
 
-Temporary registration failures use the bounded durable retry policy in
-[run ownership and recovery](run-ownership-and-recovery.md#registration-retries-and-failed-run-cleanup).
-Retry exhaustion fails execution and independently reconciles existing work;
-accepted asset writes are never resubmitted by registration recovery.
+At assignment, the control plane pins a typed `GenerationPrecondition` separately
+from immutable runner work. A first write requires both table and marker to be
+absent. Later writes require the exact active marker, physical table identity, and
+schema fingerprint. Claim replay returns the original assignment precondition.
+Started rechecks the pinned control-plane state before permitting mutation.
 
-An initial materialization can commit in the data system while its control-plane
-binding remains incomplete. Recovery is a separate ownership-restoration
-workflow, not a rebuild and not general table adoption.
+A successful SQL result carries a typed `GenerationCommit` receipt. Accepting that
+receipt, activating the initial control-plane binding, and resolving write
+ownership happen in one PostgreSQL completion transaction. The run subsequently
+settles its existing materialization and freshness records. There are no initial
+registration helper tasks, registration timers, or target-repair plans.
 
-An immutable recovery plan pins the current binding version, original building
-generation, successful materialization, source and desired descriptors,
-physical relation, fresh fingerprint, and the exact pre-existing Favn
-generation marker. Each new marker is transactionally bound to an opaque
-identity stored on that physical table. The identity survives rename and
-restart but disappears when the table is dropped and recreated. Start
-revalidates that evidence and
-acquires the same fenced target-operation lock used to exclude normal writes
-and rebuild activation. Binding activation then rechecks the fence, evidence, fingerprint, and
-exact marker in one PostgreSQL transaction.
+Ordinary table replacement verifies the old identity before writing and binds the
+replacement instance before commit. A changed schema rolls back and requires a
+rebuild. Existing-generation no-op results may retain the verified identity;
+initial-generation no-op results cannot succeed. If deployment changes during a
+write, completion records the original write without overwriting desired state
+and leaves an explicit operator decision.
 
-Recovery never initializes a marker. Reconciliation only reads the
-authoritative marker. Missing evidence, a changed relation or contract, or a
-missing, unbound, or mismatched marker keeps the target blocked, including a
-manually recreated table with an identical schema.
+SQL and PostgreSQL remain separate transaction boundaries. A lost SQL commit
+acknowledgment still leaves an unknown write protected from automatic replay.
+The stable generation marker is not proof of a particular write attempt. The
+existing task-write resolution boundary accepts independently verified no-effect
+evidence; it cannot promote a committed-but-unreported asset write to success.
+Rebuild activation retains its own marker-based reconciliation contract below.
+
+This is a clean contract break: deploy matched runner and orchestrator images
+against a fresh environment. Historical initial-registration tasks and target
+repair records are unsupported; the retirement migration refuses those records
+without deleting them. There is no table-adoption or legacy recovery workflow.
 
 ## Immutable planning and approval
 

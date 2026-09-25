@@ -21,7 +21,6 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCTest do
 
     assert extensions.pool_safe_after_success == [
              :materialize,
-             :initialize_generation_marker,
              :activate_generation,
              :discard_generation
            ]

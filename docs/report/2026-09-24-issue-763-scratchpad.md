@@ -1,0 +1,987 @@
+# Issue 763 investigation scratchpad — 2026-09-24
+
+## Scope and evidence rules
+
+Re-evaluate initial-registration recovery and inspect surrounding production risks,
+especially orchestrator work amplification, storage pools, task supervision and
+ownership. Produce a reviewed implementation plan; do not edit application code.
+Confirmed code defects, local runtime experiments, incident observations and
+unproven performance hypotheses are recorded separately.
+
+## Baseline
+
+- GitHub issue 763 and related issue 762 were reread; both are open with no comments.
+- Current origin/main is `430a891d` (v0.5.0-rc.19 release merge).
+- Planning checkout: isolated worktree based on origin/main.
+- Tidewave: running umbrella server on localhost:4173. Its original source checkout
+  includes issue 764 backfill-command changes (`95e132f4`); relevant recovery/storage
+  sources must be checked for equivalence to main before attributing experiments.
+- PostgreSQL is the existing disposable Favn Docker instance under OrbStack (5433).
+  No native database will be created. No production environment is connected.
+
+## Questions to resolve
+
+1. Is failure inevitable only because of the 30-second budget, or because the
+   ownership/domain model treats post-write registration as disposable work?
+2. Which facts authorize replay of reads, marker initialization, and activation?
+3. How can already terminal affected runs be repaired without restarting writes?
+4. Does the coordinator pay repeated full-snapshot, manifest, task or projection
+   costs for each asset/marker transition?
+5. Which loops multiply pressure during overload, and which failures crash parents?
+6. What is the smallest coherent architecture that removes paths instead of adding
+   another independent retry/repair protocol?
+7. What evidence would qualify a 0.5-vCPU orchestrator with three runners?
+
+## Initial source-confirmed facts to recheck
+
+- Registration has 30 seconds and eight slots, not one hard-coded attempt.
+- Retry intent is persisted before dispatch; persistence can consume the window.
+- Exhaustion fails the run and starts read-only cleanup; cleanup cannot create a
+  missing marker. Recovery currently requires an existing marker.
+- Existing safeguards correctly block new materialization on unresolved targets.
+- Run ownership, external operation authority and run terminality are distinct.
+
+## Experiment log
+
+- Tidewave `tools/list`: successful, tools include project_eval, get_source_location,
+  get_docs and get_logs.
+
+## Confirmed observations (source plus Tidewave)
+
+1. **Terminal dead end (P1):** `RegistrationRetry.next/5` saved slot 1, then returned
+   exhaustion at +31 seconds. `Execution.resume_registration/5` emits scheduled
+   retries before checking elapsed time. `RunServer` treats this specific reason
+   as failure, stops sibling continuations and invokes `FailureCleanup.fail/2`.
+   Cleanup only reads markers. Missing marker => unresolved target. Raising this
+   budget alone does not fix the separate 30-second `PersistenceRetry.resolve/1`
+   failure route or historical terminal runs.
+2. **Checkout crash (P1, issue 762):** in an isolated one-connection Ecto pool using
+   the existing Docker database URL, with its connection checked out, the actual
+   Sequencer callback raised `DBConnection.ConnectionError`. The Projector under
+   the same conditions returned retryable `Persistence.Error(kind: :unavailable)`.
+   Temporary pool stopped afterward. `Operation.run/4` re-raises after telemetry;
+   using it alone does not fix this. Backend `rest_for_one` couples the sequencer
+   to projector/listener/maintenance restarts. Never change ordering where the
+   Repo or authentication provider really is a prerequisite.
+3. **Aggressive subscription retry (P2):** three temporary subscriptions to missing
+   local tasks caused 111 store reads in 2 seconds. Source retries every failed
+   subscription after 50 ms, including unavailable, overloaded and permanent
+   not-found results; active checks are limited to 32, retry rate is not. All
+   subscriptions and telemetry hooks removed. This proves a mechanism, not that
+   production had missing tasks or this exact request rate.
+4. **Heavy poll reads (P2):** router polls active waiters every second via full
+   RunnerTasks.get. Each read opens repeatable-read transaction, checks retention,
+   fetches retained manifest/package, verifies payload/context hashes and decodes
+   payload and context even while task is still running. Multiple subscribers
+   have separate checks. OperationRunnerTasks' 250-ms loop only polls rebuild
+   cancellation (no DB call for initial registration); do not misattribute it.
+5. **Manifest-sized decoding (measured):** 100 successful in-memory decode calls
+   for synthetic valid manifests. Capability payload fixed at 1,076 bytes.
+
+   | Assets | Capability decode us / reductions | Empty context us / reductions |
+   | ---: | ---: | ---: |
+   | 1 | 112.99 / 16,552 | 98.65 / 11,811 |
+   | 35 | 187.13 / 41,066 | 175.39 / 36,357 |
+   | 350 | 795.89 / 265,343 | 790.68 / 260,818 |
+
+   `PersistenceData.atom_dictionary/3` reconstructs the fixed struct-field map
+   and recursively traverses the whole version on every decode. ManifestCache
+   avoids repeated deserialization, but does not eliminate this traversal or
+   copying cached version terms. Package verification is additional work.
+6. **Idle polling (measured):** empty local dev DB (0 runs/tasks/manifests) produced
+   318 Repo query events in 10 seconds, including BEGIN/COMMIT, 61 database-clock
+   reads and 55 transactions. Submission/rebuild/backfill/deployment dispatchers
+   were the leading application processes by reductions. Dev SQL logging and 15
+   online schedulers differ from a production 0.5-vCPU quota: no production CPU
+   percentage or runner-capacity conclusion follows from these numbers.
+7. **Timeout option mismatch (source confirmed):** registration worker supplies
+   `timeout_ms`, but OperationRunnerTasks.await reads `timeout`. The external
+   deadline timer still bounds retry workers; this is inconsistent propagation,
+   not proof of an unbounded retry. The initial pass defaults to 300 seconds.
+
+   Runtime confirmation: `await(context, missing_id, timeout: 0)` rejects an invalid
+   timeout without storage; the same call with `timeout_ms: 0` ignores the option
+   and returns storage's `:not_found`. A saved event with a 120-second deadline
+   also fails the existing retry decoder, confirming a policy-format transition
+   is required rather than changing one constant.
+
+8. **Cleanup verification:** after all probes, the router had zero checks and
+   zero waiter keys, the temporary pool was absent, and runs/tasks/manifests were
+   still all zero. Tidewave's non-probe error log was empty. These local probes
+   did not create persisted workload fixtures or change application source.
+
+## Additional risks / not yet reproduced as incidents
+
+- Initial binding reconciliation locks binding/generation and checks exact
+  successful materialization/marker, but its command has no current run/target
+  authority field. Unlike target recovery activation it cannot check a current
+  operation fence. The new lifecycle must close this ownership gap; do not claim
+  observed corruption or call evidence-based idempotent adoption inherently unsafe.
+- Projector handles connection failures; maintenance uses supervised async work.
+  They do not share the sequencer's exact unchecked exception bug.
+- Projector has one global cursor. A poison event rolls back its whole batch;
+  failure is recorded but the cursor cannot pass it. A combined-window
+  materialization expands all logical windows and upserts individually inside
+  that transaction. Potential head-of-line latency and cost need a scale test.
+- Several dispatch/recovery loops collect all workspaces and process each
+  synchronously, despite each page being bounded. Cost can grow across tenants.
+- Run snapshots reference an immutable plan and the manifest cache is bounded;
+  previous optimizations are present. Avoid claiming the full plan/SQL is always
+  rewritten. Mutable snapshot hashing/encoding and process copying still need a
+  workload profile before larger changes.
+
+## Architecture options evaluated
+
+- Increase timers: insufficient; there are multiple exhaustion routes, lost
+  authority must still stop a worker, and historical runs remain terminal.
+- Keep all registration inside RunServer, add another repair retry: smaller
+  first diff but duplicates the same lifecycle across execution, cleanup and
+  operator recovery. This is the coupling that caused the dead end.
+- Put first marker in the original materialization transaction: attractive
+  eventual simplification for qualified SQL adapters. Existing runtime catalog
+  already records transactional publication receipts. However these receipts
+  identify a relation by name, not a bound physical instance, so they cannot
+  prove a historical table was never dropped/recreated. This option changes
+  runner/adapter transaction protocols and still needs historical repair; do not
+  make the urgent fix depend on that larger change.
+- **Preferred:** one durable target-owned initial-registration state machine,
+  shared by automatic completion and reviewed operator repair, reusing existing
+  task queue and target-operation locks. Atomically hand off when successful
+  materialization is recorded. Runs observe completion, not own marker mutation.
+  Remove run-local registration timers/retry events as an execution mechanism;
+  retain a bounded compatibility reader for existing rc19 evidence.
+
+## Historical repair evidence boundary
+
+Marker absence is not proof a previous writer stopped. Lease expiry alone is
+also insufficient. Drain/reconcile exact original task and target write holds.
+Never repeat the asset write. Matching bound marker permits evidence-based
+completion; safe/not-started marker operations can use their original identity.
+Without a pre-existing physical instance identity, a fingerprint or runtime
+publication receipt cannot prove historical continuity. A supported missing-marker
+repair therefore needs a narrowly scoped, audited administrator attestation about
+that exact retained target, in addition to technical fencing/contract checks. It
+must never present that attestation as machine-verified continuity or waive an
+unresolved writer. Conflicting marker/identity remains blocked. Independent review
+identified the remaining time-of-check gap: a same-schema unbound replacement
+after approval is also undetectable. Historical adoption therefore requires an
+administrator-controlled freeze on external writes/DDL from approval through
+known marker commit (or definitive no-effect resolution); marker-free completion
+requires the freeze through activation. This is a trusted operational precondition,
+not a new claim that fingerprint comparison proves continuity.
+
+## Experiment artifacts
+
+`runtime_baseline.exs`, `idle_queries.exs`, `checkout_failure.exs`, `codec_cost.exs`,
+`router_retries.exs`, `timeout_and_checks.exs` and matching .txt outputs were
+kept locally under `/private/tmp/favn-763-audit` during the investigation. They
+are temporary artifacts, not committed test fixtures; this document preserves
+the sanitized results and reproduction methods. Implementation must turn the
+relevant failure probes into permanent owning-layer regression tests.
+The initial temporary-pool experiments used Repo.config(), which omitted the
+runtime-supplied connection URL and failed during setup. Discarded as evidence.
+The final successful probe used the same FAVN_DATABASE_URL as the server.
+
+## Source index at the audited baseline
+
+Links are pinned to `430a891d`; current code remains authoritative after this audit.
+
+| Concern | Primary source |
+| --- | --- |
+| Durable retry policy and decoder | [RegistrationRetry](https://github.com/eirhop/favn/blob/430a891d/apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution/registration_retry.ex#L10) |
+| Retry intent, timer and timeout propagation | [Execution](https://github.com/eirhop/favn/blob/430a891d/apps/favn_orchestrator/lib/favn_orchestrator/run_server/execution.ex#L2044) |
+| Exhaustion fails the run | [RunServer](https://github.com/eirhop/favn/blob/430a891d/apps/favn_orchestrator/lib/favn_orchestrator/run_server.ex#L792) |
+| Independent persistence exhaustion path | [PersistenceRetry](https://github.com/eirhop/favn/blob/430a891d/apps/favn_orchestrator/lib/favn_orchestrator/run_server/persistence_retry.ex#L98) |
+| Missing marker in cleanup | [InitialTargetGenerationReconciler](https://github.com/eirhop/favn/blob/430a891d/apps/favn_orchestrator/lib/favn_orchestrator/initial_target_generation_reconciler.ex#L231) |
+| Target write protection | [TargetGenerations.Store](https://github.com/eirhop/favn/blob/430a891d/apps/favn_storage_postgres/lib/favn_storage_postgres/target_generations/store.ex#L317) |
+| Sequencer callback | [Sequencer](https://github.com/eirhop/favn/blob/430a891d/apps/favn_storage_postgres/lib/favn_storage_postgres/outbox/sequencer.ex#L147) |
+| Exception instrumentation re-raises | [Operation](https://github.com/eirhop/favn/blob/430a891d/apps/favn_storage_postgres/lib/favn_storage_postgres/operation.ex#L30) |
+| Subscription retry and full-detail polling | [RunnerTaskResultRouter](https://github.com/eirhop/favn/blob/430a891d/apps/favn_orchestrator/lib/favn_orchestrator/runner_task_result_router.ex#L103) |
+| Task hydration | [RunnerTasks.Store](https://github.com/eirhop/favn/blob/430a891d/apps/favn_storage_postgres/lib/favn_storage_postgres/runner_tasks/store.ex#L3358) |
+| Repeated decoder inventory traversal | [PersistenceData](https://github.com/eirhop/favn/blob/430a891d/apps/favn_core/lib/favn/contracts/runner_task/persistence_data.ex#L668) |
+| Instance identity installed during marker creation | [GenerationTransaction](https://github.com/eirhop/favn/blob/430a891d/apps/favn_sql_runtime/lib/favn/sql/generation_transaction.ex#L679) |
+| Existing foreign instance fails closed | [DuckDB ADBC](https://github.com/eirhop/favn/blob/430a891d/apps/favn_duckdb_adbc/lib/favn/sql/adapter/duckdb/adbc.ex#L930) |
+| Runtime publication stores a named relation | [RuntimeCatalog](https://github.com/eirhop/favn/blob/430a891d/apps/favn_duckdb_adbc/lib/favn/sql/adapter/duckdb/adbc/runtime_catalog.ex#L55) |
+| Projection window expansion | [Projector](https://github.com/eirhop/favn/blob/430a891d/apps/favn_storage_postgres/lib/favn_storage_postgres/projections/projector.ex#L764) |
+
+## Reproduction notes
+
+Run probes through the umbrella server's Tidewave `project_eval`; do not use
+production or change the application's configured backend. The manifest benchmark
+uses the existing `FavnTestSupport.RunnerTaskPersistence.version/2` fixture, clones
+1/35/350 assets with unique refs, applies `with_manifest_contract` and
+`with_manifest_graph`, then calls `Version.new/1`. Encode one
+`GenerationCapabilitiesRequest` and an empty `RunnerTaskContext`, perform 100
+successful decodes of each, and measure process reductions and `:timer.tc`.
+Payload bytes stay constant while unrelated manifest assets grow.
+
+The checkout probe starts a separately named one-connection Repo using the running
+development URL. Inside that Repo's `checkout/2`, a child sets the same dynamic
+Repo and invokes the actual Sequencer callback and Projector batch. The child
+observes checkout failure; an `after` block restores the previous dynamic Repo
+and stops the temporary pool. This does not exhaust the application's real pool.
+
+The router probe attaches a temporary counter to the existing persistence-operation
+telemetry and starts three `RunnerTaskResultRouter.await/3` subscribers for known
+nonexistent task IDs. After two seconds it stops those subscribers and detaches
+the counter. The idle measurement separately counts Repo query events for ten
+seconds, including BEGIN/COMMIT; it is not a count of domain commands.
+
+## Verification limits and follow-up gates
+
+No production access, customer data, database outage, deployment action or benchmark
+under a 0.5-vCPU cgroup occurred. The local VM had 15 online schedulers, dev logging,
+and no active runners. Timings are local microbenchmarks; reduction counts identify
+algorithmic repeated work, not a throughput guarantee. No application fix or
+schema change was made during this investigation.
+
+Before release: reproduce the incident-shaped 35-target/70-attempt workload, both
+before and after durable handoff; inject a 60–120-second outage and lost replies;
+exercise cancelled/unknown marker cases; qualify three runners with declared
+concurrency under a 0.5-vCPU/1-GiB limit. Keep broad projection/sharding or generic
+workflow changes out of this fix unless that profile proves they are necessary.
+
+## Independent review corrections
+
+The reviewer independently read both issues, baseline source and probe outputs,
+then requested five corrections before approval:
+
+- Preserve the reconciler's valid unsupported-marker branch. A failed or malformed
+  capability read must never become marker-free success.
+- Specify renewable registration authority and separate its durable ID from the
+  immutable marker mutation identity. The existing write barrier compares
+  `lock.operation_id` with `task.write_operation_id` and otherwise creates a
+  one-hour task-owned marker lock. New registration tasks must use explicit typed
+  authority and fail closed instead of that fallback. Cancellation before handoff
+  must be as effective as cancellation after it.
+- Add the external-change freeze to historical attestation, without promising
+  detection of indistinguishable unbound replacement.
+- Retain existing recovery rows as approval/audit history linked to the single
+  registration. Atomic approval acceptance and derived completion replace the
+  current second execution path. A per-generation row remains justified because
+  several immutable administrator plans may refer to the same generation.
+- Declare offered task rates and p95 latency/drain limits in the 0.5-vCPU gate;
+  CPU averages alone can reward throttling or idle time.
+
+These corrections change the proposed design and qualification, not the observed
+incident evidence. No application implementation was performed during review.
+
+
+## Manual OrbStack qualification (in progress)
+
+The user requested a local simulation, not a CI simulation: a 0.5-vCPU
+orchestrator and five runner images, network fault injection, then the same test
+after fixes. The independently reviewed qualification adjustment preserves
+focused regression tests, durable fault triggers, before/after evidence and a
+retained failing database for forward-repair testing. Four slots per runner in
+the original plan is invalid: the current RunnerTask contract requires one slot.
+The local qualification uses five distinct runner sessions and five admitted
+independent targets instead.
+
+The isolated Compose project is `favn-763-local`, using only OrbStack containers.
+Its PostgreSQL is separate from the existing development and user databases.
+The baseline control-plane image is published rc19, digest
+`sha256:641d01af54cc11264b5a16e459d460ba48f2ac9b80709b81e935a4e7399a2beb`.
+The generated CRM tutorial profile adds 35 independent SQL targets, a pool and
+pipeline concurrency of five, and shared DuckLake metadata/data. A Toxiproxy
+endpoint carries only the orchestrator's control-database connections; bootstrap,
+evidence reads and DuckLake metadata use PostgreSQL directly. Directional
+latency/jitter and measured round-trip overhead must be recorded separately.
+
+Initial startup findings:
+
+- The amd64 Erlang JIT failed under this ARM Mac's compatibility layer with
+  `prim_tty:isatty/1`, `erlang:nif_error/1` and `nouser`. The OTP-maintainer
+  workaround `+JMsingle true` allowed the unchanged release bootstrap to complete.
+  This local setting is in the harness only. It means CPU measurements include
+  emulation and cannot establish native production capacity. See
+  [OTP issue 10355](https://github.com/erlang/otp/issues/10355).
+- Docker's kernel cgroup reports `cpu.max = 50000 100000` for the orchestrator.
+- **Additional confirmed production startup bug:** a valid resident pool is
+  accepted by `RunnerPools.normalize/1`, producing `idle_grace_ms: :infinity`.
+  `ProductionRuntimeConfig` installs that normalized value; `RuntimeConfig`
+  normalizes it again and rejects the generated infinity as user-supplied grace.
+  The actual rc19 container aborts with `resident_idle_grace_not_allowed`.
+  A side-effect-free Tidewave call reproduced normalize(normalize(input)).
+  Fix normalization idempotence while continuing to reject finite resident grace;
+  add a production-config-through-runtime regression test. The unchanged baseline
+  instead uses five fixed elastic runners with a one-hour idle grace and no
+  autoscaler; candidate comparisons must retain that configuration.
+
+No application fix or end-to-end workload result is claimed by these startup
+checks. Image build corrections (explicit amd64 build platform and the supported
+`query do ~SQL"..." end` fixture syntax) are harness setup corrections.
+
+
+Additional setup evidence, before the first workload:
+
+- `favn.build.manifest` reached public catalog export and crashed at
+  `Favn.Catalog.Artifact.selector/1` on the tutorial's documented shorthand
+  `assets([Engagement, ExecutiveOverview])`: `Snapshot.ref/1` only accepts tuples.
+  The local profile selects only its stress pipeline and uses explicit
+  `{Module, :asset}` refs to keep the release baseline unchanged. This is a
+  separate authoring/export regression, not evidence for issue #763's cause.
+- All five runner sessions registered durably. Their canonical image RPC health
+  probes nevertheless fail with `:noconnection`. The release uses a dynamic
+  `undefined@host` node; local EPMD reports no registered static name. Investigate
+  the health probe's incompatibility with dynamic naming before production use;
+  do not count a registered session as a passing image health check. Leave probes
+  enabled equally in baseline/candidate resource measurements.
+- The existing Compose operator helper captures `mix run` stdout as the manifest
+  ID. A native dependency's compile output contaminated the capture and caused
+  `invalid --manifest-version`. An explicit known ID activated successfully.
+  The local harness reads the single publication directory name instead.
+- The first shared-storage profile inherited the tutorial's `database_path`
+  script parameter because Config merges nested keyword lists. Activation's
+  relation-inspection tasks correctly failed with `unused_script_parameters`.
+  Use an isolated generated compile profile rather than merge file-backed and
+  DuckLake resource definitions. Discard these setup attempts from throughput
+  evidence; the actual baseline requires a fresh Compose project.
+
+Independent reviewer `review_763_plan` approved the resident normalization fix
+on 2026-09-24 after reproducing it separately through Tidewave. Required cases:
+resident/mixed normalization idempotence, production JSON validation followed by
+runtime normalization, and rejection of finite/nil/string infinity resident grace
+and infinity elastic grace. No broader architecture change is needed for this bug.
+
+
+## Resumed manual qualification: short assets and live View
+
+The successful unchanged-rc19 baseline used five fixed elastic runners and the
+0.5-vCPU orchestrator. No generated SQL asset contains a sleep. The unused
+`CRM_API_LATENCY_MS` setting was removed from the local overlay. The first
+35-target run finished in 62.640 seconds, with median runner asset execution
+498 ms (minimum 416 ms, p95 1,956 ms, maximum 2,979 ms). Its rerun finished in
+26.459 seconds, median 485 ms (minimum 426 ms, p95 2,414 ms, maximum 3,274 ms).
+Runner execution durations come from all 70 persisted successful task receipts,
+not SQL-log timing alone. Both runs produced exactly 35 materializations; all
+35 physical tables contained 1,000 distinct IDs and the expected sum 499,500.
+The sampled first-run CPU usage consumed 89.64% of the 0.5-core budget and
+86.02% of CPU periods were throttled. Emulation and image health probes are
+included; these are local comparative measurements, not production capacity.
+
+A fresh `favn-763-outage` case initially failed before any network fault fired:
+manifest activation left unresolved inspections, admission permanently rejected
+the run, and two runners exited with status 0. No Run row, SQL attempt, generation
+or materialization was created. Keep this separate from issue #763 reproduction.
+The no-trigger fault watcher exited without disabling the proxy. After explicitly
+restarting the two stopped runners, a third activation completed all 47 relation
+inspections successfully. Evidence is retained in the ignored
+`.favn/registration-stress/evidence/` directory; `/tmp` did not survive reboot.
+
+**Additional confirmed claim-protocol bug:** `RunnerTasks.finish_claim_error/2`
+finishes a failed store claim in `RunnerRegistry` as successful `NoWork(wait_ms: 0)`.
+`RunnerAgent` retains the command ID when retrying a storage failure. The registry
+therefore replays a successful zero-wait response to that retry. For an elastic
+runner, this schedules immediate `idle_expired`, sets `final_claim?`, and a further
+empty response stops the runner even with a one-hour configured idle grace. A
+side-effect-free Tidewave invocation of the actual registry callbacks reproduced
+the erroneous cached response. The stopped containers' logs show storage claim
+errors followed by clean draining; the protocol bug explains that sequence, but
+the original transient storage failure's cause is not yet established.
+
+The user additionally requested a production View with `/runners` held open so
+LiveView subscriptions contribute load. The image and HTTPS proxy are running.
+Browser connection is pending user handling of the local certificate warning;
+setting the isolated Entra-seeded simulation administrator's password also needs
+explicit approval after automatic approval review rejected that recovery action.
+Do not label the existing baseline as including a connected runners page.
+
+
+## First durable-trigger outage outcome
+
+At 15:25:58.470 UTC, the observer found Target01's authoritative success receipt
+and materialization while its generation remained building and no marker task
+existed. It disabled the orchestrator-only database proxy at 15:25:58.484 and
+restored it at 15:27:28.489 (90.005 seconds). The initial HTTP attempt could not
+connect because the Compose internal network did not publish the API port; after
+adding the explicit observation bridge, the exact same idempotency key and body
+were submitted. No new key masked the uncertain attempt.
+
+The outage reproduced the Sequencer checkout crash at 15:26:29.188. Its restart
+then triggered NotificationListener initialization failures: the actual Postgrex
+listen result was `{:eventually, ref}`, a documented successful deferred
+subscription, but the listener accepts only `{:ok, ref}`. Repeated bad init returns
+exhausted supervision and emptied the orchestrator runner registry. Three idle
+runner containers remained alive without registry presence, and two runners with
+expired assignments later rejected re-registration and stopped. The one-hour
+elastic idle grace used by this harness makes the missing idle reconnection more
+visible; it must not be mistaken for the production default grace.
+
+After recording those states and confirming no active assigned/running tasks,
+the five runners were explicitly restarted at 15:30:59. Recovery then completed
+34 proven successful materializations and activated all 34 corresponding
+generations. The run ended `error` at 15:31:52.471; the remaining task/claim had an
+unknown effect and its generation remained building. **This case reproduced the
+supervision/reconnection cascade, but did not strand a proven successful
+materialization after restarting the runners.** Keep the unknown outcome protected.
+This is not yet a positive reproduction of the missing-marker production case.
+Its retained volume is useful for forward-upgrade unknown-outcome qualification.
+
+Independent review also rejected the first reservation-release-only proposal for
+the false-NoWork bug: replaying an earlier empty subattempt can hide a later
+committed assignment. The revised plan checks exact-session existing assignment
+on empty-receipt replay and fences local reservations with fresh tokens, without
+new task acquisition, lease renewal, receipt rewriting or old-session adoption.
+
+
+## First implementation slices and evidence bookkeeping
+
+The resident-pool normalization correction passed 26 focused tests and independent
+implementation review. Storage-consumer containment passed five focused tests
+against a separate `favn_test_763` database in the existing OrbStack PostgreSQL
+container. No native database was installed. Tests exercise a held one-connection
+checkout, a real statement timeout, invariant-error rollback, consumer sibling
+PID preservation, and a Postgrex notification connection initially pointed at an
+unavailable endpoint before reconnecting and delivering a real notification.
+Independent review approved this slice without actionable findings.
+
+Claim recovery now uses fresh local reservation tokens and releases a failed
+reservation without manufacturing NoWork. Fifteen registry/facade tests pass,
+including a real elastic RunnerAgent retrying the identical command and retaining
+60 seconds of idle grace. Ninety PostgreSQL task-store tests pass (two excluded),
+including ordinary and final-subattempt empty-receipt recovery with unchanged
+task/lease/fence/receipt/demand, queued-only empty replay and old-session or
+incompatible assignment rejection. Independent review is pending. The durable
+registration ownership change is still outstanding.
+
+A bookkeeping bug in the local load driver was found: API idempotency keys are
+hashed in `run_submissions`, so filtering that column with the raw key prefix
+missed accepted runs. The earlier driver therefore timed out even though its run
+had already reached a terminal error. It now tracks returned run IDs and records
+a local exclusive key-prefix reservation plus fsynced intent before submission.
+Do not treat the earlier timeout as proof that a run remained nonterminal. This
+is a bounded-backlog driver, not a fixed offered-rate benchmark.
+
+
+Independent review found one more claim-owner ambiguity: active rebuild-validation
+work can be hidden when its owner row is locked, because candidate validation
+uses SKIP LOCKED. This affects both the existing fresh claim and the new empty
+receipt replay. The approved shared-helper refinement returns an explicit
+retryable conflict while ownership cannot be confirmed and leaves the existing
+assignment for fenced recovery. A locked-owner regression is being added before
+claim implementation review can be accepted.
+
+
+The shared owner-validation correction now passes the real row-lock test with
+both fresh and empty-receipt claims. All 91 owning task-store tests pass (two
+excluded). The rerun exposed one existing fixture's fixed platform-global
+`native-claim` command ID; making it workspace-unique allows repeatable runs
+against retained test data. Independent re-review approved the corrected claim
+implementation and canonical documentation. Test-environment compilation with
+warnings as errors, the CI tag-tier guard and diff whitespace checks passed.
+Candidate image comparison and the remaining registration/performance slices
+are still outstanding.
+
+
+## Candidate warm-run latency and credential decision
+
+Candidate d67779259be37a2913190814b8d81189acfdd252 used the same five baseline
+runner images and 0.5-CPU control-plane limit. Its cold no-fault run completed in
+61.411 seconds; the following warm run took 24.468 seconds. Both produced all 35
+successful materializations. Data audit found all 35 tables with 1,000 distinct
+rows and the expected sum; this does not independently prove no repeated writes.
+
+Adding 10 ms latency with 3 ms jitter in each control-database direction made
+warm run `run_api_90e4e01bd988e45415a30467efa60777` take 456.294 seconds
+(16:13:43.678502 to 16:21:19.972544 UTC). The external driver timed out at 180
+seconds, but did not cancel or resubmit the accepted run. It subsequently ended
+`ok`, with 35 successful receipts/materializations and all five runners still
+registered. Intermittent samples with all runners idle were not a permanent lost
+wake: work continued. This is a performance reproduction, not evidence of the
+missing-marker correctness defect. Individual SQL operations remained short.
+
+After explicitly clearing the latency, two further runs completed in 25.168 and
+24.069 seconds without restarting runners. This reversible approximately 19x
+warm-run slowdown points to database-latency amplification; the dominant query
+paths still need measurement. Observation itself adds reads, and these amd64
+images run under ARM emulation. Do not extrapolate native production capacity.
+
+The user approved adding a local password, but the documented release command
+returned `password_input_failed` / `stdin_unavailable` before changing credentials.
+The user then explicitly chose to skip login setup and continue testing. Do not
+retry credential recovery. If reproduction remains inconclusive, the authorized
+fallback is a fresh password-authentication deployment with the View open, with
+the user starting runners personally. Existing tests still have no authenticated
+LiveView browser connected. Preserve current evidence and volumes when switching.
+
+Independent harness review requested exact proxy ownership/namespace checks,
+restoration-independent watcher cleanup, archived revision in build.env, and
+current-assignment receipt joins. These are applied; re-review is pending. A live
+wrong-port test was rejected before mutation; the correct project's latency was
+then cleared. The support-budget variance was accepted as justified.
+
+
+## Candidate warm-generation 90-second outage
+
+A separate bounded diagnostic cut the same verified proxy after the first exact
+success receipt of `run_api_6170cfba47715b341b88b2843ef9c701`. This was a warm
+generation test, explicitly not the original first-marker trigger. Connectivity
+was disabled at 16:27:14.149 and restored at 16:28:44.201 UTC. No runner was
+manually restarted. The run ended `error` at 16:29:34.126 with 34 successful asset
+tasks and one protected unknown outcome. Four runners remained registered/idle;
+the runner with the expired assignment rejected registration and exited. The
+registry-wide loss seen with rc19 did not recur in this test. An unknown write
+requires reconciliation; neither a table count nor restarting a runner permits
+blind retry. Do not report this as all-success recovery or proof the original
+missing-marker bug is fixed.
+
+The reviewed harness corrections were independently approved. The current
+scope is manual-only and the supporting-code variance was accepted. Baseline
+and candidate volumes and raw evidence remain retained locally.
+
+
+## Fresh 0.25-vCPU case (ongoing)
+
+On user request, the recovery case quota was changed in place to `25000 100000`
+without restarting it. A later fresh `favn-763-quarter` case uses the same candidate
+control image and five fixed runner images, with a Compose override preserving
+0.25 CPU. All prior volumes are retained. Password-mode workspace bootstrap
+succeeded using a private local file; no credential is included in this record.
+The user explicitly authorized starting all five runners. View is healthy but the
+browser still refuses the local certificate, so there is no authenticated browser
+subscription load.
+
+The control-plane image's 10-second RPC health probe repeatedly exceeds its
+5-second deadline at this quota, while the authenticated API returns 200 and the
+application reports accepting. The original health probe remains enabled. Setup
+continued using explicit `--no-deps` commands after verifying API readiness;
+its initial `--wait` attempt failed. Report this readiness-probe defect together
+with amd64 emulation, rather than assuming the service is down.
+
+Before any injected network fault, first activation produced two safe/retryable
+`runner_task_manifest_unavailable` inspection failures. Repeating activation
+completed additional inspection tasks, but 37 of 47 bindings still became
+`operator_decision` / `physical_inspection_unavailable`. The first 35-asset
+submission `run_api_aa91007b9ad1ea832fc24ab43ce349f0` was accepted into the
+submission queue then permanently rejected during admission; it created no Run
+or asset write. This is a genuine pre-run failure, not missing initial registration.
+A bounded 60-second trace of inspection error returns is diagnosing a third
+safe inspection attempt. No network fault or 100-asset workload has been started.
+
+
+The activation trace captured 18 error returns: 15 retryable persistence
+`:unavailable` errors ("database connection unavailable") and three safe/retryable
+runner manifest-preparation failures. `TargetCompatibilityPlanner` collapses such
+errors into persistent operator-decision bindings. This explains why a transient
+capacity/storage problem can block later admission; the underlying database
+exception is redacted by the persistence mapper and is not yet attributed to a
+specific checkout, timeout or connection failure.
+
+To reach the separately requested 35-asset execution test, activation alone was
+given 1 CPU. That attempt produced 47 uninitialized/usable bindings. CPU was then
+restored and verified as `25000 100000` before submission. The resulting run is
+`run_api_06349c257d264cbe32675d0a77756f27`, submitted at 16:46:14.687 UTC and
+started at 16:46:15.326657. There is no injected fault, no extra latency, and no
+100-asset workload. Do not present this as a successful all-quarter-CPU deployment:
+its pre-run failure and setup-only CPU intervention are separate evidence.
+
+
+## Positive missing-registration reproduction: 35 assets at 0.25 CPU
+
+Run `run_api_06349c257d264cbe32675d0a77756f27` started at
+16:46:15.326657 UTC and ended `error` at 16:48:02.096971 (106.770 seconds).
+The public run error is `recovery_exhausted` with phase/reason code
+`registration_retry_exhausted`. Logs show retryable persistence unavailability
+and scheduled generation-registration retries before terminal failure. Source
+`RegistrationRetry` has a 30-second/eight-slot budget, and RunServer routes its
+exhaustion into failure cleanup, which cancels run-owned registration tasks.
+
+The durable state continued settling after terminal failure: the immediate
+snapshot had 31 materializations and five active generations; later it had 34
+materializations. At 16:50:03.282 UTC, all 35 current-assignment asset success
+receipts had 35 successful/resolved claims and 35 materializations. Only six
+generations were active; **29 remained building**. Six marker initialization
+tasks succeeded and nine were cancelled. Exact joins show examples of both
+materialized building targets with no marker task and materialized building
+targets whose marker task was cancelled. No asset task has an unknown outcome.
+All five runners are still registered and idle, with no outstanding demand.
+
+Physical read-only audit verified every one of the 35 tables: 1,000 rows, 1,000
+distinct IDs and sum 499,500. DuckDB emits the sum as a JSON string; the audit
+normalizes its numeric type. This supports data correctness, but is not an
+independent proof that no replacement write ever repeated.
+
+**This positively reproduces the central issue-763 symptom:** proven successful
+materializations outlive a failed run without completing initial registration.
+No network delay/outage was injected. No 100-asset case was run. The earlier
+setup-only CPU boost remains a documented qualification deviation; all execution
+and initial registration occurred after restoring the 0.25-CPU limit. View ran
+without an authenticated browser session because of its local certificate.
+
+During the 103.488-second measurement segment, the orchestrator used 24.837 CPU
+seconds, about 96.0% of its 0.25-CPU budget; 95.3% of CPU periods were throttled.
+These numbers include image RPC health probes and observation, under amd64
+emulation. They demonstrate local pressure, not native production capacity.
+
+Preserve this exact case and its volumes for forward-fix qualification. Do not
+rerun asset writes, reset bindings, or fabricate marker success. The reviewed
+plan's durable target-owned registration coordinator is directly supported by
+this result: registration must survive run failure independently of the already
+completed write. A larger timeout alone leaves the ownership/lifetime defect.
+Additional reproduced defects are retryable inspection failures becoming durable
+operator-decision bindings and RPC health probes exceeding their timeout at low
+CPU. Underlying storage-unavailable causes and CPU hot paths still need attribution.
+
+Ignored evidence: `quarter-35-ready-load.jsonl`, `quarter-run-api.json`,
+`quarter-stranded-proof.json`, `quarter-35-settled.json`, `quarter-data-audit.log`,
+`quarter-timeline.jsonl`, `quarter-cpu-summary.json`, and activation trace/intervention
+files under `.favn/registration-stress/evidence/`. Source image remains d6777925.
+
+
+### Repair-first implementation decision
+
+The user reports that production repair also failed and prevented a subsequent
+run, forcing a full environment reset. Current `TargetRecovery` confirms why
+it cannot repair the no-marker variant: inspection requires a durable relation
+instance ID, then `existing_marker/6` rejects a missing marker. Existing recovery
+only restores a binding around an already matching marker. The approved shared
+registration lifecycle must support narrowly approved first-marker completion
+and retain uncertainty protections. Prioritize this retained-case repair gate
+before fresh-run prevention/performance qualification; do not discard volumes or
+rewrite terminal run history. Independent re-review approved the architecture;
+sequencing re-review is in progress. No new application code has been edited
+for the registration lifecycle yet.
+
+
+### User removes compatibility/repair requirement
+
+The immediately preceding repair-first decision is superseded: no users need
+migration and the user's environment is reset. Do not build historical import,
+adoption or an additional cleanup executor. The proposed smaller architecture
+publishes generation evidence inside the managed asset transaction and settles
+binding activation in the durable runner completion transaction, covering both
+pipeline and sequential ownership-only tasks. Independent review independently
+favors this direction; concrete revised plan review is pending. The first-write
+no-op and ordinary CREATE OR REPLACE physical-identity cases need explicit tests.
+Only documentation changed so far; no lifecycle implementation was discarded.
+
+Tidewave source lookup confirms the existing TargetRecovery entry point. The
+active umbrella is the root development checkout, not the candidate image. Its
+loaded ADBC capability response advertises transactional DDL, inspection and
+marker reconciliation. An initial function_exported? call preceded module load
+and returned false; it is not evidence that the callback is absent. Candidate
+source defines materialize_in_transaction/3 and managed table/incremental/group
+paths already call it inside their publication transaction.
+
+
+### Assignment-time physical preconditions
+
+Independent review caught a concurrency gap in plan-time evidence: ordinary
+materialization claims may coexist for one target, so admission-time capture also
+precedes the first window's commit. Actual task assignment already serializes
+target writes with a nonblocking target reservation check. Capture a bounded
+typed precondition there and persist it with assignment_generation, separately
+from immutable work. Same-assignment receipt replay and registry restart must
+reuse it; only a new proven-safe assignment may refresh it. This adds one column
+and no new owner, table, lease or retry process. Test two initially queued windows
+and physical drift between them. Ordinary schema-changing writes must roll back
+and require rebuild. Review metadata row locks against deployment/rebuild order.
+
+The existing asset held-write resolution only supports verified no-effect. It
+does not automatically reconcile a committed-but-unreported asset attempt. Keep
+that limit explicit; the stable generation marker is not per-attempt proof.
+
+## Atomic publication implementation checkpoint (2026-09-24)
+
+The new assignment precondition and generation commit evidence are wired through
+Core, the runner SQL transaction, and PostgreSQL runner-task completion. Native
+DuckDB and DuckLake publication tests passed (12/12), including rollback after
+publication, first-write absence, identical external replacement, and shape-change
+rejection. The native driver used was DuckDB 1.5.5; the first test invocation
+without the installed driver path failed during setup, not during publication.
+
+Five focused PostgreSQL tests passed against the disposable OrbStack test database:
+transaction rollback covers result acceptance, generation/binding activation and
+write-hold resolution together; forged receipts leave authority unsettled; queued
+writes pin current identity at assignment while old claim receipts retain their
+original precondition; deployment changes preserve desired state and classify the
+accepted original write conservatively. Both ownership-only and materialization
+claims are covered. A queue test initially used identical enqueue timestamps and
+selected either task; explicit enqueue ordering fixed that fixture.
+
+The wider runner-task storage file initially passed 92/96 tests. Outstanding
+updates concern a synthetic adapter without the new capability, pre-upgrade
+manifest fixtures that now fail closed at Started, and the expected schema
+fingerprint (updated after the migration). These are not a completed qualification.
+
+Removed the run-local registration worker, retry timers, post-step continuation,
+initial reconciler, and generation phase in ordinary failed-run cleanup. General
+failure cleanup, lease ownership, and unknown-outcome protection remain. Eight
+replacement stage-settlement tests pass, retaining resource-settlement retry and
+ambiguous-outcome coverage. Broader coordinator tests are being adapted to hold an
+ordinary settlement operation instead of the deleted registration worker.
+
+Tidewave confirmed that the existing umbrella server runs from the other checkout
+and has not loaded GenerationCommit. Its runtime is not evidence for this candidate.
+The implementation worktree compiles with warnings as errors after lifecycle
+removal. Standalone marker tasks, target-repair API/storage/UI, protocol versions,
+canonical docs, full qualification, matched images and the stress rerun remain.
+An interim independent review of atomic publication correctness was requested.
+
+### Independent review corrections and candidate Tidewave
+
+The interim reviewer found three issues in the new implementation; all three
+were fixed and independently rechecked:
+
+- A permanently ineligible queued target aborted the entire runner claim and
+  could starve unrelated work. Assignment pinning now returns a conclusive
+  ineligible result; existing unstarted-task bookkeeping fails/releases that
+  candidate and continues the bounded scan. Storage/lock errors still propagate.
+- Generic runtime-config redaction could corrupt a committed receipt when secret
+  declarations used names such as `name`, `activation_token`, or
+  `physical_fingerprint`. Only the framework-owned SQL receipt is preserved across
+  both Worker diagnostic-redaction passes. User/Elixir metadata still follows the
+  normal redactor. Actual Worker/Runtime/native DuckDB and DuckLake tests, including
+  receipt codec round trips, pass. Successful runtime-input redaction already
+  preserves the checked output receipt.
+- Initial activation accepted contradictory no-op evidence. It now requires SQL
+  `:written`; existing generations permit `:written` or `:no_op`. A PostgreSQL
+  regression verifies rejection preserves the task/hold and a valid completion
+  remains possible.
+
+Current checks: 541 fast Core tests; 14 native generation publication tests; seven
+focused PostgreSQL publication tests; all 96 selected runner-task storage tests
+(two excluded tiers); ten settlement/persistence-retry tests; Worker tests passed.
+The wider coordinator file passed 39/40 before its cancellation assertion was
+updated to wait for ordinary settlement; that updated test passed separately.
+Two tests requiring the new code to execute historical pre-contract manifests were
+retired under the reviewed no-backward-compatibility scope. Existing stale-contract
+Started rejection tests remain. The synthetic large-payload adapter explicitly
+models receipt transport; native tests qualify physical transaction behavior.
+
+At the user's request, stopped the old Phoenix process and started the umbrella
+server from this implementation worktree. Applied the additive development database
+migration in the existing OrbStack PostgreSQL container. Tidewave confirmed the
+implementation cwd, GenerationCommit loaded, runner wire version 16, and schema
+ready. Manifest runner contract is now 18. No native database service was installed.
+The interim review is accepted for its bounded slice, not final PR acceptance.
+
+
+### Clean-break deletion and runtime checkpoint
+
+Removed standalone marker initialization contracts and dispatch, run-local
+registration retries, target-repair storage/planner/API/CLI/View surfaces, and the
+old one-hour task-owned lock allocation. A reset-only migration drops the repair
+table and rejects historical marker tasks or repair state without deleting it.
+Fresh disposable OrbStack database `favn_test_atomic_763` passes exact schema
+diagnostics (fingerprint `2571f52f0d53c00155ca94ee1a9109ef5a913d674e69b6d32c27fb85f79f02db`).
+The old RC17 upgrade-compatibility test is retired with that unsupported contract;
+fresh readiness and refusal/preservation are covered by the new migration tests.
+
+Current checkpoint evidence:
+- Core: 540 passed after removing the retired initialization contract.
+- Fresh PostgreSQL atomic publication: 7 passed.
+- Migration readiness and non-destructive refusal: 2 passed.
+- Full first-write persisted pipeline: 1 passed; exactly one asset task, active
+  generation, no helper tasks, no remaining write lock.
+- Runner generation operations: 10 passed; SQL capabilities/session boundary: 24 passed.
+- Native DuckDB physical-instance/comment preservation through atomic publication: 1 passed.
+- General run lifecycle, settlement and context: 50 passed.
+- View facade and failed-run presentation: 71 passed.
+- General crash boundaries: 18 passed; local SIGKILL matrix: 1 passed across all
+  barriers and fresh BEAM reads. Native first-write and receipt tests were already
+  qualified earlier; this crash probe substitutes a durable SQL effect counter.
+- Security catalog: 30 browser routes, 63 API routes covered. Full security
+  qualification has not run for the candidate.
+
+The crash fixture now exercises retained rebuild discard operations with explicit
+rebuild-owned locks. It exposed an unstarted cancellation binding that blocked
+subsequent work under the same lock. Clear only the matching task binding, keep
+the rebuild lock/fence, and preserve that binding for a proven-safe preparation
+retry. Independent reviewer caught the missing safe-retry case in the first fix;
+regressions now cover retry through Started, expired/replaced owner rejection, and
+unchanged lock owner/fence/expiry after cancellation. Reviewer accepted the
+corrected bounded slice, explicitly not final PR acceptance.
+
+Phoenix is running from the implementation worktree (PID 38577, port 4173).
+Tidewave verified cwd, live orchestrator/repo, and ready schema after restart.
+Bulk code reload can temporarily purge instrumented store modules while the
+coordinator is live and exhaust supervision; restart after such edits rather than
+treating a reachable Tidewave endpoint alone as proof the orchestrator is running.
+
+Broader core-authority verification is still running. It exposed a check-rollback
+fixture that bypassed the new assignment pin; that fixture has been corrected,
+but the correction is not yet rerun. Full suites, final review, matched images and
+the fresh 35-asset/five-runner/0.25-vCPU stress comparison remain outstanding.
+
+
+### Broader verification follow-up
+
+The runner fast suite now passes all 288 tests. The broader authority run passed
+192 of 195 tests initially; the three remaining cases passed after fixing two
+fixtures to carry the assignment generation pin and making the negative queue
+probe immediate (it previously spent its full polling budget waiting for no work).
+The committed-result write-resolution fixture now supplies the typed receipt.
+Missing assignment pins fail before SQL connection and now use the worker's
+`asset_write_outcome: :not_started` metadata key, preserving safe-failure semantics.
+
+The full umbrella fast suite is running. It found one retained cleanup test still
+calling the deleted generation-registration phase. The test now verifies permit
+release after an unavailable saved outcome instead; all 11 cleanup unit tests pass.
+Native DuckDB and DuckLake publication tests pass again (14 total). Test tier guard
+and diff whitespace checks pass. Tidewave confirms the implementation cwd and live
+orchestrator/repo. Independent full code review is underway; stress qualification
+and final evidence acceptance remain outstanding.
+
+The local control driver now accepts an explicit case Compose override so quota
+and password bootstrap settings apply consistently to startup and observations.
+Historical case volumes remain untouched.
+
+
+### Independent review and candidate qualification
+
+Committed the first implementation candidate as `386ca964378ffd72f403320ed8daa868dce51764`
+and built matched control, runner and operator images. Before running it, review
+identified a proven pre-BEGIN capability rejection being classified as unknown.
+The correction marks only known pre-write errors as `not_started`; actual
+transaction uncertainty remains unknown. The worker-to-PostgreSQL regression now
+covers unsupported transactions alongside both confirmed rollback cases: all
+three pass, release the write hold, preserve independent work and admit a later
+claim. Missing runtime-publication intent and unsupported group replacement also
+carry the explicit pre-write classification. Managed group replacement now tests
+its generation receipt and preserves the unknown-commit regression with a pinned
+assignment. All 289 runner fast tests pass. These review fixes require rebuilt
+matched images before stress qualification.
+
+The umbrella fast suite completed with 960/961 orchestrator and 614/615 PostgreSQL
+cases passing; all other apps passed, including 844 View checks. The removed-phase
+cleanup test is corrected and its 11-test module passes. The remaining deployment
+inspection timeout passes individually; its full module is being rerun with the
+original seed to investigate a SQL Sandbox owner-lifecycle failure. Do not count
+the umbrella run as clean yet.
+
+Review also corrected current documentation that retained initial-registration
+workers/repair promises or old protocol numbers. Candidate fault injection now
+requires explicit `--generation-state active`: accepted result and active
+generation are atomic, so the historical `building` trigger cannot fire on a
+correct candidate. This tests database loss after acceptance, not the removed gap.
+
+
+### Green suite and first matched stress run
+
+The clean full umbrella fast rerun passed: **3,906 checks**, including 961
+orchestrator, 616 PostgreSQL, 289 runner and 844 View checks. The earlier
+manifest-inspection timeout did not recur in its 33-test module with the failing
+seed or the clean umbrella run; retain the initial failure log as evidence of an
+intermittent SQL Sandbox lifecycle interaction. No production change was made
+for that unconfirmed issue.
+
+Independent code review approved candidate `84248a5c74f46835bc5a0f1bc7662708c539ac29`.
+Native qualification expanded to 52 passing checks across the generation and
+runtime-catalog modules. The real Runtime uses pinned initial then existing
+evidence on DuckDB and DuckLake for table replacement, append, window delete/insert,
+group replacement (including nonempty replacement after deletion), empty group
+bootstrap and existing-target check no-op. The authored skip policy requires
+`when: :target_exists`; on first creation that guard skips the check and the table
+is written. Direct native callback tests additionally reject publication of an
+absent initial target. No weakening of unknown commit semantics.
+
+Matched local images use `84248a5c` (control image ID
+`sha256:8f31aad047e08d5d3c39e368032d626d11158c8ac71df74644f11a01259a7954`;
+runner ID `sha256:a31b4a97766a3eb64af53b1fdb4507f2bd3c577777bd6d5ad07093a9775cadfd`).
+The fresh `favn-763-atomic` project retains the original 35-target fixture hash.
+Bootstrap and activation needed a temporary 1-CPU allowance for image health
+checks, matching the documented baseline allowance. Restored 0.25 CPU before
+any workload; five distinct runners registered, no runs existed. Old quarter
+project containers stopped without deleting volumes.
+
+First run: `run_api_f388eb43a63b6a9303c81dd6837ab226`. Evidence under ignored
+`.favn/registration-stress/atomic-case/`. No injected faults; no authenticated
+View browser subscription because the local certificate warning requires user
+interaction. Do not count merely running View as live browser load.
+
+Phoenix restarted from the implementation root (PID 51731, port 4173); Tidewave
+verified cwd, live repo/orchestrator and runner contract 18.
+
+
+### Performance sweep under latency
+
+The first run and three warm runs passed: 140 successful asset tasks, 35 active
+generations, 140 resolved claims. First-run assignment audit: exactly 35
+assignments (no reassignment), mean assigned-to-terminal 1.494s, maximum 3.317s.
+Physical tables all match 1,000 rows / 1,000 distinct IDs / sum 499,500.
+
+The overlapping-run latency case applies 10ms per direction plus 3ms jitter
+to orchestrator PostgreSQL traffic only. It is substantially slower while still
+advancing. Independent operational review of 44 snapshots found zero to two
+assigned runners, all five sessions present, no unknown claims, and all 35
+generations active. CPU usage was ~0.165 core (66% of quota), not continuous
+CPU saturation. PostgreSQL shows client waits, including idle-in-transaction
+package reads, plus an advisory lock waiter. This supports round-trip/coordination
+amplification, not a proven specific deadlock or new stranded-result bug.
+
+Source follow-up identified pre-existing serial admission with a 25ms yield
+budget, repeated authority/clock checks within admission, run cancellation lock
+duration, and demand/run serialization in task commands. Assignment-time
+generation checks add bounded reads, but evidence does not establish those as
+the dominant cost. Added a focused performance qualification item to ROADMAP;
+measure per-phase query counts/timing/lock waits before changing these fences.
+The two same-target overlapping runs add contention versus the single-run
+no-latency baseline, so do not quote their ratio as a pure network effect.
+
+An idle interval with five runners consumed ~43% of the .25 quota. That includes
+emulated health probes and the five-second observer API calls; attribution to
+polling alone would be unsupported. No health probes were disabled to improve
+the comparison.
+
+
+### Completed latency and outage qualification
+
+Both overlapping delayed runs passed (562.944574s and 618.530443s). Latency was
+cleared before the next case. The 10-second CP-to-PostgreSQL outage was triggered
+after an exact accepted, active-generation materialization receipt at
+19:44:51.445 UTC. Proxy disabled 19:44:51.468 and restored 19:45:01.559. Run
+`run_api_5d11c16bc5d736f9efbc16607535ade3` passed after 174.736853s execution.
+No manual repair or result replay was issued.
+
+Reviewer confirmed a pre-existing packaged-runner health defect: release RPC
+requires a reachable node, whereas canonical `env.sh.eex`/ProductionRuntimeConfig
+require outbound-only dynamic `undefined@host` startup. Fast `:noconnection`
+probe failure is separate from CP health timeouts. Added a #522 qualification
+follow-up; original probes remain enabled throughout this comparison.
+
+Restart case `run_api_5848fc6194549110f2b5b936a66e3681` armed after accepted
+submission. Durable active-generation success observed 19:49:47.214 UTC;
+control-plane container killed/restarted at that instant, with quota unchanged
+at 0.25 vCPU. Exact events in `atomic-case/restart-events.jsonl`.
+
+Restart passed at 19:52:32.372 UTC (170.041304s execution). Control plane
+accepted traffic at 19:50:06; all five runners re-registered. Automatic recovery
+claimed fence 2 after the two-minute run lease expired. Final snapshot: eight
+okay runs, 280 succeeded asset tasks/receipts, 280 succeeded/resolved claims,
+35 active generations. Final task audit: 280 assignments and persisted
+preconditions, maximum assignment generation 1, 280 distinct run/target pairs.
+Final physical audit again passes all 35 tables. Proxy enabled, no toxics.
+No repair/replay/reset and no 100-asset test.
+
+The readonly Tidewave check after restart confirms the development server still
+runs from the implementation folder with repo/orchestrator alive. Docker restart
+only affected the isolated qualification control-plane container.
+
+### CI correction evidence
+
+GitHub run `36051515480`: Quick checks rejected four tracked manual Python
+scripts. Slow tests failed evidence-binding migration replay after target repair
+retirement and simulated-runner identity replay with regenerated timestamps.
+Local corrections and scope are recorded in the change record's CI follow-up.
+
+Logs: `/tmp/favn-766-ci-regressions-final.log` (3 pass, distributed333),
+`/tmp/favn-766-harness-unit-final.log` (4 pass), `/tmp/favn-766-security.log`,
+`/tmp/favn-766-prepare-smoke.json`, `/tmp/favn-766-watch-final-{term,timeout}.log`.
+The first SIGTERM smoke exposed VM shutdown racing cleanup; corrected callback
+waits for the script to unwind. Explicitly restored the proxy after that failed
+smoke. Subsequent termination and trigger-timeout checks restored the proxy and
+left zero watcher application sessions. Four older trigger sessions were
+identified and terminated only in `favn-763-atomic`.
+
+Port-driven run `run_api_8873c0c3235c38209739adb3f07ba342` passed (35 assets,
+63.008736s execution). This is tooling smoke on the unchanged production images,
+separate from the original qualification. Source preparation was compared and
+active build.env/build.json restored afterward; no images or manifests changed.
+
+CI run `36055206297` passed the original failing jobs. A separate fast-suite
+failure was only in `ConsumerRecoveryTest` teardown (`GenServer.stop` raced a
+linked `:shutdown`). ExUnit-supervised blocker connection fixes ownership; 55
+checks passed in eleven module runs. Logs `/tmp/favn-766-fast-failure.log` and
+`/tmp/favn-766-consumer-cleanup.log`. No production code changed.

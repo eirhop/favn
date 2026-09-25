@@ -48,54 +48,6 @@ defmodule FavnOrchestrator.Persistence.Queries.GetTargetBinding do
   @type t :: %__MODULE__{workspace_context: WorkspaceContext.t(), target_id: String.t()}
 end
 
-defmodule FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration do
-  @moduledoc """
-  Activates an initial building generation after one exact successful write.
-
-  `materialization_id` is authoritative control-plane evidence that the pinned
-  generation completed successfully. The physical fingerprint is supplied by
-  runner inspection. A generation-capable adapter initializes an exact
-  sidecar marker before this command makes the binding active.
-  """
-
-  alias FavnOrchestrator.Persistence.WorkspaceContext
-
-  @enforce_keys [
-    :workspace_context,
-    :command_id,
-    :target_id,
-    :manifest_version_id,
-    :target_generation_id,
-    :materialization_id,
-    :physical_schema_fingerprint,
-    :data_plane_marker,
-    :occurred_at
-  ]
-  defstruct [
-    :workspace_context,
-    :command_id,
-    :target_id,
-    :manifest_version_id,
-    :target_generation_id,
-    :materialization_id,
-    :physical_schema_fingerprint,
-    :data_plane_marker,
-    :occurred_at
-  ]
-
-  @type t :: %__MODULE__{
-          workspace_context: WorkspaceContext.t(),
-          command_id: String.t(),
-          target_id: String.t(),
-          manifest_version_id: String.t(),
-          target_generation_id: String.t(),
-          materialization_id: String.t(),
-          physical_schema_fingerprint: String.t(),
-          data_plane_marker: map() | nil,
-          occurred_at: DateTime.t()
-        }
-end
-
 defmodule FavnOrchestrator.Persistence.Queries.GetTargetBindings do
   @moduledoc "Batch-fetches current generation bindings for exact logical target ids."
 
@@ -226,20 +178,4 @@ defmodule FavnOrchestrator.Persistence.Results.WritableTargetGeneration do
   defstruct [:generation, :binding]
 
   @type t :: %__MODULE__{generation: TargetGeneration.t(), binding: TargetBinding.t()}
-end
-
-defmodule FavnOrchestrator.Persistence.Results.InitialTargetGenerationReconciliation do
-  @moduledoc "Generation and binding atomically activated from successful materialization evidence."
-
-  alias Favn.TargetGeneration
-  alias FavnOrchestrator.Persistence.Results.TargetBinding
-
-  @enforce_keys [:generation, :binding, :materialization_id]
-  defstruct [:generation, :binding, :materialization_id]
-
-  @type t :: %__MODULE__{
-          generation: TargetGeneration.t(),
-          binding: TargetBinding.t(),
-          materialization_id: String.t()
-        }
 end

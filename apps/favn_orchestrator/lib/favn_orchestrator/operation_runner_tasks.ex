@@ -6,10 +6,8 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   runner task is then an idempotent execution record, not a replacement for the
   owning inspection, generation, or rebuild state machine.
 
-  The optional `:operation_id` references a retained rebuild or target-recovery
-  parent. It is distinct from a mutation's `write_operation_id`, derived from the
-  payload; normal initial marker registration instead uses `:run_id` to retain
-  its task evidence with the run that produced the successful materialization.
+  The optional `:operation_id` references a retained rebuild parent. It is
+  distinct from a mutation's `write_operation_id`, derived from the payload.
   """
 
   alias Favn.Contracts.RunnerTask
@@ -34,7 +32,6 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
     relation_inspection: "relation_inspection",
     generation_capabilities: "generation_capabilities",
     generation_marker_read: "generation_marker_read",
-    generation_marker_initialize: "generation_marker_initialize",
     generation_activate: "generation_activate",
     generation_reconcile: "generation_reconcile",
     generation_discard: "generation_discard"
@@ -254,13 +251,10 @@ defmodule FavnOrchestrator.OperationRunnerTasks do
   end
 
   defp mutation_target(kind, payload)
-       when kind in [:generation_marker_initialize, :generation_activate, :generation_discard],
+       when kind in [:generation_activate, :generation_discard],
        do: payload.target_id
 
   defp mutation_target(_kind, _payload), do: nil
-
-  defp mutation_operation(:generation_marker_initialize, payload),
-    do: payload.initialization_operation_id
 
   defp mutation_operation(kind, payload) when kind in [:generation_activate, :generation_discard],
     do: payload.rebuild_operation_id

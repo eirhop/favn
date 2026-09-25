@@ -32,7 +32,7 @@ defmodule FavnStoragePostgres.StorageV2.RunLeaseReliabilityTest do
     info = %{
       "version" => 1,
       "state" => "pending",
-      "reason_code" => "registration_retry_exhausted",
+      "reason_code" => "automatic_recovery_exhausted",
       "started_at" => DateTime.to_iso8601(DateTime.utc_now())
     }
 

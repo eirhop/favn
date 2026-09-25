@@ -1,4 +1,4 @@
-defmodule FavnOrchestrator.TargetRecovery.WriteResolution do
+defmodule FavnOrchestrator.TaskWriteResolution do
   @moduledoc false
   alias Favn.Contracts
   alias Favn.Manifest.Version
@@ -6,6 +6,8 @@ defmodule FavnOrchestrator.TargetRecovery.WriteResolution do
   alias FavnOrchestrator.OperationRunnerTasks
   alias FavnOrchestrator.Persistence
   alias FavnOrchestrator.Persistence.Commands.ResolveRunnerTaskWrite
+  alias FavnOrchestrator.Persistence.Error
+  alias FavnOrchestrator.Persistence.WorkspaceContext
   alias FavnOrchestrator.Persistence.SystemContext
 
   @proof_keys ~w(assignment_generation owner_fence stopped_at stop_mechanism runner_stopped
@@ -13,7 +15,8 @@ defmodule FavnOrchestrator.TargetRecovery.WriteResolution do
   @mechanisms [:backend_session_terminated, :infrastructure_removed, :adapter_stop_verified]
 
   def resolve(context, task_id, proof, opts) do
-    with :ok <- validate(proof),
+    with :ok <- authorize_admin(context),
+         :ok <- validate(proof),
          {:ok, command_id} <- Keyword.fetch(opts, :command_id),
          {:ok, issued_at} <- Keyword.fetch(opts, :issued_at),
          true <- is_struct(issued_at, DateTime) do
@@ -55,6 +58,12 @@ defmodule FavnOrchestrator.TargetRecovery.WriteResolution do
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp authorize_admin(%WorkspaceContext{roles: roles}) do
+    if Enum.any?(roles, &(&1 in [:workspace_admin, :platform_operator])),
+      do: :ok,
+      else: {:error, Error.new(:forbidden, "workspace admin authority required")}
   end
 
   def validate(proof) when is_map(proof) do
@@ -124,12 +133,8 @@ defmodule FavnOrchestrator.TargetRecovery.WriteResolution do
       {:ok,
        [generation_reconcile: %Contracts.GenerationReconciliationRequest{activation: request}]}
 
-  defp observation_requests(%{task_kind: kind, payload: request}, version, ref)
-       when kind in [:generation_marker_initialize, :generation_discard] do
-    relation =
-      if kind == :generation_discard,
-        do: request.candidate_relation,
-        else: request.active_relation
+  defp observation_requests(%{task_kind: :generation_discard, payload: request}, version, ref) do
+    relation = request.candidate_relation
 
     {:ok,
      [
@@ -142,7 +147,7 @@ defmodule FavnOrchestrator.TargetRecovery.WriteResolution do
          manifest_content_hash: version.content_hash,
          required_runner_release_id: request.required_runner_release_id,
          relation: relation,
-         include: if(kind == :generation_discard, do: [:relation], else: [:relation, :columns]),
+         include: [:relation],
          sample_limit: 0
        }
      ]}

@@ -17,7 +17,6 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
     Error,
     GenerationActivation,
     GenerationDiscard,
-    GenerationMarkerInitialization,
     GenerationReconciliation,
     GenerationRelation
   }
@@ -430,28 +429,44 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
 
     try do
       assert {:ok, _result} = ADBC.execute(conn, "CREATE SCHEMA mart", [])
-      create_table(conn, stable, 1)
 
-      assert {:ok, _result} =
-               ADBC.execute(
+      request = %Favn.Contracts.GenerationPrecondition{
+        mode: :initial,
+        marker: %Favn.Contracts.GenerationMarker{
+          target_id: "MyApp.Assets.orders",
+          active_relation: stable,
+          active_generation_id: generation_id,
+          activation_operation_id: "initial-operation",
+          activation_token: token,
+          activated_at: ~U[2026-07-22 10:00:00Z]
+        }
+      }
+
+      assert {:ok, initialized} =
+               ADBC.transaction(
                  conn,
-                 ["COMMENT ON TABLE ", qualified(stable), " IS 'customer-owned comment'"],
+                 fn transaction ->
+                   assert {:ok, ^request} =
+                            ADBC.prepare_generation_write(transaction, request, [])
+
+                   create_table(transaction, stable, 1)
+
+                   assert {:ok, _} =
+                            ADBC.execute(
+                              transaction,
+                              [
+                                "COMMENT ON TABLE ",
+                                qualified(stable),
+                                " IS 'customer-owned comment'"
+                              ],
+                              []
+                            )
+
+                   ADBC.publish_generation_write(transaction, request, [])
+                 end,
                  []
                )
 
-      assert {:ok, inspection} = ADBC.inspect_generation(conn, stable, [])
-
-      request = %GenerationMarkerInitialization{
-        logical_target_id: "MyApp.Assets.orders",
-        stable_relation: stable,
-        active_generation_id: generation_id,
-        expected_physical_fingerprint: inspection.physical_fingerprint.fingerprint,
-        initialization_operation_id: "initial-operation",
-        initialization_token: token,
-        initialized_at: ~U[2026-07-22 10:00:00Z]
-      }
-
-      assert {:ok, initialized} = ADBC.initialize_generation_marker(conn, request, [])
       assert initialized.marker.active_generation_id == generation_id
       assert {:ok, metadata} = ADBC.table_metadata(conn, stable, [])
       assert metadata.relation_instance_id == TargetGenerationRelation.instance_id(token)
@@ -472,7 +487,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
       assert replacement_metadata.relation_instance_id == nil
 
       legacy_read = %GenerationReconciliation{
-        logical_target_id: request.logical_target_id,
+        logical_target_id: request.marker.target_id,
         stable_relation: stable,
         require_relation_instance?: false
       }
@@ -490,7 +505,7 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
                ADBC.reconcile_generation(
                  conn,
                  %GenerationReconciliation{
-                   logical_target_id: request.logical_target_id,
+                   logical_target_id: request.marker.target_id,
                    stable_relation: stable,
                    require_relation_instance?: true
                  },
@@ -503,7 +518,16 @@ defmodule FavnDuckdbADBC.SQLAdapterDuckDBADBCIntegrationTest do
                   classification: :relation_instance_identity,
                   reason: :relation_instance_mismatch
                 }
-              }} = ADBC.initialize_generation_marker(conn, request, [])
+              }} =
+               ADBC.prepare_generation_write(
+                 conn,
+                 %{
+                   request
+                   | mode: :existing,
+                     physical_fingerprint: initialized.physical_fingerprint
+                 },
+                 []
+               )
     after
       ADBC.disconnect(conn, [])
     end

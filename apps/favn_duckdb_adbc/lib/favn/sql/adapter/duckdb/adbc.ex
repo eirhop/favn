@@ -120,7 +120,6 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
     GenerationActivation,
     GenerationCapabilities,
     GenerationDiscard,
-    GenerationMarkerInitialization,
     GenerationReconciliation,
     GenerationTransaction,
     PartitionSpec,
@@ -293,7 +292,6 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
          duckdb_adbc: :supported,
          pool_safe_after_success: [
            :materialize,
-           :initialize_generation_marker,
            :activate_generation,
            :discard_generation
          ],
@@ -319,6 +317,7 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
   def generation_capabilities(%Resolved{}, _opts) do
     {:ok,
      %GenerationCapabilities{
+       atomic_publication: :supported,
        transactional_ddl: :supported,
        isolated_candidates: :supported,
        physical_inspection: :supported,
@@ -329,6 +328,14 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
        max_identifier_bytes: 128
      }}
   end
+
+  @impl Favn.SQL.GenerationAdapter
+  def prepare_generation_write(conn, precondition, opts),
+    do: GenerationTransaction.prepare_write(__MODULE__, conn, precondition, opts)
+
+  @impl Favn.SQL.GenerationAdapter
+  def publish_generation_write(conn, precondition, opts),
+    do: GenerationTransaction.publish_write(__MODULE__, conn, precondition, opts)
 
   @impl Favn.SQL.GenerationAdapter
   def inspect_generation(%Conn{} = conn, %RelationRef{} = ref, opts),
@@ -351,14 +358,6 @@ defmodule Favn.SQL.Adapter.DuckDB.ADBC do
       :ok
     end
   end
-
-  @impl Favn.SQL.GenerationAdapter
-  def initialize_generation_marker(
-        %Conn{} = conn,
-        %GenerationMarkerInitialization{} = request,
-        opts
-      ),
-      do: GenerationTransaction.initialize_marker(__MODULE__, conn, __MODULE__, request, opts)
 
   @impl Favn.SQL.GenerationAdapter
   def activate_generation(%Conn{} = conn, %GenerationActivation{} = request, opts),

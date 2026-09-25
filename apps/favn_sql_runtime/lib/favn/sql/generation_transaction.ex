@@ -11,8 +11,6 @@ defmodule Favn.SQL.GenerationTransaction do
     GenerationDiscard,
     GenerationInspection,
     GenerationMarker,
-    GenerationMarkerInitialization,
-    GenerationMarkerInitializationResult,
     GenerationReconciliation,
     GenerationRelation,
     Relation,
@@ -21,37 +19,99 @@ defmodule Favn.SQL.GenerationTransaction do
 
   alias Favn.TargetCompatibility.PhysicalFingerprint
 
+  alias Favn.Contracts.{GenerationCommit, GenerationPrecondition}
+
+  @spec prepare_write(module(), term(), GenerationPrecondition.t(), keyword()) ::
+          {:ok, GenerationPrecondition.t()} | {:error, Error.t()}
+  def prepare_write(adapter, conn, %GenerationPrecondition{} = expected, opts) do
+    marker = sql_marker(expected.marker)
+
+    request = %GenerationReconciliation{
+      logical_target_id: marker.logical_target_id,
+      stable_relation: marker.active_relation,
+      require_relation_instance?: expected.mode == :existing
+    }
+
+    with {:ok, observed} <- reconcile(adapter, conn, adapter, request, opts),
+         {:ok, inspection} <- inspect(adapter, conn, adapter, marker.active_relation, opts),
+         :ok <- validate_write_precondition(expected, marker, observed, inspection, adapter) do
+      {:ok, expected}
+    end
+  end
+
+  @spec publish_write(module(), term(), GenerationPrecondition.t(), keyword()) ::
+          {:ok, GenerationCommit.t()} | {:error, Error.t()}
+  def publish_write(adapter, conn, %GenerationPrecondition{} = expected, opts) do
+    marker = sql_marker(expected.marker)
+    ref = marker.active_relation
+    marker_ref = GenerationRelation.marker(ref)
+
+    with {:ok, %GenerationInspection{} = inspection} <- inspect(adapter, conn, adapter, ref, opts),
+         :ok <- require_table(inspection.relation, adapter, ref),
+         :ok <- validate_write_shape(expected, inspection, adapter),
+         :ok <- adapter.bind_relation_instance(conn, ref, relation_instance_id(marker), opts),
+         :ok <- publish_initial_marker(adapter, conn, marker_ref, marker, expected.mode, opts) do
+      {:ok,
+       %GenerationCommit{
+         marker: expected.marker,
+         physical_fingerprint: inspection.physical_fingerprint.fingerprint
+       }}
+    else
+      {:ok, :not_found} -> {:error, missing_relation_error(adapter, ref)}
+      error -> error
+    end
+  end
+
+  defp validate_write_precondition(%{mode: :initial}, _marker, nil, :not_found, _adapter),
+    do: :ok
+
+  defp validate_write_precondition(
+         %{mode: :existing} = expected,
+         marker,
+         %GenerationMarker{} = observed,
+         %GenerationInspection{} = inspection,
+         adapter
+       ) do
+    if marker_identity(marker) == marker_identity(observed),
+      do: validate_write_shape(expected, inspection, adapter),
+      else: {:error, marker_mismatch_error(:generation_precondition_mismatch, adapter)}
+  end
+
+  defp validate_write_precondition(_, _, _, _, adapter),
+    do: {:error, marker_mismatch_error(:generation_precondition_mismatch, adapter)}
+
+  defp validate_write_shape(%{mode: :initial}, _inspection, _adapter), do: :ok
+
+  defp validate_write_shape(expected, inspection, adapter),
+    do:
+      validate_physical_fingerprint(
+        inspection,
+        expected.physical_fingerprint,
+        adapter,
+        :generation_shape_changed_requires_rebuild
+      )
+
+  defp publish_initial_marker(_adapter, _conn, _ref, _marker, :existing, _opts), do: :ok
+
+  defp publish_initial_marker(adapter, conn, ref, marker, :initial, opts) do
+    with {:ok, %Result{}} <- adapter.execute(conn, create_marker_table(ref), opts),
+         {:ok, %Result{}} <- adapter.execute(conn, insert_marker(ref, marker), opts),
+         do: :ok
+  end
+
+  defp sql_marker(marker) do
+    marker
+    |> Map.from_struct()
+    |> Map.delete(:target_id)
+    |> Map.put(:logical_target_id, marker.target_id)
+    |> then(&struct!(GenerationMarker, &1))
+  end
+
   @spec inspect(module(), term(), module(), RelationRef.t(), keyword()) ::
           {:ok, GenerationInspection.t() | :not_found} | {:error, Error.t()}
   def inspect(adapter, conn, adapter_identity, %RelationRef{} = ref, opts) do
     with {:ok, relation} <- adapter.relation(conn, ref, opts) do
       inspect_existing(adapter, conn, adapter_identity, ref, relation, opts)
-    end
-  end
-
-  @spec initialize_marker(
-          module(),
-          term(),
-          module(),
-          GenerationMarkerInitialization.t(),
-          keyword()
-        ) :: {:ok, GenerationMarkerInitializationResult.t()} | {:error, Error.t()}
-  def initialize_marker(
-        adapter,
-        conn,
-        adapter_identity,
-        %GenerationMarkerInitialization{} = request,
-        opts
-      ) do
-    case adapter.transaction(
-           conn,
-           fn tx_conn ->
-             initialize_marker_transaction(adapter, tx_conn, adapter_identity, request, opts)
-           end,
-           preserve_body_result_on_commit_error?: true
-         ) do
-      {:ok, %GenerationMarkerInitializationResult{} = result} -> {:ok, result}
-      {:error, %Error{} = error} -> {:error, mutation_error(error, :initialize_generation_marker)}
     end
   end
 
@@ -158,53 +218,6 @@ defmodule Favn.SQL.GenerationTransaction do
          {:ok, result} <-
            perform_activation(mode, adapter, conn, adapter_identity, request, marker_ref, opts) do
       {:ok, result}
-    end
-  end
-
-  defp initialize_marker_transaction(adapter, conn, adapter_identity, request, opts) do
-    marker_ref = GenerationRelation.marker(request.stable_relation)
-
-    reconciliation = %GenerationReconciliation{
-      logical_target_id: request.logical_target_id,
-      stable_relation: request.stable_relation
-    }
-
-    with {:ok, _result} <- adapter.execute(conn, create_marker_table(marker_ref), opts),
-         {:ok, observed_marker} <- read_marker(adapter, conn, reconciliation, marker_ref, opts),
-         :ok <- validate_initial_marker(observed_marker, request, adapter_identity),
-         {:ok, %GenerationInspection{} = inspection} <-
-           inspect(adapter, conn, adapter_identity, request.stable_relation, opts),
-         :ok <-
-           validate_physical_fingerprint(
-             inspection,
-             request.expected_physical_fingerprint,
-             adapter_identity,
-             :initial_generation_fingerprint_mismatch
-           ),
-         marker <- observed_marker || marker_from_request(request),
-         :ok <-
-           ensure_initial_relation_instance(
-             adapter,
-             conn,
-             request.stable_relation,
-             observed_marker,
-             marker,
-             opts
-           ),
-         :ok <-
-           maybe_write_initial_marker(adapter, conn, marker_ref, observed_marker, marker, opts) do
-      {:ok,
-       %GenerationMarkerInitializationResult{
-         marker: marker,
-         physical_fingerprint: inspection.physical_fingerprint.fingerprint,
-         inspection: inspection
-       }}
-    else
-      {:ok, :not_found} ->
-        {:error, missing_relation_error(adapter_identity, request.stable_relation)}
-
-      {:error, %Error{} = error} ->
-        {:error, error}
     end
   end
 
@@ -584,17 +597,6 @@ defmodule Favn.SQL.GenerationTransaction do
     }
   end
 
-  defp marker_from_request(%GenerationMarkerInitialization{} = request) do
-    %GenerationMarker{
-      logical_target_id: request.logical_target_id,
-      active_relation: request.stable_relation,
-      active_generation_id: request.active_generation_id,
-      activation_operation_id: request.initialization_operation_id,
-      activation_token: request.initialization_token,
-      activated_at: request.initialized_at
-    }
-  end
-
   defp validate_candidate_fingerprint(
          %GenerationInspection{physical_fingerprint: %{fingerprint: fingerprint}},
          %GenerationActivation{expected_candidate_fingerprint: fingerprint},
@@ -639,68 +641,13 @@ defmodule Favn.SQL.GenerationTransaction do
     {:error,
      %Error{
        type: :introspection_mismatch,
-       message: "generation relation physical fingerprint does not match initialization intent",
+       message: "generation relation physical fingerprint does not match pinned generation",
        retryable?: false,
        adapter: adapter,
-       operation: :initialize_generation_marker,
+       operation: :prepare_generation_write,
        details: %{classification: classification, expected: expected, observed: observed}
      }}
   end
-
-  defp validate_initial_marker(nil, %GenerationMarkerInitialization{}, _adapter), do: :ok
-
-  defp validate_initial_marker(
-         %GenerationMarker{} = observed,
-         %GenerationMarkerInitialization{} = request,
-         adapter
-       ) do
-    if marker_identity(observed) == marker_identity(marker_from_request(request)),
-      do: :ok,
-      else: {:error, marker_mismatch_error(:initial_generation_marker_mismatch, adapter)}
-  end
-
-  defp maybe_write_initial_marker(
-         _adapter,
-         _conn,
-         _marker_ref,
-         %GenerationMarker{},
-         _marker,
-         _opts
-       ),
-       do: :ok
-
-  defp maybe_write_initial_marker(adapter, conn, marker_ref, nil, marker, opts) do
-    case adapter.execute(conn, insert_marker(marker_ref, marker), opts) do
-      {:ok, %Result{}} -> :ok
-      {:error, %Error{} = error} -> {:error, error}
-    end
-  end
-
-  defp ensure_initial_relation_instance(
-         adapter,
-         conn,
-         stable_relation,
-         nil,
-         marker,
-         opts
-       ) do
-    adapter.bind_relation_instance(
-      conn,
-      stable_relation,
-      relation_instance_id(marker),
-      opts
-    )
-  end
-
-  defp ensure_initial_relation_instance(
-         adapter,
-         conn,
-         stable_relation,
-         %GenerationMarker{},
-         marker,
-         opts
-       ),
-       do: validate_relation_instance(adapter, conn, stable_relation, marker, opts)
 
   defp validate_relation_instance(adapter, conn, stable_relation, marker, opts) do
     expected = relation_instance_id(marker)
@@ -832,20 +779,6 @@ defmodule Favn.SQL.GenerationTransaction do
       }
     else
       %Error{error | retryable?: false, operation: :activate_generation}
-    end
-  end
-
-  defp mutation_error(%Error{} = error, operation) do
-    if activation_outcome_unknown?(error) do
-      details =
-        error.details
-        |> Map.new()
-        |> Map.put(:classification, :generation_mutation_outcome_unknown)
-        |> Map.put(:unknown_outcome?, true)
-
-      %Error{error | retryable?: false, operation: operation, details: details}
-    else
-      %Error{error | retryable?: false, operation: operation}
     end
   end
 

@@ -264,9 +264,6 @@ defmodule FavnOrchestrator.TestRunnerTaskStore do
             error -> error
           end
 
-        {:generation_marker_initialize, request} ->
-          runner.initialize_generation_marker(request, opts)
-
         {:generation_activate, request} ->
           runner.activate_generation(request, opts)
 

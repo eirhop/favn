@@ -19,6 +19,11 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      example, explicit external PostgreSQL, and runner/manifest identity
      boundary are implemented; remaining #522 work is target deployment
      qualification and publishing evidence.
+   - Replace the packaged runner RPC health probe with local readiness reporting
+     compatible with outbound-only dynamic nodes. The issue #763 stress images
+     execute tasks while this probe reports `:noconnection`. Qualify healthy and
+     unhealthy transitions in the actual image before relying on the probe for
+     replacement or admission; preserve the no-inbound-distribution contract.
 2. [#525 — durable scheduling and asynchronous orchestration](https://github.com/eirhop/favn/issues/525)
    - Durable run submissions and durable runner tasks are implemented as
      distinct queue contracts: control-plane workers consume the first and
@@ -33,6 +38,12 @@ current limits live in [`FEATURES.md`](FEATURES.md); release gates live in
      measure concurrent checkpoint decoding and paged recovery against the
      node-wide active-run memory budget, and exercise the deployment's actual
      Landing connector and runner transport.
+   - Profile and reduce control-plane database round trips and lock hold time
+     for admission, claim, Started, completion and run settlement. The
+     [issue #763 qualification](change-records/2026/issue-763-pr-766-initial-registration.md)
+     shows low runner utilization under database latency despite spare CPU.
+     Separate same-target contention, repeated authority/package reads, idle
+     polling, image health checks and observer cost before changing coordination.
 3. [#526 — DuckDB/DuckLake data-plane production hardening](https://github.com/eirhop/favn/issues/526)
    - Define data-plane durability and recovery, add failure injection and honest
      cancellation, and finish safe operator resource controls.

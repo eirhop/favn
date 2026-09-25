@@ -41,7 +41,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
   @release "rr_" <> String.duplicate("a", 64)
   @other_release "rr_" <> String.duplicate("b", 64)
-  @distributed_test_address {127, 0, 0, 2}
+  @distributed_test_address {127, 0, 0, 1}
   @distributed_test_host ~c"control-plane.favn.test"
 
   setup_all do
@@ -143,7 +143,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert {:ok, assignment} =
              RunnerTasks.claim(%ClaimRequest{
-               command_id: "native-claim",
+               command_id: "#{fixture.workspace_id}:native-claim",
                issued_at: DateTime.utc_now(),
                runner_instance_id: runner,
                runner_session_generation: ack.runner_session_generation,
@@ -900,26 +900,6 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     end
   end
 
-  test "runtime catalog deployment waits for an earlier durable start and rejects its live write",
-       fixture do
-    {work, assigned, deployment} = runtime_upgrade_fixture(fixture, :assigned)
-
-    {started, deployed} =
-      runtime_upgrade_race(
-        fixture,
-        work.logical_target_id,
-        fn ->
-          Store.transition(transition_command(fixture, assigned, "legacy-start", :running))
-        end,
-        fn -> RegistryStore.deploy_manifest(deployment) end
-      )
-
-    assert {:ok, %{status: :running}} = started
-    assert {:error, %{details: %{reason_code: "target_write_in_progress"}}} = deployed
-    assert runtime_effect(fixture) == "in_flight"
-    refute runtime_active_deployment(fixture) == deployment.deployment_id
-  end
-
   test "the final target recheck rejects a stale newer candidate while the older row is locked",
        fixture do
     alias FavnStoragePostgres.TestSupport.TaskManifest
@@ -1007,30 +987,6 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
              Store.claim(claim_command(fixture, "first-ready", "first-claimer", claim_opts))
 
     assert claimed_first.task_id == first.task_id
-  end
-
-  test "expired unknown legacy writes still block runtime catalog deployment", fixture do
-    {_work, assigned, deployment} = runtime_upgrade_fixture(fixture, :assigned)
-
-    assert {:ok, running} =
-             Store.transition(transition_command(fixture, assigned, "legacy-start", :running))
-
-    assert {:ok, %{status: :unknown}} =
-             Store.release(
-               release_command(fixture, running, "legacy-unknown", :unknown, :runner_lost)
-             )
-
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.materialization_claims SET expires_at='2000-01-01' WHERE workspace_id=$1",
-      [fixture.workspace_id]
-    )
-
-    assert {:error, %{details: %{reason_code: "target_write_outcome_unknown"}}} =
-             RegistryStore.deploy_manifest(deployment)
-
-    assert runtime_effect(fixture) == "outcome_unknown"
-    refute runtime_active_deployment(fixture) == deployment.deployment_id
   end
 
   defp runtime_upgrade_fixture(fixture, phase) do
@@ -1128,17 +1084,6 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     state
   end
 
-  defp runtime_active_deployment(fixture) do
-    %{rows: [[id]]} =
-      SQL.query!(
-        Repo,
-        "SELECT active_deployment_id FROM favn_control.workspace_runtime_state WHERE workspace_id=$1",
-        [fixture.workspace_id]
-      )
-
-    id
-  end
-
   defp runtime_upgrade_race(fixture, target, first, second) do
     parent = self()
 
@@ -1202,7 +1147,39 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     @moduledoc false
     def connect(%Favn.Connection.Resolved{}, _opts), do: {:ok, :postgres_test}
     def disconnect(:postgres_test, _opts), do: :ok
-    def capabilities(_resolved, _opts), do: {:ok, %Favn.SQL.Capabilities{}}
+
+    def capabilities(_resolved, _opts),
+      do: {:ok, %Favn.SQL.Capabilities{transactions: :supported}}
+
+    def generation_capabilities(_, _),
+      do: {:ok, %Favn.SQL.GenerationCapabilities{atomic_publication: :supported}}
+
+    def prepare_generation_write(_, expected, _), do: {:ok, expected}
+    # This adapter tests large-payload transport through Worker, not physical
+    # identity. Real publication/rollback is qualified with native adapters.
+    def publish_generation_write(_, expected, _),
+      do:
+        {:ok,
+         %Favn.Contracts.GenerationCommit{
+           marker: expected.marker,
+           physical_fingerprint: String.duplicate("a", 64)
+         }}
+
+    def relation(_, _, _), do: {:ok, nil}
+
+    def transaction(conn, fun, _) do
+      case Repo.transaction(fn ->
+             case fun.(conn) do
+               {:ok, value} -> value
+               {:error, error} -> Repo.rollback(error)
+             end
+           end) do
+        {:ok, value} -> {:ok, value}
+        {:error, error} -> {:error, error}
+      end
+    end
+
+    def materialize_in_transaction(conn, plan, opts), do: materialize(conn, plan, opts)
 
     def materialize(:postgres_test, plan, _opts) do
       # Execute the runner-rendered SQL in a transaction-local table. This is
@@ -2526,6 +2503,137 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
 
     assert {:ok, claimed_new} = Store.claim(claim_command(fixture, "new-poll", "new-runner"))
     assert claimed_new.task_id == newly_queued.task_id
+  end
+
+  test "an earlier empty receipt recovers a later committed subclaim without changing ownership",
+       fixture do
+    # Exercise both the ordinary wake retry and the final enrolled subattempt.
+    for last_attempt <- [1, 3] do
+      runner = "replay-#{last_attempt}"
+      first = claim_command(fixture, "logical-#{last_attempt}:0", runner)
+      assert {:ok, nil} = Store.claim(first)
+      assert {:ok, _} = Store.enqueue(enqueue_command(fixture, "late-#{last_attempt}"))
+
+      later = %{
+        first
+        | command_id: String.replace_suffix(first.command_id, ":0", ":#{last_attempt}")
+      }
+
+      assert {:ok, assignment} = Store.claim(later)
+      assert {:ok, before_demand} = demand(fixture)
+
+      before_task =
+        Repo.get_by!(RunnerTask, workspace_id: fixture.workspace_id, task_id: assignment.task_id)
+
+      receipt =
+        Repo.get_by!(RunnerTaskCommand,
+          scope_id: "platform:runner_tasks",
+          command_id: first.command_id
+        )
+
+      assert {:ok, ^assignment} =
+               Store.claim(%{first | occurred_at: DateTime.add(first.occurred_at, 5, :second)})
+
+      assert {:ok, ^assignment} = Store.claim(later)
+
+      assert Repo.get_by!(RunnerTask,
+               workspace_id: fixture.workspace_id,
+               task_id: assignment.task_id
+             ) == before_task
+
+      assert Repo.get_by!(RunnerTaskCommand,
+               scope_id: receipt.scope_id,
+               command_id: receipt.command_id
+             ) == receipt
+
+      assert {:ok, ^before_demand} = demand(fixture)
+      assert receipt.result == %{"kind" => "none"}
+    end
+  end
+
+  test "empty receipt replay cannot adopt another session or an incompatible assignment",
+       fixture do
+    first = claim_command(fixture, "empty-session", "shared-runner", runner_session_generation: 2)
+    incompatible = claim_command(fixture, "empty-capability", "shared-runner", capabilities: [])
+    assert {:ok, nil} = Store.claim(first)
+    assert {:ok, nil} = Store.claim(incompatible)
+    assert {:ok, _} = Store.enqueue(enqueue_command(fixture, "assigned-old-session"))
+    assert {:ok, task} = Store.claim(claim_command(fixture, "old-session", "shared-runner"))
+    assert {:ok, nil} = Store.claim(first)
+    assert {:error, %{kind: :conflict}} = Store.claim(incompatible)
+    assert {:ok, %{active_count: 1, queued_count: 0}} = demand(fixture)
+    assert task.assigned_runner_session_generation == 1
+  end
+
+  test "unconfirmed active ownership cannot appear empty or admit another queued task", fixture do
+    {operation, command, _, _} = rebuild_resolution(fixture)
+
+    first =
+      claim_command(fixture, "owner-empty", "owner-runner",
+        required_runner_release_id: FavnTestSupport.runner_release_id(),
+        supported_task_kinds: [:runtime_input_resolution, :relation_inspection],
+        capabilities: ["runtime_input_resolution", "relation_inspection"]
+      )
+
+    assert {:ok, nil} = Store.claim(first)
+    assert {:ok, _} = Store.enqueue(command)
+    assert {:ok, assigned} = Store.claim(%{first | command_id: first.command_id <> ":1"})
+
+    assert {:ok, queued} =
+             Store.enqueue(
+               enqueue_command(fixture, "owner-next",
+                 required_runner_release_id: FavnTestSupport.runner_release_id()
+               )
+             )
+
+    fresh = %{first | command_id: first.command_id <> ":fresh"}
+
+    demand_query = %Q.GetRunnerCapacityDemand{
+      platform_context: fixture.platform_context,
+      runner_pool: fixture.runner_pool,
+      required_runner_release_id: FavnTestSupport.runner_release_id()
+    }
+
+    assert {:ok, before_demand} = Store.demand(demand_query)
+    parent = self()
+
+    holder =
+      Task.async(fn ->
+        Repo.transaction(fn ->
+          SQL.query!(
+            Repo,
+            "SELECT operation_id FROM favn_control.rebuild_operations WHERE workspace_id=$1 AND operation_id=$2 FOR UPDATE",
+            [fixture.workspace_id, operation.operation_id]
+          )
+
+          send(parent, :owner_locked)
+
+          receive do
+            :release_owner -> :ok
+          after
+            5_000 -> :ok
+          end
+        end)
+      end)
+
+    assert_receive :owner_locked
+
+    try do
+      for request <- [first, fresh] do
+        assert {:error, %{kind: :conflict, retryable?: true}} = Store.claim(request)
+      end
+
+      assert {:ok, ^before_demand} = Store.demand(demand_query)
+    after
+      send(holder.pid, :release_owner)
+      assert {:ok, :ok} = Task.await(holder)
+    end
+
+    for request <- [first, fresh], do: assert({:ok, ^assigned} = Store.claim(request))
+    assert {:ok, ^before_demand} = Store.demand(demand_query)
+
+    assert Repo.get_by!(RunnerTask, workspace_id: fixture.workspace_id, task_id: queued.task_id).status ==
+             "queued"
   end
 
   test "concurrent first operation ensures share one durable issuance", fixture do
@@ -5592,6 +5700,303 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
     }
   end
 
+  for purpose <- [:ownership_only, :materialization] do
+    @tag :generation_publication
+    test "generation publication and #{purpose} settlement commit atomically", fixture do
+      {work, task, command} = publication_fixture(fixture, unquote(purpose))
+      assert task.generation_precondition.mode == :initial
+
+      assert {:error, :injected_after_completion} =
+               Repo.transaction(fn ->
+                 assert {:ok, completed} = Store.complete(command)
+                 assert completed.status == :succeeded
+
+                 assert publication_state(fixture, work) == [
+                          "active",
+                          work.target_generation_id,
+                          "ready",
+                          "resolved"
+                        ]
+
+                 Repo.rollback(:injected_after_completion)
+               end)
+
+      assert publication_state(fixture, work) == ["building", nil, "uninitialized", "in_flight"]
+
+      assert Repo.get_by!(RunnerTask, workspace_id: fixture.workspace_id, task_id: task.task_id).status ==
+               "running"
+
+      assert {:ok, completed} = Store.complete(command)
+      assert completed.status == :succeeded
+
+      assert publication_state(fixture, work) == [
+               "active",
+               work.target_generation_id,
+               "ready",
+               "resolved"
+             ]
+
+      assert {:ok, replayed} = Store.complete(command)
+      assert replayed.result == completed.result
+    end
+  end
+
+  @tag :generation_publication
+  test "forged generation receipt leaves the running task and ownership unsettled", fixture do
+    {work, task, command} = publication_fixture(fixture, :ownership_only)
+    receipt = %{task.generation_precondition.marker | activation_token: "wrong-token"}
+    bad_result = publication_result(work, receipt)
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, bad_result)
+    assert {:error, _} = Store.complete(%{command | result: encoded})
+    assert publication_state(fixture, work) == ["building", nil, "uninitialized", "in_flight"]
+    assert {:ok, _} = Store.complete(command)
+  end
+
+  @tag :generation_publication
+  test "queued writes pin current identity at assignment and old claim replays keep their identity",
+       fixture do
+    alias FavnStoragePostgres.TestSupport.TaskManifest
+    {version, work} = TaskManifest.sql_work(fixture)
+    first_claim = TaskManifest.ownership_claim(fixture, version, work)
+
+    assert {:ok, _} =
+             Store.enqueue(
+               write_enqueue_command(fixture, version, work, first_claim, "publication")
+             )
+
+    # Reuse the exact pinned manifest; the second window was admitted before activation.
+    second_work = %{work | run_id: work.run_id <> "-second"}
+    claim = TaskManifest.ownership_claim(fixture, version, second_work)
+
+    assert {:ok, _} =
+             Store.enqueue(
+               write_enqueue_command(fixture, version, second_work, claim, "second",
+                 occurred_at: DateTime.add(fixture.now, 1, :microsecond)
+               )
+             )
+
+    opts = publication_claim_options(work)
+    assert {:ok, task} = Store.claim(claim_command(fixture, "publication", "first", opts))
+
+    assert {:ok, _} =
+             Store.transition(transition_command(fixture, task, "publication-start", :running))
+
+    assert {:ok, encoded} =
+             Codec.encode_result(
+               :asset_attempt,
+               :succeeded,
+               publication_result(work, task.generation_precondition.marker)
+             )
+
+    complete = complete_command(fixture, task, "publication-complete", encoded)
+    assert {:ok, nil} = Store.claim(claim_command(fixture, "waiting", "second", opts))
+    assert {:ok, _} = Store.complete(complete)
+    assert {:ok, second} = Store.claim(claim_command(fixture, "next", "second", opts))
+    assert second.generation_precondition.mode == :existing
+    assert second.generation_precondition.marker == task.generation_precondition.marker
+    assert {:ok, original} = Store.claim(claim_command(fixture, "publication", "first", opts))
+    assert original.generation_precondition == task.generation_precondition
+  end
+
+  @tag :generation_publication
+  test "an accepted in-flight write preserves a newer desired deployment", fixture do
+    {work, _task, command} = publication_fixture(fixture, :ownership_only)
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.asset_target_bindings
+      SET desired_descriptor_hash=$3, compatibility_status='rebuild_required', version=version+1
+      WHERE workspace_id=$1 AND target_id=$2
+      """,
+      [fixture.workspace_id, work.logical_target_id, String.duplicate("b", 64)]
+    )
+
+    assert {:ok, _} = Store.complete(command)
+
+    assert publication_state(fixture, work) == [
+             "active",
+             work.target_generation_id,
+             "operator_decision",
+             "resolved"
+           ]
+
+    assert %{rows: [[desired, reason]]} =
+             SQL.query!(
+               Repo,
+               """
+               SELECT desired_descriptor_hash, reason_code FROM favn_control.asset_target_bindings
+               WHERE workspace_id=$1 AND target_id=$2
+               """,
+               [fixture.workspace_id, work.logical_target_id]
+             )
+
+    assert desired == String.duplicate("b", 64)
+    assert reason == "deployment_changed_during_write"
+  end
+
+  @tag :generation_publication
+  test "stale generation work does not block an unrelated queued task", fixture do
+    alias FavnStoragePostgres.TestSupport.TaskManifest
+    {version, work} = TaskManifest.sql_work(fixture)
+    claim = TaskManifest.ownership_claim(fixture, version, work)
+
+    assert {:ok, stale} =
+             Store.enqueue(write_enqueue_command(fixture, version, work, claim, "stale"))
+
+    assert {:ok, unrelated} =
+             Store.enqueue(
+               enqueue_command(fixture, "unrelated",
+                 required_runner_release_id: work.required_runner_release_id,
+                 occurred_at: DateTime.add(fixture.now, 1, :microsecond)
+               )
+             )
+
+    SQL.query!(
+      Repo,
+      """
+      UPDATE favn_control.asset_target_bindings SET desired_descriptor_hash=$3
+      WHERE workspace_id=$1 AND target_id=$2
+      """,
+      [fixture.workspace_id, work.logical_target_id, String.duplicate("b", 64)]
+    )
+
+    assert {:ok, selected} =
+             Store.claim(
+               claim_command(fixture, "skip-stale", "runner",
+                 required_runner_release_id: work.required_runner_release_id,
+                 supported_task_kinds: [:asset_attempt, :relation_inspection],
+                 capabilities: ["asset_execution", "relation_inspection"]
+               )
+             )
+
+    assert selected.task_id == unrelated.task_id
+    stale = Repo.get_by!(RunnerTask, workspace_id: fixture.workspace_id, task_id: stale.task_id)
+    assert stale.status == "failed"
+    assert stale.assignment_generation == 0
+    assert stale.error["type"] == "generation_no_longer_writable"
+  end
+
+  @tag :generation_publication
+  test "an initial no-op receipt cannot activate a generation", fixture do
+    {work, task, command} = publication_fixture(fixture, :ownership_only)
+    result = publication_result(work, task.generation_precondition.marker)
+    [asset] = result.asset_results
+
+    result = %{
+      result
+      | asset_results: [%{asset | evidence: %{asset.evidence | write_outcome: :no_op}}]
+    }
+
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    assert {:error, _} = Store.complete(%{command | result: encoded})
+    assert publication_state(fixture, work) == ["building", nil, "uninitialized", "in_flight"]
+    assert {:ok, _} = Store.complete(command)
+  end
+
+  defp publication_fixture(fixture, purpose) do
+    alias FavnStoragePostgres.TestSupport.TaskManifest
+    {version, work} = TaskManifest.sql_work(fixture)
+    claim = TaskManifest.ownership_claim(fixture, version, work, purpose)
+
+    assert {:ok, _} =
+             Store.enqueue(write_enqueue_command(fixture, version, work, claim, "publication"))
+
+    assert {:ok, task} =
+             Store.claim(
+               claim_command(fixture, "publication", "first", publication_claim_options(work))
+             )
+
+    assert {:ok, _} =
+             Store.transition(transition_command(fixture, task, "publication-start", :running))
+
+    result = publication_result(work, task.generation_precondition.marker)
+    assert {:ok, encoded} = Codec.encode_result(:asset_attempt, :succeeded, result)
+    {work, task, complete_command(fixture, task, "publication-complete", encoded)}
+  end
+
+  defp publication_context(_work, %{purpose: :ownership_only} = claim),
+    do: %{kind: :sequential, materialization_claim: claim}
+
+  defp publication_context(work, claim) do
+    %{
+      kind: :pipeline,
+      materialization_claim: claim,
+      resource_circuit_permits: [],
+      freshness_key: "publication",
+      decision: %{
+        decision: :run,
+        reason: :forced,
+        node_key: {work.asset_ref, nil},
+        freshness_key: "publication"
+      },
+      freshness_checkpoint: %{
+        version: 1,
+        revision: 1,
+        sequence: 1,
+        stage: 0,
+        attempt: 1,
+        payload_hash: :binary.copy(<<0>>, 32)
+      }
+    }
+  end
+
+  defp publication_claim_options(work),
+    do: [
+      required_runner_release_id: work.required_runner_release_id,
+      supported_task_kinds: [:asset_attempt],
+      capabilities: ["asset_execution"]
+    ]
+
+  defp publication_result(work, marker) do
+    %Favn.Contracts.RunnerResult{
+      run_id: work.run_id,
+      manifest_version_id: work.manifest_version_id,
+      manifest_content_hash: work.manifest_content_hash,
+      required_runner_release_id: work.required_runner_release_id,
+      status: :ok,
+      asset_results: [
+        %Favn.Contracts.RunnerAssetResult{
+          ref: work.asset_ref,
+          status: :ok,
+          asset_step_id: work.asset_step_id,
+          attempt_count: 1,
+          max_attempts: work.max_attempts,
+          target_operation: work.target_operation,
+          logical_target_id: work.logical_target_id,
+          target_generation_id: work.target_generation_id,
+          write_relation: work.write_relation,
+          write_outcome: :succeeded,
+          evidence: %Favn.Contracts.RunnerAssetEvidence{
+            kind: :sql,
+            write_outcome: :written,
+            generation_commit: %Favn.Contracts.GenerationCommit{
+              marker: marker,
+              physical_fingerprint: String.duplicate("a", 64)
+            }
+          }
+        }
+      ]
+    }
+  end
+
+  defp publication_state(fixture, work) do
+    %{rows: [row]} =
+      SQL.query!(
+        Repo,
+        """
+        SELECT g.status, b.active_generation_id::text, b.compatibility_status, c.effect_state
+        FROM favn_control.asset_target_generations g
+        JOIN favn_control.asset_target_bindings b USING (workspace_id, target_id)
+        JOIN favn_control.materialization_claims c ON c.workspace_id=g.workspace_id AND c.run_id=$3
+        WHERE g.workspace_id=$1 AND g.target_generation_id::text=$2
+        """,
+        [fixture.workspace_id, work.target_generation_id, work.run_id]
+      )
+
+    row
+  end
+
   defp write_enqueue_command(fixture, version, work, claim, suffix, opts \\ []) do
     enqueue_command(fixture, "target-#{suffix}",
       task_kind: :asset_attempt,
@@ -5599,7 +6004,7 @@ defmodule FavnStoragePostgres.StorageV2.RunnerTasksTest do
       run_id: work.run_id,
       required_runner_release_id: work.required_runner_release_id,
       occurred_at: Keyword.get(opts, :occurred_at, fixture.now),
-      orchestration_context: %{kind: :sequential, materialization_claim: claim}
+      orchestration_context: publication_context(work, claim)
     )
     |> Map.merge(%{
       manifest_version_id: version.manifest_version_id,

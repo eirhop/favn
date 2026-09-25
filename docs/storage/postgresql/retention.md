@@ -136,7 +136,7 @@ Eligibility always includes workspace holds and the relevant replay protections.
 | `runner_task_log_batches` | execution_history | Terminal execution group, expired replay, settled descendants, no retained external reference; children first. |
 | `runner_task_outcomes` | receipts/history | Obsolete versions after receipt references expire, or with an eligible execution group. |
 | `runner_task_runtime_input_errors` | receipts/history | Obsolete versions after receipt references expire, or with an eligible execution group. |
-| `runner_tasks` | execution_history/operations | Retire with a group or rebuild, or as an unreferenced standalone terminal task; target-recovery evidence remains protected. |
+| `runner_tasks` | execution_history/operations | Retire with a group or rebuild, or as an unreferenced standalone terminal task; unresolved write evidence remains protected. |
 | `runs` | execution_history | Terminal execution group, expired replay, settled descendants, no retained external reference; children first. |
 | `runtime_input_key_versions` | retained | Sequence, replay boundary, schema, projection progress, or key inventory authority. |
 | `runtime_input_pins` | execution_history | Terminal execution group, expired replay, settled descendants, no retained external reference; children first. |
@@ -146,7 +146,6 @@ Eligibility always includes workspace holds and the relevant replay protections.
 | `schedule_occurrences` | operations | Terminal scheduling/recovery history after replay and retained source dependencies end. |
 | `schema_migrations` | retained | Sequence, replay boundary, schema, projection progress, or key inventory authority. |
 | `target_operation_locks` | retained | Current coordination, identity, or reusable fencing state; lifecycle commands own settlement. |
-| `target_recovery_operations` | retained | Required materialization and generation links preserve recovery evidence, including its tasks. |
 | `target_statuses` | retained | Dataset provenance or current projection; exact source history stays referenced. |
 | `workspace_deployment_targets` | registry | Unreferenced inactive deployment or manifest; reject new references while retiring children. |
 | `workspace_deployments` | registry | Unreferenced inactive deployment or manifest; reject new references while retiring children. |

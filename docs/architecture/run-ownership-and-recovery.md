@@ -117,16 +117,13 @@ Cancellation keeps its existing authority rules and shares the original retry
 budget. The 30-second clock is per live ownership generation; repeated crashes
 without settlement progress spend the persisted recovery-attempt limit.
 
-## Registration retries and failed-run cleanup
+## Failed-run cleanup
 
-A successful asset result stays accepted while generation registration retries
-explicitly retryable PostgreSQL conflicts, timeouts, and unavailability. The first
-failure starts a 30-second budget with at most eight scheduled retries, using
-1/2/4/5-second backoff and bounded jitter. Each slot is persisted before dispatch;
-restarts retain its deadline and count. Recovery checks existing terminal helper
-evidence before spending another slot. Failed reads never mean missing work.
+Generation identity is accepted atomically with task completion; see
+[atomic generation publication](target-generations-and-rebuilds.md#atomic-generation-publication).
+There is no separate registration retry budget.
 
-Exhaustion persists `error` and versioned `failure_cleanup` intent atomically.
+Execution failure persists `error` and versioned `failure_cleanup` intent atomically.
 The original failed outcome stays immutable. The ordinary recovery sweep selects
 pending cleanup separately using cleanup ownership, including after restart.
 Cleanup first inventories the exact run's tasks in pages and drains all siblings.
@@ -189,6 +186,6 @@ for connection budgeting and the recovery resume procedure, and the
 [environment reference](../production/control_plane_environment.md) for settings.
 
 Do not roll back to a binary without this cleanup protocol while failed cleanup
-is pending/in attention or registration retry events remain active. There is no
+is pending or requires attention. There is no
 schema migration to enforce this application-level compatibility boundary; finish
 cleanup with a compatible binary or apply a forward fix, preserving target holds.

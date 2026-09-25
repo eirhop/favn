@@ -398,6 +398,15 @@ defmodule FavnRunner.GroupReplacementTest do
                      %{outcome: :passed, transaction_outcome: :unknown, write_outcome: :unknown}}
   end
 
+  test "managed group replacement returns its generation receipt with the committed result" do
+    assert {:ok, %{generation_commit: %Favn.Contracts.GenerationCommit{} = receipt}} =
+             run_manifest(PassAsset)
+
+    assert receipt.marker.target_id == "group-target"
+    assert_received :group_commit
+    assert_received {:group_materialize, %WritePlan{strategy: :replace_groups}}
+  end
+
   test "render, preview, and explain reject the staged strategy explicitly" do
     asset = %{type: :sql, module: GroupAsset}
 
@@ -466,11 +475,19 @@ defmodule FavnRunner.GroupReplacementTest do
       manifest_version_id: "mv_group_test",
       content_hash: String.duplicate("a", 64),
       schema_version: 21,
-      runner_contract_version: 17,
+      runner_contract_version: 18,
       runner_releases: %{}
     }
 
-    work = %Favn.Contracts.RunnerWork{metadata: %{}}
+    work = %Favn.Contracts.RunnerWork{
+      metadata: %{},
+      target_operation: :normal_materialization,
+      logical_target_id: "group-target",
+      target_generation_id: "11111111-1111-4111-8111-111111111111",
+      write_relation: asset.relation
+    }
+
+    expected = FavnRunner.TestGenerationPublication.precondition(work)
 
     context = %Favn.Run.Context{
       run_id: "run_group_unknown_commit",
@@ -485,7 +502,7 @@ defmodule FavnRunner.GroupReplacementTest do
       max_attempts: 1
     }
 
-    Favn.SQLAsset.Runtime.run_manifest(asset, package, version, %{}, work, context)
+    Favn.SQLAsset.Runtime.run_manifest(asset, package, version, %{}, work, context, expected)
   end
 
   defp reload_adapter(adapter) do
@@ -504,6 +521,14 @@ defmodule FavnRunner.GroupReplacementTest do
 end
 
 defmodule FavnRunner.GroupReplacementTest.FakeAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.Connection.Resolved
   alias Favn.SQL.{Capabilities, Column, Error, Relation, Result}
 
@@ -673,6 +698,14 @@ defmodule FavnRunner.GroupReplacementTest.FakeAdapter do
 end
 
 defmodule FavnRunner.GroupReplacementTest.CommitErrorAdapter do
+  defdelegate generation_capabilities(resolved, opts), to: FavnRunner.TestGenerationPublication
+
+  defdelegate prepare_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
+  defdelegate publish_generation_write(conn, expected, opts),
+    to: FavnRunner.TestGenerationPublication
+
   alias Favn.SQL.Error
 
   defdelegate connect(resolved, opts), to: FavnRunner.GroupReplacementTest.FakeAdapter

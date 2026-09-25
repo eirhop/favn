@@ -31,16 +31,6 @@ defmodule Favn.SQL.GenerationContractTest do
     def inspect_generation(_conn, _relation, _opts), do: {:ok, :not_found}
     def bind_relation_instance(_conn, _relation, _instance_id, _opts), do: :ok
 
-    def initialize_generation_marker(_conn, _request, _opts) do
-      {:error,
-       %Error{
-         type: :execution_error,
-         message: "initialization outcome unknown",
-         retryable?: false,
-         details: %{classification: :generation_mutation_outcome_unknown, unknown_outcome?: true}
-       }}
-    end
-
     def activate_generation(_conn, _request, _opts) do
       {:error,
        %Error{
@@ -58,7 +48,6 @@ defmodule Favn.SQL.GenerationContractTest do
   defmodule AdapterWithoutRelationBinding do
     def generation_capabilities(_resolved, _opts), do: {:ok, %GenerationCapabilities{}}
     def inspect_generation(_conn, _relation, _opts), do: {:ok, :not_found}
-    def initialize_generation_marker(_conn, _request, _opts), do: {:ok, :initialized}
     def activate_generation(_conn, _request, _opts), do: {:ok, :activated}
     def reconcile_generation(_conn, _request, _opts), do: {:ok, nil}
     def discard_generation(_conn, _request, _opts), do: :ok
@@ -197,7 +186,7 @@ defmodule Favn.SQL.GenerationContractTest do
     assert {:ok, :discarded} = Client.discard_generation(session, discard)
   end
 
-  test "SQL client rejects generation adapters without physical relation binding" do
+  test "SQL client reports capabilities independently of optional generation operations" do
     session = %Session{
       adapter: AdapterWithoutRelationBinding,
       resolved: %Resolved{
@@ -210,10 +199,8 @@ defmodule Favn.SQL.GenerationContractTest do
       capabilities: %Favn.SQL.Capabilities{}
     }
 
-    assert {:error,
-            %Error{
-              type: :unsupported_capability,
-              details: %{capability: :target_generations}
-            }} = Client.generation_capabilities(session)
+    assert {:ok, capabilities} = Client.generation_capabilities(session)
+    assert capabilities.atomic_publication == :unsupported
+    refute GenerationCapabilities.rebuild_supported?(capabilities)
   end
 end

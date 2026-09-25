@@ -3,6 +3,7 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
   alias FavnOrchestrator.Auth.ServiceTokens
   alias FavnOrchestrator.ProductionRuntimeConfig
+  alias FavnOrchestrator.RuntimeConfig
 
   @token "alpha-credential-value-1234567890abcd"
   @token_env "favn_web:#{@token}"
@@ -174,6 +175,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
 
     assert [%{service_identity: "favn_web", platform_roles: []}] =
              config.api_service_tokens
+
+    assert {:ok, runtime} = RuntimeConfig.normalize(runner_pools: config.runner_pools)
+    assert runtime.runner_pools == %{"default" => %{mode: :resident, idle_grace_ms: :infinity}}
   end
 
   test "aggregate capacity authority is rejected without exposing its token", %{ca_file: ca_file} do
@@ -374,6 +378,9 @@ defmodule FavnOrchestrator.ProductionRuntimeConfigTest do
              "duckdb" => %{mode: :elastic, idle_grace_ms: 30_000},
              "pure_elixir" => %{mode: :resident, idle_grace_ms: :infinity}
            }
+
+    assert {:ok, runtime} = RuntimeConfig.normalize(runner_pools: config.runner_pools)
+    assert runtime.runner_pools == config.runner_pools
 
     assert config.runner.epmd_port == 44_369
   end

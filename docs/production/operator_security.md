@@ -20,11 +20,11 @@ session inside the workspace selected by the encrypted cookie.
 | Surface or action | Viewer | Operator | Workspace admin | Platform command |
 | --- | --- | --- | --- | --- |
 | Sign in, sign out, change own password | Yes | Yes | Yes | No |
-| Read assets, pipelines, schedules, runs, logs, rebuilds, and recoveries | Yes | Yes | Yes | No |
+| Read assets, pipelines, schedules, runs, logs, and rebuilds | Yes | Yes | Yes | No |
 | Switch among own active workspace memberships | Yes | Yes | Yes | No |
 | Submit run/backfill, cancel/retry run, enable/disable schedule | No | Yes | Yes | No |
-| Plan rebuild or target recovery | No | Yes | Yes | No |
-| Start/cancel/retry/reconcile rebuild or recovery | No | No | Yes | No |
+| Plan rebuild | No | Yes | Yes | No |
+| Start/cancel/retry/reconcile rebuild | No | No | Yes | No |
 | `/admin`: actors, memberships, current-workspace sessions, redacted audit | No | No | Yes | No |
 | Create an actor or attach an exact existing username to this workspace | No | No | Yes | No |
 | Change another actor's current-workspace membership | No | No | Yes | No |

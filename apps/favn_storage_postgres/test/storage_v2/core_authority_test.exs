@@ -50,7 +50,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Coverage
   alias FavnOrchestrator.Persistence.Commands.ActivateBackfillPlan
   alias FavnOrchestrator.Persistence.Commands.AcquireResourceCircuits
-  alias FavnOrchestrator.Persistence.Commands.ActivateRecoveredTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AbandonManifestDeployment
   alias FavnOrchestrator.Persistence.Commands.AuthorizeScheduleOccurrenceDispatch
   alias FavnOrchestrator.Persistence.Commands.AcquireTargetOperationLocks
@@ -67,9 +66,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.ClaimBackfillWindows
   alias FavnOrchestrator.Persistence.Commands.CreateRun
   alias FavnOrchestrator.Persistence.Commands.CreateRebuildPlan
-  alias FavnOrchestrator.Persistence.Commands.CreateTargetRecoveryIntent
-  alias FavnOrchestrator.Persistence.Commands.FailTargetRecovery
-  alias FavnOrchestrator.Persistence.Commands.FinalizeTargetRecoveryPlan
   alias FavnOrchestrator.Persistence.Commands.CreateActor
   alias FavnOrchestrator.Persistence.Commands.CreateSession
   alias FavnOrchestrator.Persistence.Commands.DeployManifest
@@ -90,8 +86,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Commands.EnsureWritableTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.EnqueueRunSubmission
   alias FavnOrchestrator.Persistence.Commands.EnqueueRunnerTask
-  alias FavnOrchestrator.Persistence.Commands.BeginTargetRecovery
-  alias FavnOrchestrator.Persistence.Commands.ReconcileInitialTargetGeneration
   alias FavnOrchestrator.Persistence.Commands.AppendLogBatch
   alias FavnOrchestrator.Persistence.Commands.ChangeActorPassword
   alias FavnOrchestrator.Persistence.Commands.LogEntry
@@ -150,8 +144,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnOrchestrator.Persistence.Queries.GetAssetWindowStates
   alias FavnOrchestrator.Persistence.Queries.GetEvidenceBindings
   alias FavnOrchestrator.Persistence.Queries.GetTargetBinding
-  alias FavnOrchestrator.Persistence.Queries.GetInitialTargetRecoveryCandidate
-  alias FavnOrchestrator.Persistence.Queries.GetTargetRecovery
   alias FavnOrchestrator.Persistence.Queries.GetBackfill
   alias FavnOrchestrator.Persistence.Queries.GetRuntimeState
   alias FavnOrchestrator.Persistence.Queries.GetRunSubmissionByRunId
@@ -246,7 +238,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
   alias FavnStoragePostgres.Scheduler.Store, as: SchedulerStore
   alias FavnStoragePostgres.TargetGenerations.Store, as: TargetGenerationStore
   alias FavnStoragePostgres.TargetOperationLocks.Store, as: TargetOperationLockStore
-  alias FavnStoragePostgres.TargetRecoveries.Store, as: TargetRecoveryStore
   alias FavnStoragePostgres.StorageV2.Migrations
 
   @service_token "B7yN3kQ9wR4mT8xZ2cV6pL1sD5fH0jA7"
@@ -2444,229 +2435,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       )
   end
 
-  test "reconciles one replay-safe building generation from exact successful evidence",
-       fixture do
-    descriptor = target_descriptor(fixture)
-    occurred_at = DateTime.utc_now()
-
-    command = %EnsureWritableTargetGeneration{
-      workspace_context: fixture.workspace_context,
-      command_id: "generation:ensure:" <> fixture.workspace_id,
-      target_id: fixture.target_id,
-      manifest_version_id: fixture.version.manifest_version_id,
-      descriptor: descriptor,
-      occurred_at: occurred_at
-    }
-
-    assert {:ok, first} = TargetGenerationStore.ensure_writable(command)
-    assert first.generation.status == :building
-
-    assert first.generation.physical_relation == %{
-             "catalog" => nil,
-             "connection" => "warehouse",
-             "name" => "asset",
-             "schema" => "analytics"
-           }
-
-    assert first.binding.compatibility_status == :uninitialized
-    assert is_nil(first.binding.active_generation_id)
-
-    assert {:ok, replayed} = TargetGenerationStore.ensure_writable(command)
-    assert replayed.generation.target_generation_id == first.generation.target_generation_id
-    assert replayed.generation.logical_relation == first.generation.logical_relation
-    assert replayed.generation.physical_relation == first.generation.physical_relation
-
-    assert {:ok, same_build} =
-             TargetGenerationStore.ensure_writable(%{
-               command
-               | command_id: command.command_id <> ":new-run"
-             })
-
-    assert same_build.generation.target_generation_id == first.generation.target_generation_id
-
-    assert {:ok, binding} =
-             TargetGenerationStore.get_binding(%GetTargetBinding{
-               workspace_context: fixture.workspace_context,
-               target_id: fixture.target_id
-             })
-
-    assert binding == same_build.binding
-
-    {run_command, run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(run_command)
-
-    claim = %ClaimMaterialization{
-      workspace_context: fixture.workspace_context,
-      command_id: "generation:claim:" <> run.id,
-      claim_key: "generation:claim:" <> run.id,
-      deployment_id: fixture.deployment_id,
-      target_kind: :asset,
-      target_id: fixture.target_id,
-      target_generation_id: first.generation.target_generation_id,
-      evidence_generation_id: first.generation.target_generation_id,
-      partition_key: Favn.Freshness.Key.latest(),
-      run_id: run.id,
-      owner_id: "generation-worker",
-      lease_duration_ms: 30_000,
-      occurred_at: occurred_at
-    }
-
-    assert {:ok, %{status: :claimed, claim: claimed}} = MaterializationStore.claim(claim)
-
-    assert {:ok, %{status: :materialized}} =
-             MaterializationStore.finish(%FinishMaterialization{
-               workspace_context: fixture.workspace_context,
-               command_id: "generation:finish:" <> run.id,
-               claim_key: claim.claim_key,
-               owner_id: claim.owner_id,
-               fencing_token: claimed.fencing_token,
-               expected_version: claimed.version,
-               status: :succeeded,
-               materialization_id: "generation:materialization:" <> run.id,
-               payload: %{"row_count" => 1},
-               occurred_at: DateTime.add(occurred_at, 1, :second)
-             })
-
-    assert {:ok, after_success} =
-             TargetGenerationStore.get_binding(%GetTargetBinding{
-               workspace_context: fixture.workspace_context,
-               target_id: fixture.target_id
-             })
-
-    assert after_success.compatibility_status == :uninitialized
-    assert is_nil(after_success.active_generation_id)
-
-    assert {:error,
-            %{
-              kind: :conflict,
-              details: %{
-                reason_code: "initial_target_generation_reconciliation_required",
-                target_id: target_id,
-                target_generation_id: target_generation_id
-              }
-            }} = TargetGenerationStore.ensure_writable(command)
-
-    assert target_id == fixture.target_id
-    assert target_generation_id == first.generation.target_generation_id
-
-    fingerprint = String.duplicate("a", 64)
-
-    reconciliation = %ReconcileInitialTargetGeneration{
-      workspace_context: fixture.workspace_context,
-      command_id: "generation:reconcile:" <> run.id,
-      target_id: fixture.target_id,
-      manifest_version_id: fixture.version.manifest_version_id,
-      target_generation_id: first.generation.target_generation_id,
-      materialization_id: "generation:materialization:" <> run.id,
-      physical_schema_fingerprint: fingerprint,
-      data_plane_marker: %{
-        "target_id" => fixture.target_id,
-        "active_relation" => %{
-          "connection" => "warehouse",
-          "catalog" => nil,
-          "schema" => "analytics",
-          "name" => "orders"
-        },
-        "active_generation_id" => first.generation.target_generation_id,
-        "activation_operation_id" => "initial-materialization-operation",
-        "activation_token" => "initial-marker-token",
-        "activated_at" => "2026-07-22T10:00:00Z"
-      },
-      occurred_at: DateTime.add(occurred_at, 2, :second)
-    }
-
-    assert {:error, %{kind: :conflict}} =
-             TargetGenerationStore.reconcile_initial(%{
-               reconciliation
-               | materialization_id: reconciliation.materialization_id <> ":missing"
-             })
-
-    assert {:error, %{kind: :invalid}} =
-             TargetGenerationStore.reconcile_initial(%{
-               reconciliation
-               | data_plane_marker: %{
-                   reconciliation.data_plane_marker
-                   | "active_generation_id" => Ecto.UUID.generate()
-                 }
-             })
-
-    assert {:ok, reconciled} = TargetGenerationStore.reconcile_initial(reconciliation)
-    assert reconciled.materialization_id == reconciliation.materialization_id
-    assert reconciled.generation.status == :active
-    assert reconciled.generation.physical_schema_fingerprint == fingerprint
-    assert reconciled.generation.data_plane_marker == reconciliation.data_plane_marker
-    assert reconciled.binding.active_generation_id == first.generation.target_generation_id
-    assert reconciled.binding.compatibility_status == :ready
-    assert reconciled.binding.reason_code == "initial_materialization_reconciled"
-
-    assert {:ok, ^reconciled} = TargetGenerationStore.reconcile_initial(reconciliation)
-
-    assert %{rows: [["active", ^fingerprint]]} =
-             SQL.query!(
-               Repo,
-               "SELECT status, physical_schema_fingerprint FROM favn_control.asset_target_generations WHERE workspace_id = $1 AND target_id = $2 AND target_generation_id::text = $3",
-               [fixture.workspace_id, fixture.target_id, first.generation.target_generation_id]
-             )
-
-    isolated = provision_deploy_fixture(fixture.version)
-
-    assert {:ok, isolated_generation} =
-             TargetGenerationStore.ensure_writable(%{
-               command
-               | workspace_context: isolated.workspace_context,
-                 command_id: command.command_id <> ":isolated"
-             })
-
-    refute isolated_generation.generation.target_generation_id ==
-             first.generation.target_generation_id
-
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.asset_target_bindings SET compatibility_status = 'rebuild_required', reason_code = 'test_block' WHERE workspace_id = $1 AND target_id = $2",
-      [fixture.workspace_id, fixture.target_id]
-    )
-
-    assert {:error, %{kind: :conflict}} =
-             TargetGenerationStore.ensure_writable(%{
-               command
-               | command_id: command.command_id <> ":blocked"
-             })
-
-    assert %{rows: [[lifecycle_constraint]]} =
-             SQL.query!(
-               Repo,
-               "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'rebuild_operations_values_valid'",
-               []
-             )
-
-    assert lifecycle_constraint =~ "activation_unknown"
-    assert lifecycle_constraint =~ "reconciling"
-    assert lifecycle_constraint =~ "not_started"
-    assert lifecycle_constraint =~ "complete"
-
-    assert %{
-             rows: [
-               ["rebuild_plan_actions_child_operation_fk"],
-               ["rebuild_windows_materialization_fk"]
-             ]
-           } =
-             SQL.query!(
-               Repo,
-               "SELECT conname FROM pg_constraint WHERE conname IN ('rebuild_plan_actions_child_operation_fk', 'rebuild_windows_materialization_fk') ORDER BY conname",
-               []
-             )
-  end
-
   @tag committed_lifecycle: true
-  test "first-write pipeline registers its marker without a rebuild or recovery parent",
+  test "first-write pipeline activates its generation in asset completion without helper tasks",
        fixture do
-    initial_registration_pipeline!(fixture)
-  end
-
-  @tag unknown_marker: true
-  @tag committed_lifecycle: true
-  test "unknown initial marker reads matching evidence without replaying its write", fixture do
-    initial_registration_pipeline!(fixture)
+    atomic_publication_pipeline!(fixture)
   end
 
   @tag committed_lifecycle: true
@@ -2714,7 +2486,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
 
     assert {:ok, _} = ensure.(id, "retiring")
-    task = claim_initial_registration_task!(fixture, :generation_capabilities)
+    task = claim_operation_task!(fixture, :generation_capabilities)
     assert :ok = start_runner_task(task)
 
     SQL.query!(
@@ -2740,7 +2512,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              finish_runner_task(task, outcome: :succeeded, retry_class: :terminal, result: result)
 
     assert {:ok, _} = ensure.(id, "removed-parent")
-    task = claim_initial_registration_task!(fixture, :generation_capabilities)
+    task = claim_operation_task!(fixture, :generation_capabilities)
     assert :ok = start_runner_task(task)
 
     SQL.query!(
@@ -2753,7 +2525,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              finish_runner_task(task, outcome: :succeeded, retry_class: :terminal, result: result)
   end
 
-  defp initial_registration_pipeline!(fixture) do
+  defp atomic_publication_pipeline!(fixture) do
     version = recoverable_activation_fixture(fixture).version
     descriptor = hd(version.manifest.assets).target_descriptor
 
@@ -2802,113 +2574,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     assert :ok = start_runner_task(asset_task)
     assert :ok = complete_asset_task(asset_task, asset_task.payload, false)
 
-    inspection_task = claim_initial_registration_task!(fixture, :relation_inspection)
-
-    assert %{rows: [[1]]} =
-             SQL.query!(
-               Repo,
-               "SELECT count(*) FROM favn_control.materializations WHERE workspace_id=$1 AND run_id=$2",
-               [fixture.workspace_id, run.id]
-             )
-
-    inspection = %RelationInspectionResult{
-      asset_ref: {MyApp.Asset, :asset},
-      required_runner_release_id: fixture.version.runner_releases["default"],
-      relation: %{catalog: nil, schema: "analytics", name: "asset", type: :table},
-      columns: [%{name: "id", data_type: "BIGINT", nullable?: false}],
-      table_metadata: %{},
-      adapter: "Elixir.FavnTestSupport.TargetAdapter",
-      inspected_at: DateTime.utc_now()
-    }
-
-    assert :ok = start_runner_task(inspection_task)
-    await_runner_task_waiter!(inspection_task)
-
-    assert :ok =
-             finish_runner_task(inspection_task,
-               outcome: :succeeded,
-               retry_class: :terminal,
-               result: inspection
-             )
-
-    capabilities = claim_initial_registration_task!(fixture, :generation_capabilities)
-    assert :ok = start_runner_task(capabilities)
-
-    assert :ok =
-             finish_runner_task(capabilities,
-               outcome: :succeeded,
-               retry_class: :terminal,
-               result: %Favn.Contracts.GenerationCapabilitiesResult{
-                 capabilities: %{
-                   transactional_ddl: :supported,
-                   physical_inspection: :supported,
-                   marker_reconciliation: :supported
-                 }
-               }
-             )
-
-    marker_task = claim_initial_registration_task!(fixture, :generation_marker_initialize)
-    request = marker_task.payload
-    assert marker_task.operation_id == nil
-    assert marker_task.write_operation_id == request.initialization_operation_id
-    assert String.starts_with?(marker_task.write_operation_id, "initial-marker:")
-    assert :ok = start_runner_task(marker_task)
-
-    marker = %Favn.Contracts.GenerationMarker{
-      target_id: request.target_id,
-      active_relation: request.active_relation,
-      active_generation_id: request.target_generation_id,
-      activation_operation_id: request.initialization_operation_id,
-      activation_token: request.initialization_token,
-      activated_at: DateTime.utc_now()
-    }
-
-    result = %Favn.Contracts.GenerationMarkerInitializationResult{
-      required_runner_release_id: request.required_runner_release_id,
-      target_id: request.target_id,
-      target_generation_id: request.target_generation_id,
-      initialization_token: request.initialization_token,
-      outcome: :succeeded,
-      observed_marker: marker,
-      physical_fingerprint: request.expected_physical_fingerprint,
-      completed_at: DateTime.utc_now()
-    }
-
-    if fixture[:unknown_marker] do
-      assert :ok =
-               finish_runner_task(marker_task,
-                 outcome: :unknown,
-                 retry_class: :unknown,
-                 error:
-                   Favn.Contracts.RunnerError.new(
-                     type: :runner_lost,
-                     message: "Marker write result was lost",
-                     retryable?: false,
-                     outcome: :unknown
-                   )
-               )
-
-      assert {:ok, persisted} = RunnerTasks.fetch(fixture.workspace_id, marker_task.task_id)
-      assert persisted.status == :unknown
-      assert persisted.error["outcome"] == "unknown"
-      reader = claim_initial_registration_task!(fixture, :generation_marker_read)
-      assert :ok = start_runner_task(reader)
-
-      assert :ok =
-               finish_runner_task(reader,
-                 outcome: :succeeded,
-                 retry_class: :terminal,
-                 result: %Favn.Contracts.GenerationMarkerReadResult{marker: marker}
-               )
-    else
-      assert :ok =
-               finish_runner_task(marker_task,
-                 outcome: :succeeded,
-                 retry_class: :terminal,
-                 result: result
-               )
-    end
-
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
     assert {:ok, finished} = get_run(fixture, run.id)
     assert finished.status == :ok
@@ -2919,13 +2584,13 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                target_id: fixture.target_id
              })
 
-    assert binding.active_generation_id == request.target_generation_id
+    assert binding.active_generation_id == asset_task.payload.target_generation_id
 
     assert %{rows: [["active"]]} =
              SQL.query!(
                Repo,
                "SELECT status FROM favn_control.asset_target_generations WHERE workspace_id=$1 AND target_generation_id::text=$2",
-               [fixture.workspace_id, request.target_generation_id]
+               [fixture.workspace_id, asset_task.payload.target_generation_id]
              )
 
     assert %{rows: [[0]]} =
@@ -2935,14 +2600,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                [fixture.workspace_id]
              )
 
-    assert %{rows: [[0]]} =
-             SQL.query!(
-               Repo,
-               "SELECT count(*) FROM favn_control.target_recovery_operations WHERE workspace_id=$1",
-               [fixture.workspace_id]
-             )
-
-    expected_holds = if fixture[:unknown_marker], do: 1, else: 0
+    expected_holds = 0
 
     assert %{rows: [[^expected_holds]]} =
              SQL.query!(
@@ -2951,18 +2609,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                [fixture.workspace_id]
              )
 
-    {:ok, index} = Favn.Manifest.Index.build_from_version(fixture.version)
-
-    entry =
-      Map.merge(asset_task.orchestration_context, %{
-        asset_ref: asset_task.payload.asset_ref,
-        version: fixture.version,
-        manifest_index: index
-      })
-
-    assert :ok = FavnOrchestrator.InitialTargetGenerationReconciler.reconcile(entry)
-
-    expected_tasks = if fixture[:unknown_marker], do: 5, else: 4
+    expected_tasks = 1
 
     assert %{rows: [[^expected_tasks]]} =
              SQL.query!(
@@ -2972,9 +2619,9 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              )
   end
 
-  defp claim_initial_registration_task!(fixture, kind, remaining \\ 200)
+  defp claim_operation_task!(fixture, kind, remaining \\ 200)
 
-  defp claim_initial_registration_task!(fixture, kind, 0) do
+  defp claim_operation_task!(fixture, kind, 0) do
     %{rows: rows} =
       SQL.query!(
         Repo,
@@ -2982,10 +2629,10 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         [fixture.workspace_id]
       )
 
-    flunk("initial registration task was not claimable: #{kind}: #{inspect(rows)}")
+    flunk("operation task was not claimable: #{kind}: #{inspect(rows)}")
   end
 
-  defp claim_initial_registration_task!(fixture, kind, remaining) do
+  defp claim_operation_task!(fixture, kind, remaining) do
     now = DateTime.utc_now()
 
     case RunnerTaskStore.claim(%ClaimRunnerTask{
@@ -3003,7 +2650,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
          }) do
       {:ok, nil} ->
         Process.sleep(10)
-        claim_initial_registration_task!(fixture, kind, remaining - 1)
+        claim_operation_task!(fixture, kind, remaining - 1)
 
       {:ok, task} ->
         task
@@ -3011,392 +2658,6 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
       {:error, reason} ->
         flunk("initial registration claim failed: #{inspect(reason)}")
     end
-  end
-
-  test "cancellation retains unfinished initial verification after losing the waiter", fixture do
-    now = DateTime.utc_now()
-
-    assert {:ok, initial} =
-             TargetGenerationStore.ensure_writable(%EnsureWritableTargetGeneration{
-               workspace_context: fixture.workspace_context,
-               command_id: "cancel:ensure:" <> fixture.workspace_id,
-               target_id: fixture.target_id,
-               manifest_version_id: fixture.version.manifest_version_id,
-               descriptor: target_descriptor(fixture),
-               occurred_at: now
-             })
-
-    generation = initial.generation.target_generation_id
-
-    create = fn materialize? ->
-      {command, run} = create_run_command(fixture)
-      assert {:ok, _} = RunStore.create_run(command)
-
-      if materialize? do
-        claim = %ClaimMaterialization{
-          workspace_context: fixture.workspace_context,
-          command_id: "cancel:claim:" <> run.id,
-          claim_key: "cancel:claim:" <> run.id,
-          deployment_id: fixture.deployment_id,
-          target_kind: :asset,
-          target_id: fixture.target_id,
-          target_generation_id: generation,
-          evidence_generation_id: generation,
-          partition_key: "partition:" <> run.id,
-          run_id: run.id,
-          owner_id: "worker",
-          lease_duration_ms: 30_000,
-          occurred_at: now
-        }
-
-        assert {:ok, %{status: :claimed, claim: claimed}} = MaterializationStore.claim(claim)
-
-        assert {:ok, %{status: :materialized}} =
-                 MaterializationStore.finish(%FinishMaterialization{
-                   workspace_context: fixture.workspace_context,
-                   command_id: "cancel:finish:" <> run.id,
-                   claim_key: claim.claim_key,
-                   owner_id: "worker",
-                   fencing_token: claimed.fencing_token,
-                   expected_version: claimed.version,
-                   status: :succeeded,
-                   materialization_id: "materialization:" <> run.id,
-                   payload: %{},
-                   occurred_at: now
-                 })
-      end
-
-      run
-    end
-
-    cancel = fn run ->
-      refute run.metadata["cancellation_needs_attention"]
-
-      assert :ok =
-               RunStore.request_operation_cancellation(%RequestRunCancellation{
-                 workspace_context: fixture.workspace_context,
-                 command_id: "cancel:" <> run.id,
-                 run_id: run.id,
-                 reason: %{requested_by: :operator},
-                 occurred_at: now
-               })
-
-      # A restarted owner has no in-memory post-step continuation or marker flag.
-      SQL.query!(
-        Repo,
-        "UPDATE favn_control.runs SET status='cancelled' WHERE workspace_id=$1 AND run_id=$2",
-        [fixture.workspace_id, run.id]
-      )
-
-      query = %GetRun{workspace_context: fixture.workspace_context, run_id: run.id}
-      assert {:ok, _} = RunStore.reconcile_cancellation(query)
-      assert {:ok, scope} = RunStore.cancellation_scope(query)
-      scope.status
-    end
-
-    written = create.(true)
-    unrelated = create.(false)
-    assert cancel.(unrelated) == :cancelled
-    assert cancel.(written) == :needs_attention
-
-    assert {:ok, _} =
-             TargetGenerationStore.reconcile_initial(%ReconcileInitialTargetGeneration{
-               workspace_context: fixture.workspace_context,
-               command_id: "shared-verification",
-               target_id: fixture.target_id,
-               manifest_version_id: fixture.version.manifest_version_id,
-               target_generation_id: generation,
-               materialization_id: "materialization:" <> written.id,
-               physical_schema_fingerprint: String.duplicate("a", 64),
-               occurred_at: now,
-               data_plane_marker: %{
-                 "target_id" => fixture.target_id,
-                 "active_relation" => initial.generation.physical_relation,
-                 "active_generation_id" => generation,
-                 "activation_operation_id" => "initial-verification",
-                 "activation_token" => "initial-token",
-                 "activated_at" => DateTime.to_iso8601(now)
-               }
-             })
-
-    assert cancel.(create.(true)) == :cancelled
-  end
-
-  test "recovers an interrupted initial generation only with exact fenced evidence", fixture do
-    occurred_at = DateTime.utc_now()
-
-    assert {:ok, initial} =
-             TargetGenerationStore.ensure_writable(%EnsureWritableTargetGeneration{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:ensure:" <> fixture.workspace_id,
-               target_id: fixture.target_id,
-               manifest_version_id: fixture.version.manifest_version_id,
-               descriptor: target_descriptor(fixture),
-               occurred_at: occurred_at
-             })
-
-    {run_command, run} = create_run_command(fixture)
-    assert {:ok, _created} = RunStore.create_run(run_command)
-
-    claim = %ClaimMaterialization{
-      workspace_context: fixture.workspace_context,
-      command_id: "recovery:claim:" <> run.id,
-      claim_key: "recovery:claim:" <> run.id,
-      deployment_id: fixture.deployment_id,
-      target_kind: :asset,
-      target_id: fixture.target_id,
-      target_generation_id: initial.generation.target_generation_id,
-      evidence_generation_id: initial.generation.target_generation_id,
-      partition_key: Favn.Freshness.Key.latest(),
-      run_id: run.id,
-      owner_id: "recovery-worker",
-      lease_duration_ms: 30_000,
-      occurred_at: occurred_at
-    }
-
-    assert {:ok, %{status: :claimed, claim: claimed}} = MaterializationStore.claim(claim)
-
-    materialization_id = "recovery:materialization:" <> run.id
-
-    assert {:ok, %{status: :materialized}} =
-             MaterializationStore.finish(%FinishMaterialization{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:finish:" <> run.id,
-               claim_key: claim.claim_key,
-               owner_id: claim.owner_id,
-               fencing_token: claimed.fencing_token,
-               expected_version: claimed.version,
-               status: :succeeded,
-               materialization_id: materialization_id,
-               payload: %{"row_count" => 1},
-               occurred_at: DateTime.add(occurred_at, 1, :second)
-             })
-
-    SQL.query!(
-      Repo,
-      "UPDATE favn_control.asset_target_bindings SET compatibility_status = 'operator_decision', reason_code = 'unmanaged_physical_relation' WHERE workspace_id = $1 AND target_id = $2",
-      [fixture.workspace_id, fixture.target_id]
-    )
-
-    assert {:ok, candidate} =
-             TargetRecoveryStore.get_initial_candidate(%GetInitialTargetRecoveryCandidate{
-               workspace_context: fixture.workspace_context,
-               target_id: fixture.target_id
-             })
-
-    fingerprint = String.duplicate("a", 64)
-    operation_id = "target-recovery:" <> run.id
-    plan_hash = String.duplicate("b", 64)
-
-    plan_payload = %{
-      "expires_at" => "2099-01-01T00:00:00Z",
-      "physical_relation_instance_id" =>
-        Favn.TargetGenerationRelation.instance_id("recovery-token:" <> run.id),
-      "data_plane_marker" => %{
-        "target_id" => fixture.target_id,
-        "active_relation" => candidate.generation.physical_relation,
-        "active_generation_id" => candidate.generation.target_generation_id,
-        "activation_operation_id" => "target-recovery-marker:" <> run.id,
-        "activation_token" => "recovery-token:" <> run.id,
-        "activated_at" => DateTime.to_iso8601(occurred_at)
-      }
-    }
-
-    assert {:ok, intent} =
-             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:plan:" <> run.id,
-               operation_id: operation_id,
-               target_id: fixture.target_id,
-               recovery_kind: :reconcile_initial_generation,
-               desired_manifest_id: fixture.version.manifest_version_id,
-               source_manifest_id: fixture.version.manifest_version_id,
-               target_generation_id: candidate.generation.target_generation_id,
-               materialization_id: materialization_id,
-               actor_id: "recovery-admin",
-               reason: "recover interrupted initial materialization",
-               idempotency_key: operation_id,
-               expected_binding_version: candidate.binding.version,
-               evaluated_at: occurred_at,
-               occurred_at: occurred_at
-             })
-
-    assert intent.state == :planning
-
-    assert_raise Postgrex.Error, fn ->
-      SQL.query!(
-        Repo,
-        """
-        UPDATE favn_control.target_recovery_operations
-        SET state = 'applying',
-            phase = 'marker_intent',
-            recovery_token = 'invalid-without-frozen-plan',
-            started_at = $3
-        WHERE workspace_id = $1 AND operation_id = $2
-        """,
-        [fixture.workspace_id, operation_id, occurred_at]
-      )
-    end
-
-    failed_planning_operation_id = operation_id <> ":planning-failure"
-
-    assert {:ok, failed_intent} =
-             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:failed-plan:" <> run.id,
-               operation_id: failed_planning_operation_id,
-               target_id: fixture.target_id,
-               recovery_kind: :reconcile_initial_generation,
-               desired_manifest_id: fixture.version.manifest_version_id,
-               source_manifest_id: fixture.version.manifest_version_id,
-               target_generation_id: candidate.generation.target_generation_id,
-               materialization_id: materialization_id,
-               actor_id: "recovery-admin",
-               reason: "record deterministic planning failure",
-               idempotency_key: failed_planning_operation_id,
-               expected_binding_version: candidate.binding.version,
-               evaluated_at: occurred_at,
-               occurred_at: occurred_at
-             })
-
-    assert {:ok, failed_planning} =
-             TargetRecoveryStore.fail_recovery(%FailTargetRecovery{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:fail-plan:" <> run.id,
-               operation_id: failed_planning_operation_id,
-               expected_version: failed_intent.version,
-               terminal_error: %{
-                 "kind" => "conflict",
-                 "reason_code" => "target_recovery_marker_missing"
-               },
-               occurred_at: DateTime.add(occurred_at, 1, :second)
-             })
-
-    assert failed_planning.state == :failed
-    assert is_nil(failed_planning.plan_hash)
-    assert is_nil(failed_planning.expected_physical_fingerprint)
-
-    assert {:ok, planned} =
-             TargetRecoveryStore.finalize_plan(%FinalizeTargetRecoveryPlan{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:finalize-plan:" <> run.id,
-               operation_id: operation_id,
-               expected_version: intent.version,
-               plan_hash: plan_hash,
-               plan_payload: plan_payload,
-               expected_physical_fingerprint: fingerprint,
-               occurred_at: occurred_at
-             })
-
-    assert planned.state == :planned
-
-    assert {:ok, replayed_plan} =
-             TargetRecoveryStore.create_intent(%CreateTargetRecoveryIntent{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:plan-replay:" <> run.id,
-               operation_id: operation_id <> ":new",
-               target_id: fixture.target_id,
-               recovery_kind: :reconcile_initial_generation,
-               desired_manifest_id: fixture.version.manifest_version_id,
-               source_manifest_id: fixture.version.manifest_version_id,
-               target_generation_id: candidate.generation.target_generation_id,
-               materialization_id: materialization_id,
-               actor_id: "recovery-admin",
-               reason: "recover interrupted initial materialization",
-               idempotency_key: operation_id,
-               expected_binding_version: candidate.binding.version + 1,
-               evaluated_at: DateTime.add(occurred_at, 1, :second),
-               occurred_at: DateTime.add(occurred_at, 1, :second)
-             })
-
-    assert replayed_plan.idempotency_replay?
-    assert replayed_plan.operation_id == operation_id
-    assert replayed_plan.plan_hash == plan_hash
-
-    assert {:ok, [lock]} =
-             TargetOperationLockStore.acquire_many(%AcquireTargetOperationLocks{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:lock:" <> run.id,
-               target_ids: [fixture.target_id],
-               operation_id: operation_id,
-               operation_type: :target_recovery,
-               lease_owner: operation_id,
-               lease_duration_ms: 30_000,
-               occurred_at: occurred_at
-             })
-
-    recovery_token = "recovery-token:" <> run.id
-
-    assert {:ok, applying} =
-             TargetRecoveryStore.begin_recovery(%BeginTargetRecovery{
-               workspace_context: fixture.workspace_context,
-               command_id: "recovery:begin:" <> run.id,
-               operation_id: operation_id,
-               plan_hash: plan_hash,
-               expected_version: planned.version,
-               recovery_token: recovery_token,
-               occurred_at: occurred_at
-             })
-
-    marker = %{
-      "target_id" => fixture.target_id,
-      "active_relation" => candidate.generation.physical_relation,
-      "active_generation_id" => candidate.generation.target_generation_id,
-      "activation_operation_id" => "target-recovery-marker:" <> run.id,
-      "activation_token" => recovery_token,
-      "activated_at" => DateTime.to_iso8601(occurred_at)
-    }
-
-    activate = %ActivateRecoveredTargetGeneration{
-      workspace_context: fixture.workspace_context,
-      command_id: "recovery:activate:" <> run.id,
-      operation_id: operation_id,
-      expected_operation_version: applying.version,
-      target_id: fixture.target_id,
-      target_generation_id: candidate.generation.target_generation_id,
-      materialization_id: materialization_id,
-      source_manifest_id: fixture.version.manifest_version_id,
-      expected_binding_version: candidate.binding.version,
-      expected_desired_manifest_id: fixture.version.manifest_version_id,
-      expected_desired_descriptor_hash: candidate.binding.desired_descriptor_hash,
-      physical_schema_fingerprint: fingerprint,
-      expected_marker_operation_id: "target-recovery-marker:" <> run.id,
-      data_plane_marker: marker,
-      compatibility_status: :ready,
-      reason_code: "identical",
-      compatibility_diff: %{},
-      lease_owner: operation_id,
-      fencing_token: lock.fencing_token,
-      occurred_at: DateTime.add(occurred_at, 2, :second)
-    }
-
-    assert {:error, %{kind: :conflict}} =
-             TargetRecoveryStore.activate_generation(%{
-               activate
-               | fencing_token: lock.fencing_token + 1
-             })
-
-    assert {:ok, recovered} = TargetRecoveryStore.activate_generation(activate)
-    assert recovered.state == :succeeded
-    assert recovered.compatibility_result.status == :ready
-
-    assert {:ok, binding} =
-             TargetGenerationStore.get_binding(%GetTargetBinding{
-               workspace_context: fixture.workspace_context,
-               target_id: fixture.target_id
-             })
-
-    assert binding.active_generation_id == candidate.generation.target_generation_id
-    assert binding.compatibility_status == :ready
-
-    assert {:ok, persisted} =
-             TargetRecoveryStore.get(%GetTargetRecovery{
-               workspace_context: fixture.workspace_context,
-               operation_id: operation_id
-             })
-
-    assert persisted.state == :succeeded
-    assert persisted.result_marker["activation_token"] == recovery_token
   end
 
   test "persists frozen compatibility before activation and rolls back stale decisions",
@@ -8921,7 +8182,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         assert {:ok, task} = claim_asset_task(fixture, "serial-target-#{runner_number}")
 
         if runner_number == 1 do
-          assert {:ok, nil} = claim_asset_task(fixture, "blocked-same-target")
+          assert {:ok, nil} = claim_asset_task(fixture)
           assert_runner_demand!(fixture, queued: 2, active: 1, outstanding: 3)
         end
 
@@ -10832,7 +10093,17 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
     def asset(_), do: raise("blocked dependent executed")
   end
 
-  for outcome <- [:check_rollback, :rejected_commit] do
+  defp assert_sql_transaction_outcome(:unsupported_transaction) do
+    refute_received :sql_transaction_started
+    refute_received {:confirmed_sql_rollback, _}
+  end
+
+  defp assert_sql_transaction_outcome(_) do
+    assert_receive :sql_transaction_started
+    assert_receive {:confirmed_sql_rollback, _}
+  end
+
+  for outcome <- [:check_rollback, :rejected_commit, :unsupported_transaction] do
     @tag sql_rollback: true
     @tag committed_lifecycle: true
     test "#{outcome} settles ownership and preserves independent work with node retries enabled" do
@@ -10840,7 +10111,11 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
 
       expected_error_type =
         unquote(
-          if outcome == :rejected_commit, do: :backend_execution_failed, else: :check_failed
+          case outcome do
+            :rejected_commit -> :backend_execution_failed
+            :unsupported_transaction -> :unsupported_materialization
+            :check_rollback -> :check_failed
+          end
         )
 
       adapter = FavnStoragePostgres.TestSupport.CheckedSQLAdapter
@@ -11096,6 +10371,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                      server: self(),
                      execution_id: task_id,
                      work: task.payload,
+                     generation_precondition: task.generation_precondition,
                      version: version,
                      asset: asset
                    })
@@ -11118,7 +10394,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           result
         end)
 
-      assert_receive {:confirmed_sql_rollback, _}
+      assert_sql_transaction_outcome(outcome)
 
       assert [%{error: %{type: ^expected_error_type, retryable?: false, outcome: :safe_failure}}] =
                Enum.filter(results, &(&1.status == :error))
@@ -11496,6 +10772,19 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
         {:succeeded, :terminal, :ok, nil}
       end
 
+    evidence =
+      if not fail? and work.target_operation == :normal_materialization do
+        %Favn.Contracts.RunnerAssetEvidence{
+          kind: :sql,
+          write_outcome: :written,
+          generation_commit: %Favn.Contracts.GenerationCommit{
+            marker: task.generation_precondition.marker,
+            physical_fingerprint:
+              task.generation_precondition.physical_fingerprint || String.duplicate("a", 64)
+          }
+        }
+      end
+
     result = %Favn.Contracts.RunnerResult{
       run_id: work.run_id,
       manifest_version_id: work.manifest_version_id,
@@ -11514,6 +10803,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
           target_generation_id: work.target_generation_id,
           write_relation: work.write_relation,
           write_outcome: if(work.target_operation, do: :succeeded, else: nil),
+          evidence: evidence,
           meta: meta
         }
       ],
@@ -16599,7 +15889,7 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                validation: operation.validation
              )
 
-    task = claim_initial_registration_task!(fixture, :generation_capabilities)
+    task = claim_operation_task!(fixture, :generation_capabilities)
     assert :ok = start_runner_task(task)
 
     assert :ok =
@@ -17281,32 +16571,62 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
                occurred_at: DateTime.add(occurred_at, 1, :second)
              })
 
-    active_relation = writable.generation.physical_relation
+    # This continuation fixture begins with an already published generation.
+    # Atomic receipt validation and activation are exercised in runner_tasks_test.
+    generation = writable.generation
 
-    assert {:ok, reconciled} =
-             TargetGenerationStore.reconcile_initial(%ReconcileInitialTargetGeneration{
-               workspace_context: fixture.workspace_context,
-               command_id: "generation:reconcile:distinct:#{unique}",
-               target_id: private_asset.target_descriptor.target_id,
-               manifest_version_id: version.manifest_version_id,
-               target_generation_id: writable.generation.target_generation_id,
-               materialization_id: materialization_id,
-               physical_schema_fingerprint: String.duplicate("a", 64),
-               data_plane_marker: %{
-                 "target_id" => private_asset.target_descriptor.target_id,
-                 "active_relation" => active_relation,
-                 "active_generation_id" => writable.generation.target_generation_id,
-                 "activation_operation_id" => "initial-distinct-#{unique}",
-                 "activation_token" => "initial-distinct-token-#{unique}",
-                 "activated_at" => DateTime.to_iso8601(DateTime.add(occurred_at, 2, :second))
-               },
-               occurred_at: DateTime.add(occurred_at, 2, :second)
-             })
+    marker = %{
+      "target_id" => private_asset.target_descriptor.target_id,
+      "active_relation" => generation.physical_relation,
+      "active_generation_id" => generation.target_generation_id,
+      "activation_operation_id" => "initial-distinct-#{unique}",
+      "activation_token" => "initial-distinct-token-#{unique}",
+      "activated_at" => DateTime.to_iso8601(occurred_at)
+    }
 
-    Map.put(fixture, :private_generation, reconciled.generation)
+    Repo.transaction(fn ->
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.asset_target_generations
+        SET status='active', active_descriptor_hash=creating_descriptor_hash,
+            physical_schema_fingerprint=$3, data_plane_marker=$4,
+            activation_token=$5, activated_at=$6, updated_at=$6, version=version+1
+        WHERE workspace_id=$1 AND target_generation_id::text=$2
+        """,
+        [
+          fixture.workspace_id,
+          generation.target_generation_id,
+          String.duplicate("a", 64),
+          marker,
+          marker["activation_token"],
+          occurred_at
+        ]
+      )
+
+      SQL.query!(
+        Repo,
+        """
+        UPDATE favn_control.asset_target_bindings
+        SET active_generation_id=$3::uuid, compatibility_status='ready',
+            active_physical_fingerprint=$4, reason_code='fixture_published',
+            updated_at=$5, version=version+1
+        WHERE workspace_id=$1 AND target_id=$2
+        """,
+        [
+          fixture.workspace_id,
+          private_asset.target_descriptor.target_id,
+          Ecto.UUID.dump!(generation.target_generation_id),
+          String.duplicate("a", 64),
+          occurred_at
+        ]
+      )
+    end)
+
+    Map.put(fixture, :private_generation, generation)
   end
 
-  defp target_descriptor(fixture, manifest_schema_version \\ nil, materialization \\ :table) do
+  defp target_descriptor(fixture, manifest_schema_version, materialization) do
     asset = Enum.find(fixture.version.manifest.assets, &(&1.ref == {MyApp.Asset, :asset}))
     manifest_schema_version = manifest_schema_version || fixture.version.schema_version
 

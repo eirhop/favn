@@ -12,7 +12,6 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
 
   alias FavnOrchestrator.{
     ExecutionAdmission,
-    InitialTargetGenerationReconciler,
     ResourceCircuits,
     RunnerTasks,
     Runs,
@@ -48,7 +47,6 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
                 tasks: [],
                 entry: nil,
                 result: nil,
-                pending: nil,
                 freshness: nil,
                 details: [],
                 detail_ids: [],
@@ -182,12 +180,6 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
         {:settle, StageAttemptState.new(s.run, [], [s.entry], [], MapSet.new()), s.entry,
          s.result}
   end
-
-  def operation(%{phase: :generation} = s),
-    do: {:generation, s.pending.entry, s.run.storage_fencing_token}
-
-  def operation(%{phase: :finish_step} = s),
-    do: {:finish_step, StageAttemptState.new(s.run, [], [], [], MapSet.new()), s.pending}
 
   def operation(%{phase: :release_unresolved} = s), do: {:release_unresolved, s.run, s.entry}
 
@@ -376,17 +368,6 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   def perform({:settle, stage, entry, result}),
     do: StageResult.process(stage, entry, result, %{stage: entry.stage, attempt: entry.attempt})
 
-  def perform({:generation, entry, generation}),
-    do:
-      InitialTargetGenerationReconciler.reconcile(entry,
-        cleanup?: true,
-        cleanup_generation: generation,
-        timeout_ms: 300_000
-      )
-
-  def perform({:finish_step, stage, pending}),
-    do: StageResult.finish_post_step(stage, pending, :ok)
-
   def perform({:release_unresolved, run, entry}), do: release_permits(run, entry)
   def perform({:resources, command}), do: Stores.stores().admission.release_failed_run(command)
 
@@ -519,20 +500,6 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
     do: {:retry, reason}
 
   def apply_result(s, {kind, _, _, _}, result) when kind == :settle, do: settlement(s, result)
-  def apply_result(s, {:finish_step, _, _}, result), do: settlement(s, result)
-  def apply_result(s, {:generation, _, _}, :ok), do: {:cont, %{s | phase: :finish_step}}
-
-  def apply_result(s, {:generation, _, _}, {:error, reason}) do
-    if PersistenceRetry.recovery_required?(reason),
-      do: {:cont, next_task(%{s | waiting?: true})},
-      else:
-        {:cont,
-         %{
-           unresolved(s, "generation_evidence_unresolved", s.entry.task_id)
-           | phase: :release_unresolved
-         }}
-  end
-
   def apply_result(s, {:release_unresolved, _, _}, :ok), do: {:cont, next_task(s)}
 
   def apply_result(s, {:resources, _}, {:ok, release}) do
@@ -640,9 +607,6 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
 
   defp settlement(s, {:cont, stage}), do: {:cont, next_task(%{s | run: stage.run})}
 
-  defp settlement(s, {:post_step_pending, stage, pending}),
-    do: {:cont, %{s | run: stage.run, pending: pending, phase: :generation}}
-
   defp settlement(_s, {:persist_retry, _retry, reason}), do: {:retry, reason}
 
   defp settlement(s, {:recovery_required, run, reason}) do
@@ -654,7 +618,7 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   defp settlement(_s, other), do: {:error, {:invalid_cleanup_settlement, other}}
 
   defp next_task(s),
-    do: %{s | tasks: tl(s.tasks), phase: :tasks, entry: nil, result: nil, pending: nil}
+    do: %{s | tasks: tl(s.tasks), phase: :tasks, entry: nil, result: nil}
 
   defp unresolved_entry(s, entry, code),
     do: %{unresolved(s, code, entry.task_id) | entry: entry, phase: :release_unresolved}
@@ -718,6 +682,5 @@ defmodule FavnOrchestrator.RunServer.FailureCleanup do
   defp reason_phase(reason) when is_binary(reason), do: String.slice(reason, 0, 128)
   defp reason_phase(reason) when is_tuple(reason), do: reason_phase(elem(reason, 0))
   defp reason_phase(_), do: "recovery"
-  defp reason_code({:registration_retry_exhausted, _}), do: "registration_retry_exhausted"
   defp reason_code(_), do: "automatic_recovery_exhausted"
 end

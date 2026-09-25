@@ -35,7 +35,7 @@ publication success alone does not guarantee that a task fits this bound.
 | Assignment wire payload | 11,272,192 bytes | Base64 of the uncompressed assignment field map |
 | Persisted asset payload | 33,562,624 bytes | PostgreSQL JSONB typed envelope |
 
-The wire assignment uses protocol 15 and checks encoded and decoded bounds
+The wire assignment uses protocol 16 and checks encoded and decoded bounds
 before safe term decoding. Task persistence uses a separate current typed format;
 it does not decode stored ETF. Persisted SQL work stores a verified package
 reference; both encoding and restoration still enforce the complete-work bound.
@@ -124,7 +124,7 @@ pending intent is resumed before other deferred nodes, including when retry
 order differs from the original plan order.
 
 A step outcome records what happened; `step_settled` records that its
-materialization, resource outcomes and initial-generation registration have
+materialization, resource outcomes and freshness bookkeeping have
 finished. Recovery can therefore resume the missing bookkeeping after a crash
 between those commits. Shared freshness checkpoint replacement and its
 `run_execution_position` event are atomic. Recovery rejects conflicting position,
@@ -145,20 +145,15 @@ task IDs through the run mailbox. The existing active-run memory budget also
 applies during reconstruction. Large concurrent recovery still needs deployment
 load qualification.
 
-Initial-generation operation tasks belong to the run for retention, while their
-marker mutation identity remains separate from rebuild/recovery parent ownership.
-Known successful inspection and marker tasks are reused after restart. An unknown
-marker initialization can be observed through a matching marker read; that
-observation does not clear an unresolved writer hold automatically. Use the
-[held-write procedure](../production/elastic_runners.md#resolve-a-held-write)
-when that hold remains.
+Initial-generation publication is part of the original SQL transaction and fenced
+asset result acceptance. See the [atomic generation publication contract](target-generations-and-rebuilds.md#atomic-generation-publication).
+Unknown writes retain their exclusion; a stable generation marker alone cannot
+prove which attempt committed. Follow the
+[held-write procedure](../production/elastic_runners.md#resolve-a-held-write).
 
-This is a coordinated pre-v1 format change. Drain old-format runs before switching
-the control plane and runners, preserve retained data and unknown-write holds,
-and verify restart with work created by the new build. There is no reader that
-invents missing intent or settlement evidence for interrupted old-format runs.
-For terminal runs, [missing-marker repair is unsupported](../operators/runs-and-schedules.md#missing-initial-marker).
-Recovery with a matching existing marker remains available.
+This coordinated pre-v1 format change requires matched control-plane and runner
+builds with a fresh database. Preserve historical failed-environment evidence
+separately; this build does not import or repair interrupted old-format runs.
 
 Adopting this breaking persistence format requires the explicit
 [fresh development database procedure](../production/upgrade_and_rollback.md#task-persistence-format-adoption).
@@ -882,7 +877,6 @@ Supported task kinds in the first version:
 - `:relation_inspection`;
 - `:generation_capabilities`;
 - `:generation_marker_read`;
-- `:generation_marker_initialize`;
 - `:generation_activate`;
 - `:generation_reconcile`;
 - `:generation_discard`.
@@ -1253,10 +1247,23 @@ remove only the matching generation and schedule durable assignment recovery.
   waiter registration;
 - still requires each woken runner to perform the atomic claim.
 
-Duplicate claim requests return the same in-flight or completed claim outcome;
-they cannot reserve a second task for the runner. A dead claim worker resets
-only its matching claim request and leaves any committed task for fenced
-recovery.
+Duplicate claim requests return the same in-flight or completed successful
+outcome; they cannot reserve a second task for the runner. A failed store claim
+releases only its matching local reservation and preserves the storage error.
+It never becomes successful empty work. Each reservation has a fresh local token,
+so a delayed finalizer cannot complete or release a newer retry of the same
+command. The runner retries an uncertain response with the same command identity.
+
+A logical claim may commit an empty subattempt before a later wake-race subattempt
+assigns work. Replaying an empty durable receipt reconciles only an already-active,
+compatible assignment for that exact runner session under the existing claim and
+owner locks. It does not claim newly queued work, renew a lease, change a fence or
+demand count, adopt another session, or rewrite the empty receipt. Nonempty
+receipts retain their exact replay behavior. If an active assignment exists but
+owner validation cannot be confirmed, both fresh claims and empty-receipt replay
+return a retryable conflict rather than reporting an empty slot or acquiring
+another task. Existing fenced recovery resolves invalid/expired ownership. This
+recovery uses durable state and survives loss of the process-local registry.
 
 The per-pool/release `RunnerQueueCoordinator` owns only an in-memory queue
 generation and eligible idle waiters. After a committed enqueue it advances the
@@ -1484,7 +1491,6 @@ Move all current runner-bound operations through `RunnerTasks`:
 
 - asset attempts from `StageAdmission` and `RunServer`;
 - physical target inspection from `TargetCompatibilityPlanner`;
-- initial target generation from `InitialTargetGenerationReconciler`;
 - rebuild creation, copy, validation, and promotion from `Rebuilds` and
   `RebuildDispatcher`;
 - any future operation that imports customer code or opens a target adapter.

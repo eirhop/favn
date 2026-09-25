@@ -3,7 +3,6 @@ defmodule Favn.Contracts.RunnerTask.PersistenceResult do
 
   alias Favn.Contracts.GenerationActivationResult
   alias Favn.Contracts.GenerationDiscardResult
-  alias Favn.Contracts.GenerationMarkerInitializationResult
   alias Favn.Contracts.GenerationReconciliationResult
   alias Favn.Contracts.RelationInspectionResult
   alias Favn.Contracts.RunnerAssetEvidence
@@ -17,7 +16,6 @@ defmodule Favn.Contracts.RunnerTask.PersistenceResult do
   @generation_results [
     GenerationActivationResult,
     GenerationDiscardResult,
-    GenerationMarkerInitializationResult,
     GenerationReconciliationResult
   ]
 

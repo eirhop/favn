@@ -11,8 +11,18 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
 
   def disconnect({pid, _}, _), do: GenServer.stop(pid)
 
+  def capabilities(%{config: %{transaction_outcome: :unsupported_transaction}}, _),
+    do: {:ok, %Capabilities{replace_table: :supported}}
+
   def capabilities(_, _),
     do: {:ok, %Capabilities{transactions: :supported, replace_table: :supported}}
+
+  # This fixture proves check rollback; native adapter tests qualify publication.
+  def generation_capabilities(_, _),
+    do: {:ok, %Favn.SQL.GenerationCapabilities{atomic_publication: :supported}}
+
+  def prepare_generation_write(_, expected, _), do: {:ok, expected}
+  def publish_generation_write(_, _, _), do: raise("failed check reached publication")
 
   def relation(_, _, _), do: {:ok, nil}
 
@@ -47,6 +57,7 @@ defmodule FavnStoragePostgres.TestSupport.CheckedSQLAdapter do
   end
 
   def transaction({pid, observer} = conn, fun, _) do
+    send(observer, :sql_transaction_started)
     Postgrex.query!(pid, "BEGIN", [])
 
     case fun.(conn) do

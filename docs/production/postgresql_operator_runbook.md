@@ -644,13 +644,13 @@ cannot read new-format tasks.
 
 ## Resume a run that needs recovery attention
 
-New transient generation-registration failures retry automatically. When the
-budget is exhausted, the run fails and cleanup continues automatically, including
+Transient run-persistence failures preserve their original commands within a
+bounded retry budget. When it is exhausted, the run fails and cleanup continues automatically, including
 after orchestrator restart. A failed run's cleanup status is separate from its
 execution result. Pending cleanup needs no resume click. Cleanup attention means
 unresolved evidence remains protected; inspect the affected task/target before
-using its existing target recovery workflow. Never clear a target hold to make a
-failed run look complete. See the [cleanup contract](../architecture/run-ownership-and-recovery.md#registration-retries-and-failed-run-cleanup).
+following the [held-write procedure](elastic_runners.md#resolve-a-held-write). Never clear a target hold to make a
+failed run look complete. See the [cleanup contract](../architecture/run-ownership-and-recovery.md#failed-run-cleanup).
 
 The procedure below applies to existing nonterminal attention runs; an upgrade
 does not automatically resume them.

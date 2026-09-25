@@ -68,8 +68,23 @@ defmodule Favn.SQLAsset.Runtime do
         %RunnerWork{} = work,
         %Context{} = context
       ) do
-    run_manifest(asset, package, version, relation_map(version), work, context)
+    run_manifest(asset, package, version, relation_map(version), work, context, nil)
   end
+
+  @spec run_manifest(
+          Asset.t(),
+          ExecutionPackage.t(),
+          Version.t(),
+          RunnerWork.t(),
+          Context.t(),
+          Favn.Contracts.GenerationPrecondition.t() | nil
+        ) ::
+          {:ok, map()} | {:error, Error.t()} | {:error, Error.t(), map()}
+  def run_manifest(asset, package, %Version{} = version, %RunnerWork{} = work, context, expected),
+    do: run_manifest(asset, package, version, relation_map(version), work, context, expected)
+
+  def run_manifest(asset, package, identity, relations, work, context) when is_map(relations),
+    do: run_manifest(asset, package, identity, relations, work, context, nil)
 
   @spec run_manifest(
           Asset.t(),
@@ -77,7 +92,8 @@ defmodule Favn.SQLAsset.Runtime do
           Version.t() | ManifestHandle.t(),
           %{optional(module()) => RelationRef.t()},
           RunnerWork.t(),
-          Context.t()
+          Context.t(),
+          Favn.Contracts.GenerationPrecondition.t() | nil
         ) ::
           {:ok, map()} | {:error, Error.t()} | {:error, Error.t(), map()}
   def run_manifest(
@@ -86,10 +102,12 @@ defmodule Favn.SQLAsset.Runtime do
         manifest_identity,
         relation_by_module,
         %RunnerWork{} = work,
-        %Context{} = context
+        %Context{} = context,
+        generation_precondition
       )
       when is_struct(manifest_identity, Version) or is_struct(manifest_identity, ManifestHandle) do
-    with :ok <- validate_runtime_publication(asset, work),
+    with :ok <- Favn.Contracts.GenerationPrecondition.validate_work(generation_precondition, work),
+         :ok <- validate_runtime_publication(asset, work),
          {:ok, %Definition{} = definition, %Context{} = final_context, final_opts} <-
            prepare_manifest_execution(
              asset,
@@ -100,7 +118,11 @@ defmodule Favn.SQLAsset.Runtime do
              context
            ),
          {:ok, %Render{} = rendered, %CheckedMaterialization{} = materialization, resolution} <-
-           execute_finalized_definition(definition, final_context, final_opts) do
+           execute_finalized_definition(
+             definition,
+             final_context,
+             Keyword.put(final_opts, :generation_precondition, generation_precondition)
+           ) do
       output =
         definition
         |> runtime_output(rendered, materialization, resolution)
@@ -109,8 +131,21 @@ defmodule Favn.SQLAsset.Runtime do
 
       {:ok, output}
     else
-      {:error, %Error{} = error, meta} -> {:error, error, meta}
-      {:error, %Error{} = error} -> {:error, error}
+      {:error, %Error{} = error, meta} ->
+        {:error, error, meta}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      {:error, reason} ->
+        {:error,
+         %Error{
+           type: :invalid_generation_precondition,
+           phase: :prepare,
+           asset_ref: asset.ref,
+           message: "Invalid assignment generation evidence",
+           details: %{reason: reason, asset_write_outcome: :not_started}
+         }}
     end
   end
 
@@ -195,7 +230,8 @@ defmodule Favn.SQLAsset.Runtime do
            %Error{
              type: :invalid_runtime_publication,
              phase: :materialize,
-             message: "Managed SQL work requires matching pinned runtime publication intent"
+             message: "Managed SQL work requires matching pinned runtime publication intent",
+             details: %{asset_write_outcome: :not_started}
            }}
       end
     else
@@ -632,7 +668,7 @@ defmodule Favn.SQLAsset.Runtime do
   end
 
   defp materialize_render(definition, rendered, opts) do
-    if Keyword.get(opts, :runtime_publication),
+    if Keyword.get(opts, :runtime_publication) || Keyword.get(opts, :generation_precondition),
       do: checked_materialize(definition, rendered, opts),
       else: materialize_untracked_render(definition, rendered, opts)
   end
@@ -766,6 +802,7 @@ defmodule Favn.SQLAsset.Runtime do
        details: %{
          connection: session.resolved.name,
          missing_capability: :group_replacement,
+         asset_write_outcome: :not_started,
          group_replacement: session.capabilities.group_replacement
        }
      }}
@@ -1431,18 +1468,55 @@ defmodule Favn.SQLAsset.Runtime do
 
   defp validate_publication_scope(_, _), do: :ok
 
-  defp prepare_publication(session, rendered, opts),
-    do:
+  defp prepare_publication(session, rendered, opts) do
+    with :ok <- prepare_generation_write(session, opts) do
       RuntimeCatalog.prepare(
         session,
         Keyword.get(opts, :runtime_publication),
         rendered.relation,
         sql_operation_opts(opts)
       )
+    end
+  end
 
-  defp publish_materialization(_session, nil, _definition, output, _opts), do: {:ok, output}
+  defp prepare_generation_write(session, opts) do
+    case Keyword.get(opts, :generation_precondition) do
+      nil ->
+        :ok
+
+      expected ->
+        case SQLClient.prepare_generation_write(session, expected, sql_operation_opts(opts)) do
+          {:ok, ^expected} -> :ok
+          error -> error
+        end
+    end
+  end
 
   defp publish_materialization(session, prepared, definition, output, opts) do
+    with {:ok, output} <- publish_runtime_catalog(session, prepared, definition, output, opts) do
+      case Keyword.get(opts, :generation_precondition) do
+        nil ->
+          {:ok, output}
+
+        expected ->
+          case SQLClient.publish_generation_write(session, expected, sql_operation_opts(opts)) do
+            {:ok, receipt} ->
+              {:ok, %{output | generation_commit: receipt}}
+
+            {:error, %SQLError{} = error} ->
+              {:error,
+               %SQLError{
+                 error
+                 | details: Map.put(error.details || %{}, :check_results, output.check_results)
+               }}
+          end
+      end
+    end
+  end
+
+  defp publish_runtime_catalog(_session, nil, _definition, output, _opts), do: {:ok, output}
+
+  defp publish_runtime_catalog(session, prepared, definition, output, opts) do
     with {:ok, [contract]} <-
            Snapshot.build([
              Map.put(definition.asset, :contract, definition.contract)
@@ -1499,7 +1573,11 @@ defmodule Favn.SQLAsset.Runtime do
        phase: :materialize,
        asset_ref: rendered.asset_ref,
        message: "checked SQL assets require transactional table materialization",
-       details: %{connection: session.resolved.name, missing_capability: capability}
+       details: %{
+         connection: session.resolved.name,
+         missing_capability: capability,
+         asset_write_outcome: :not_started
+       }
      }}
   end
 
@@ -2115,12 +2193,15 @@ defmodule Favn.SQLAsset.Runtime do
          %Definition{} = definition,
          %Render{} = rendered
        ) do
-    results = complete_check_results(definition, [], :transaction_failed)
-    emit_check_telemetry(definition, results, :unknown, :unknown)
+    outcome =
+      if error.details[:asset_write_outcome] == :not_started, do: :not_started, else: :unknown
+
+    results = complete_check_results(definition, [], failed_check_reason(outcome))
+    emit_check_telemetry(definition, results, outcome, outcome)
 
     meta =
       rendered
-      |> failed_check_metadata(results, :unknown, :unknown)
+      |> failed_check_metadata(results, outcome, outcome)
       |> attach_contract_validation_evidence(error)
 
     {:error, error, meta}
@@ -2789,7 +2870,8 @@ defmodule Favn.SQLAsset.Runtime do
       write_outcome: materialization.write_outcome,
       reason: materialization.reason,
       group_replacement: materialization.group_replacement,
-      runtime_publication: materialization.runtime_publication
+      runtime_publication: materialization.runtime_publication,
+      generation_commit: materialization.generation_commit
     }
 
     output = maybe_put_contract_validation(output, materialization.contract_validation)

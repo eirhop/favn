@@ -161,7 +161,7 @@ defmodule Favn.CoverageDSLTest do
     assert asset.coverage.declared_from.start_at.year == 2020
     assert asset.coverage.effective_from.start_at.year == 2026
     assert manifest.schema_version == 21
-    assert manifest.runner_contract_version == 17
+    assert manifest.runner_contract_version == 18
 
     assert manifest.environment == %Favn.Manifest.Environment{
              default_timezone: "Europe/Oslo",

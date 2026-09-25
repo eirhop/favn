@@ -9,7 +9,6 @@ defmodule Favn.SQL.Admission do
     Error,
     GenerationActivation,
     GenerationDiscard,
-    GenerationMarkerInitialization,
     GenerationReconciliation,
     Observability,
     Session,
@@ -318,12 +317,6 @@ defmodule Favn.SQL.Admission do
   defp catalog_target(:activate_generation, %GenerationActivation{stable_relation: relation}),
     do: {relation.connection, relation.catalog}
 
-  defp catalog_target(
-         :initialize_generation_marker,
-         %GenerationMarkerInitialization{stable_relation: relation}
-       ),
-       do: {relation.connection, relation.catalog}
-
   defp catalog_target(:inspect_generation, %Favn.RelationRef{} = relation),
     do: {relation.connection, relation.catalog}
 
@@ -379,8 +372,7 @@ defmodule Favn.SQL.Admission do
   defp session_required_catalogs(%Session{required_catalogs: catalogs}, operation, _payload)
        when operation in [
               :activate_generation,
-              :discard_generation,
-              :initialize_generation_marker
+              :discard_generation
             ],
        do: catalogs
 
@@ -417,7 +409,6 @@ defmodule Favn.SQL.Admission do
               :materialize,
               :transaction,
               :activate_generation,
-              :initialize_generation_marker,
               :discard_generation
             ],
        do: true

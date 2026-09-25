@@ -32,7 +32,6 @@ defmodule FavnView.OrchestratorTest do
     assert Keyword.get(commands, :operator_external_login) == 2
     assert Keyword.get(commands, :operator_password_login) == 4
     assert Keyword.get(commands, :plan_operator_rebuild) == 4
-    assert Keyword.get(commands, :plan_operator_target_recovery) == 4
   end
 
   test "validates a bounded private remote-node contract" do

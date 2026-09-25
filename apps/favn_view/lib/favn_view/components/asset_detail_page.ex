@@ -507,14 +507,6 @@ defmodule FavnView.Components.AssetDetailPage do
           class="mt-6 flex flex-wrap gap-2 border-t border-base-content/10 pt-5"
         >
           <.button
-            :if={field(@compatibility, :reason_code) == "unmanaged_physical_relation"}
-            navigate={~p"/recoveries?#{[target_id: @rebuild_target_id]}"}
-            data-testid="recover-asset-ownership"
-          >
-            Take ownership of this table
-          </.button>
-
-          <.button
             :if={rebuild_available?(@compatibility)}
             variant={:secondary}
             navigate={~p"/rebuilds?#{[target_id: @rebuild_target_id]}"}
