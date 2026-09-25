@@ -27,6 +27,28 @@ and rollback procedures are in `docs/production/control_plane_image.md`.
 - A manifest has been built from the public authoring flow.
 - You are not editing control-plane storage directly.
 
+## Correct An Invalid Backfill Window
+
+An invalid window value, such as month `2021-31`, is rejected before a root run
+or backfill is created. The operator command records `rejected` with diagnostic
+code `invalid_window_value`. Once that result is confirmed, the View releases
+the command key so you can correct the range and submit again.
+
+For a command left `unknown` by the earlier invalid-window bug, deploy the fix
+first, then replay the original invalid request using the same operator account,
+workspace, manifest, target, options, and command key. A renewed session for that
+same account is allowed. In the original browser, restore all original form
+values and submit while its retained key is still present. The exact replay
+revalidates the range and settles the command as rejected; after that response,
+correct the input and submit normally.
+
+If you cannot reconstruct the original request/key, or the replay remains
+unknown, stop and investigate the retained command. Clearing browser storage or
+using a fresh key does not release the database reservation. Do not delete
+command records or infer no effect merely from an empty backfill list: other
+submission failures can leave a root run. General abandonment of unknown
+commands is not supported by this correction.
+
 ## Register And Activate A Manifest
 
 1. Build or obtain the manifest JSON from the supported authoring flow.

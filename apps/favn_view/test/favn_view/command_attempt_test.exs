@@ -3,7 +3,30 @@ defmodule FavnView.CommandAttemptTest do
 
   alias FavnView.CommandAttempt
 
+  alias Phoenix.LiveView.Socket
+  alias Phoenix.LiveView.Utils
+
   doctest CommandAttempt
+
+  test "invalid windows acknowledge the key but unconfirmed audit completion retains it" do
+    attempt = CommandAttempt.next(nil, "pipeline_backfill_submit", "pipeline")
+    socket = %Socket{assigns: %{__changed__: %{}}}
+    reason = {:invalid_window_value, :month, "2021-31"}
+
+    assert {rejected, nil} = CommandAttempt.settle_failure(socket, attempt, reason)
+
+    assert Utils.get_push_events(rejected) ==
+             [["operator-command-terminal", %{idempotency_key: attempt.key}]]
+
+    assert {uncertain, ^attempt} =
+             CommandAttempt.settle_failure(
+               socket,
+               attempt,
+               {:operator_audit_incomplete, :unavailable}
+             )
+
+    assert Utils.get_push_events(uncertain) == []
+  end
 
   test "each intent gets its own key" do
     enable = CommandAttempt.next(nil, "schedule_activation", {"s1", :enable})

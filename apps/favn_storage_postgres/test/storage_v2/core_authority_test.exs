@@ -4242,6 +4242,160 @@ defmodule FavnStoragePostgres.StorageV2.CoreAuthorityTest do
              })
   end
 
+  for target_kind <- [:pipeline, :asset] do
+    @tag target_kind: target_kind
+    test "invalid #{target_kind} backfill window releases intent for a corrected submission",
+         fixture do
+      identity = api_identity(fixture, [:operator])
+
+      {:ok, operator_context} =
+        OperatorContext.new(fixture.workspace_id, identity.actor, identity.session)
+
+      target_id =
+        if fixture.target_kind == :pipeline,
+          do: fixture.pipeline_target_id,
+          else: fixture.target_id
+
+      submit =
+        if fixture.target_kind == :pipeline,
+          do: &FavnOrchestrator.submit_operator_pipeline_backfill/5,
+          else: &FavnOrchestrator.submit_operator_asset_backfill/5
+
+      range = %{kind: :day, from: "2026-07-32", to: "2026-07-03", timezone: "Etc/UTC"}
+      key = "invalid-window-first-command"
+
+      assert {:error, {:invalid_window_value, :day, "2026-07-32"}} =
+               submit.(
+                 operator_context,
+                 fixture.version.manifest_version_id,
+                 target_id,
+                 %{range: range},
+                 idempotency_key: key
+               )
+
+      assert %{rows: [["rejected", %{"result" => %{"error_code" => "invalid_window_value"}}]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT status, result_detail FROM favn_control.auth_operator_commands WHERE workspace_id = $1 AND key_hash = $2",
+                 [fixture.workspace_id, FavnOrchestrator.Idempotency.key_hash(key)]
+               )
+
+      for table <- ["runs", "backfills"] do
+        assert %{rows: [[0]]} =
+                 SQL.query!(
+                   Repo,
+                   "SELECT count(*) FROM favn_control.#{table} WHERE workspace_id = $1",
+                   [fixture.workspace_id]
+                 )
+      end
+
+      assert {:ok, root_run_id} =
+               submit.(
+                 operator_context,
+                 fixture.version.manifest_version_id,
+                 target_id,
+                 %{range: %{range | from: "2026-07-01"}},
+                 idempotency_key: "corrected-window-command"
+               )
+
+      assert is_binary(root_run_id)
+
+      assert %{rows: [[1]]} =
+               SQL.query!(
+                 Repo,
+                 "SELECT count(*) FROM favn_control.backfills WHERE workspace_id = $1 AND root_run_id = $2",
+                 [fixture.workspace_id, root_run_id]
+               )
+    end
+  end
+
+  test "exact invalid-window replay settles a historical unknown without bypassing conflicts",
+       fixture do
+    identity = api_identity(fixture, [:operator])
+
+    {:ok, context, session, actor} =
+      Identity.authorize_session(
+        fixture.workspace_context,
+        identity.actor.id,
+        identity.session.id,
+        :operator
+      )
+
+    {:ok, operator_context} = OperatorContext.new(fixture.workspace_id, actor, session)
+    target_id = fixture.pipeline_target_id
+    manifest_id = fixture.version.manifest_version_id
+    range = %{kind: :month, from: "2021-31", to: "2021-12", timezone: "Etc/UTC"}
+
+    {:ok, request} =
+      FavnOrchestrator.OperatorCommands.PipelineBackfillRequest.from_input(%{range: range})
+
+    key = "historical-invalid-window-command"
+
+    {:ok, intent} =
+      OperatorAudit.begin_command(
+        context,
+        operator_context,
+        actor,
+        "pipeline.backfill.submit",
+        "pipeline",
+        target_id,
+        %{manifest_version_id: manifest_id, target_id: target_id, request: request},
+        key
+      )
+
+    assert :ok =
+             OperatorAudit.finish_command(
+               context,
+               operator_context,
+               actor,
+               intent,
+               "unknown",
+               "backfill",
+               target_id,
+               %{error_code: "operator_command_failed"}
+             )
+
+    for {input, retry_key} <- [
+          {%{range: %{range | from: "2021-01"}}, key},
+          {%{range: range}, "fresh-key-cannot-bypass-unknown"}
+        ] do
+      assert {:error,
+              %Error{retryable?: true, details: %{reason_code: "operator_command_unresolved"}}} =
+               FavnOrchestrator.submit_operator_pipeline_backfill(
+                 operator_context,
+                 manifest_id,
+                 target_id,
+                 input,
+                 idempotency_key: retry_key
+               )
+    end
+
+    assert {:error, {:invalid_window_value, :month, "2021-31"}} =
+             FavnOrchestrator.submit_operator_pipeline_backfill(
+               operator_context,
+               manifest_id,
+               target_id,
+               %{range: range},
+               idempotency_key: key
+             )
+
+    assert %{rows: [["rejected", %{"result" => %{"error_code" => "invalid_window_value"}}]]} =
+             SQL.query!(
+               Repo,
+               "SELECT status, result_detail FROM favn_control.auth_operator_commands WHERE workspace_id = $1 AND key_hash = $2",
+               [fixture.workspace_id, intent.key_hash]
+             )
+
+    assert {:ok, _root_run_id} =
+             FavnOrchestrator.submit_operator_pipeline_backfill(
+               operator_context,
+               manifest_id,
+               target_id,
+               %{range: %{range | kind: :day, from: "2026-07-01", to: "2026-07-03"}},
+               idempotency_key: "corrected-after-historical-recovery"
+             )
+  end
+
   test "pipeline backfill planning persists an exact resumable V2 plan", fixture do
     range = %{
       "kind" => "day",
