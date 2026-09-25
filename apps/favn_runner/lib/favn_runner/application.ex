@@ -46,7 +46,7 @@ defmodule FavnRunner.Application do
         runner_agent_children ++
         [
           {RuntimeBootstrap, mark_accepting?: runner_agent_children == []}
-        ]
+        ] ++ readiness_reporter_children(environment)
 
     opts = [strategy: :one_for_all, name: FavnRunner.Supervisor]
 
@@ -62,6 +62,13 @@ defmodule FavnRunner.Application do
   end
 
   def prep_stop(state), do: state
+
+  defp readiness_reporter_children(environment) do
+    case Map.get(environment, "FAVN_RUNNER_READINESS_FILE") do
+      nil -> []
+      path -> [{FavnRunner.ReadinessReporter, path: path}]
+    end
+  end
 
   defp configure_log_level_or_raise(environment) do
     case Favn.LogLevel.configure_from_env(environment) do

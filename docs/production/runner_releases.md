@@ -71,6 +71,28 @@ bundled extensions, labels, and absence of cookie files. Customer CI then scans,
 signs, publishes, and records the resulting digest. Deploy the digest, not a
 mutable tag.
 
+## Container readiness
+
+The packaged runner checks its existing runtime readiness locally every two
+seconds, with a one-second budget per check. It atomically publishes a timestamp
+only when ready. The container probe reads that timestamp without starting another
+BEAM or connecting through distributed Erlang. Missing, malformed, future-dated,
+or ten-second-old snapshots fail the probe. Startup clears the previous snapshot;
+a blocked or failed check removes it. Docker applies its configured interval and
+failure threshold before changing the container's health status.
+
+The image sets `FAVN_RUNNER_READINESS_FILE=/tmp/favn-runner-ready`. This is disposable
+container-local state, never a persistent volume. Read-only deployments need a
+writable `/tmp`; the supplied Compose template already provides an owner-only
+tmpfs. No additional port or credentials are needed. Custom deployments must not
+retain the old `favn_runner rpc` health-check override: dynamic runners deliberately
+do not accept inbound distribution connections. Use `/bin/sh
+/opt/favn/bin/runner-healthcheck.sh`, as the image and Compose template do.
+
+Existing customer-owned deployment files are not overwritten by `favn.init`.
+When updating them, copy the new probe together with the Dockerfile, release
+startup template and Compose health-check changes.
+
 ## Build the aligned manifest
 
 Build in the consumer project with the same ID:

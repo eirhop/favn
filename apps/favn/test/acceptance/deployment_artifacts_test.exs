@@ -20,6 +20,8 @@ defmodule Favn.DeploymentArtifactsAcceptanceTest do
     assert {:ok, deployment} = Init.run(root_dir: root_dir, target: :deployment)
 
     dockerfile = File.read!(Path.join(deployment.output, "runner.Dockerfile"))
+    assert File.regular?(Path.join(deployment.output, "runner-healthcheck.sh"))
+    assert dockerfile =~ ~s(["/bin/sh", "/opt/favn/bin/runner-healthcheck.sh"])
     assert dockerfile =~ "ARG FAVN_RUNNER_RELEASE_ID"
     assert dockerfile =~ "ARG FAVN_CUSTOMER_APP"
     assert dockerfile =~ "io.favn.runner-release-id"

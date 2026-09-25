@@ -24,7 +24,7 @@ duckdb_version=$(inspect '{{ index .Config.Labels "io.favn.duckdb-version" }}')
 [[ -n $duckdb_version ]]
 [[ $(inspect '{{ index .Config.Labels "io.favn.target" }}') == linux/amd64 ]]
 [[ $(inspect '{{json .Config.Entrypoint}}') == '["/opt/favn/bin/favn_runner"]' ]]
-[[ $(inspect '{{json .Config.Healthcheck.Test}}') == '["CMD","/opt/favn/bin/favn_runner","rpc","case FavnRunner.readiness() do :ok -> :ok; other -> raise inspect(other) end"]' ]]
+[[ $(inspect '{{json .Config.Healthcheck.Test}}') == '["CMD","/bin/sh","/opt/favn/bin/runner-healthcheck.sh"]' ]]
 [[ $(inspect '{{range .Config.Env}}{{println .}}{{end}}' | grep '^FAVN_RUNNER_RELEASE_ID=') == "FAVN_RUNNER_RELEASE_ID=$expected_release_id" ]]
 [[ $(inspect '{{range .Config.Env}}{{println .}}{{end}}' | grep '^DUCKDB_ADBC_DRIVER=') == "DUCKDB_ADBC_DRIVER=/opt/duckdb/$duckdb_version/libduckdb.so" ]]
 [[ $(inspect '{{range .Config.Env}}{{println .}}{{end}}' | grep '^LANG=') == LANG=C.UTF-8 ]]
