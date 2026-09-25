@@ -26,7 +26,7 @@ else
   File.mkdir_p!(deploy)
   templates = Path.join(context, "apps/favn/priv/templates/deployment")
 
-  for name <- ["mix.exs", "env.sh.eex"],
+  for name <- ["mix.exs", "env.sh.eex", "runner-healthcheck.sh"],
       do: File.cp!(Path.join(templates, name), Path.join(deploy, name))
 
   File.write!(

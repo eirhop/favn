@@ -143,6 +143,9 @@ runtime inputs, and SQL integrations remain pre-v1 and may change.
   flips before bounded Orchestrator shutdown;
   admitted work may settle until the configured deadline, after which ordinary
   durable cancellation/result paths preserve honest recovery state.
+- Packaged runners publish expiring local readiness snapshots, so image health
+  checks work with outbound-only dynamic nodes without starting a second BEAM.
+  See [container readiness](production/runner_releases.md#container-readiness).
 - The production control plane is one immutable Linux amd64 image containing
   separate View and Orchestrator releases plus PostgreSQL storage, Core, Azure
   credential support, and runtime dependencies. It

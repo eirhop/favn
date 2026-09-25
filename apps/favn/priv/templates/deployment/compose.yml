@@ -105,9 +105,8 @@ services:
       test:
         [
           "CMD",
-          "/opt/favn/bin/favn_runner",
-          "rpc",
-          "case FavnRunner.readiness() do :ok -> :ok; other -> raise inspect(other) end",
+          "/bin/sh",
+          "/opt/favn/bin/runner-healthcheck.sh",
         ]
       interval: 5s
       timeout: 3s

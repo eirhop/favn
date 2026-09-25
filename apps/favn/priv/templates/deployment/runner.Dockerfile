@@ -98,6 +98,7 @@ RUN --mount=type=bind,source=.,target=/build,rw \
     mix deps.get --only prod --check-locked; \
     mix deps.compile; \
     mix release favn_runner --path /runner-release; \
+    cp runner-healthcheck.sh /runner-release/bin/runner-healthcheck.sh; \
     rm -f /runner-release/releases/COOKIE; \
     test ! -e /runner-release/releases/COOKIE
 
@@ -158,12 +159,13 @@ LABEL org.opencontainers.image.title="Favn customer runner" \
 
 ENV FAVN_RUNNER_RELEASE_ID=$FAVN_RUNNER_RELEASE_ID \
     DUCKDB_ADBC_DRIVER=/opt/duckdb/${DUCKDB_VERSION}/libduckdb.so \
+    FAVN_RUNNER_READINESS_FILE=/tmp/favn-runner-ready \
     HOME=/var/lib/favn \
     ERL_CRASH_DUMP=/tmp/erl_crash.dump \
     LANG=C.UTF-8 \
     LC_ALL=C.UTF-8
 
 USER 10001:10001
-HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=20 CMD ["/opt/favn/bin/favn_runner", "rpc", "case FavnRunner.readiness() do :ok -> :ok; other -> raise inspect(other) end"]
+HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=20 CMD ["/bin/sh", "/opt/favn/bin/runner-healthcheck.sh"]
 ENTRYPOINT ["/opt/favn/bin/favn_runner"]
 CMD ["start"]
