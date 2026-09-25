@@ -754,6 +754,59 @@ defmodule FavnOrchestrator.RunServer.PostStepRunServerTest do
     assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 5_000
   end
 
+  test "new execution messages cannot overtake a queued completion", %{fixture: fixture} do
+    completion = {:runner_result, "finished-task", {:ok, nil}}
+
+    state = %{
+      execution_state: %RunExecutionState{run: fixture.run, mode: :sequential, status: :awaiting},
+      deferred_execution_events: [completion],
+      deferred_drain_scheduled: true
+    }
+
+    for message <- [
+          {:DOWN, make_ref(), :process, self(), :normal},
+          {:runner_result, "later-task", {:ok, nil}},
+          {:runner_task_result, "workspace", "later-task", %{}},
+          {:runner_task_started, "workspace", "later-task", %{}},
+          {:attempt_timeout, "later-task", make_ref()},
+          {:retry_attempt, make_ref()},
+          {:stage_admission_timeout, make_ref()},
+          {:execution_admission_wakeup, "waiter", 1},
+          {:favn_run_cancel_requested, :operator},
+          :continue_execution,
+          :recover_next
+        ] do
+      assert {:noreply, queued} = RunServer.handle_info(message, state)
+      assert queued.deferred_execution_events == [completion, message]
+    end
+
+    down = {:DOWN, make_ref(), :process, self(), :normal}
+    state = %{state | deferred_execution_events: [completion, down]}
+    assert {:noreply, next} = RunServer.handle_info(:drain_deferred_execution, state)
+    assert next.deferred_execution_events == [down]
+    assert_receive :drain_deferred_execution
+    assert {:noreply, drained} = RunServer.handle_info(:drain_deferred_execution, next)
+    assert drained.deferred_execution_events == []
+  end
+
+  test "late messages remain safe while a terminal run drains its queue", %{fixture: fixture} do
+    stale = {:DOWN, make_ref(), :process, self(), :normal}
+
+    state = %{
+      run_state: fixture.run,
+      execution_state: nil,
+      deferred_execution_events: [:continue_execution],
+      deferred_drain_scheduled: true
+    }
+
+    assert {:noreply, queued} = RunServer.handle_info(stale, state)
+    assert queued.deferred_execution_events == [:continue_execution, stale]
+    assert {:noreply, next} = RunServer.handle_info(:drain_deferred_execution, queued)
+    assert_receive :drain_deferred_execution
+    assert {:noreply, drained} = RunServer.handle_info(:drain_deferred_execution, next)
+    assert drained.deferred_execution_events == []
+  end
+
   test "a stale DOWN cannot strand the rest of the deferred queue", %{fixture: fixture} do
     stale = make_ref()
 

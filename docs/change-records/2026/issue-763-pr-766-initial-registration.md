@@ -1285,3 +1285,35 @@ runs (55 checks). This is a one-line test-ownership correction, with no producti
 change or weakened timeout assertion; the final CI run must still pass.
 Independent reviewer `review_763_plan` accepted the teardown correction and its
 55-check evidence on 2026-09-24; no remaining findings.
+
+### CI follow-up: preserve deferred execution ordering
+
+CI run `36098791030` failed the cancellation/accepted-settlement test: it saw a
+failed materialization and task cancellation before the test sent its cancellation
+hint. The original test passed 101 isolated repetitions with seed `204237`, so the
+exact CI interleaving was not independently reproduced.
+
+Investigation nevertheless established a concrete execution-ordering defect. A
+persistence receipt reopened normal event dispatch and appended the deferred-drain
+message to the mailbox. A later waiter DOWN, timeout, or cancellation already in
+that mailbox could overtake the earlier deferred completion. A deterministic
+routing regression failed on the original code and passed with the correction.
+
+The execution gate now remains closed while deferred replay is scheduled, including
+recovery continuations. Replay still handles one event per mailbox turn; lease
+challenges and persistence receipts retain their priority. Finalized runs retain
+queued messages and use their run snapshot for memory accounting, avoiding a nil
+execution-state dereference without discarding completion or cancellation events.
+No timeout, assertion, durable write retry, or runner protocol was weakened.
+
+Astra xhigh independently reviewed this correction and identified the terminal-state
+edge during review. The retained-queue fix addressed it. Independent probes verified
+terminal FIFO handling, lease responsiveness, and persistence-helper DOWN priority;
+no remaining blocking code findings were reported.
+
+Verification: the deterministic routing and persistence regressions pass (4 tests),
+and the complete lifecycle module passed all 42 tests with seed `204237`. Earlier
+full-module runs on both original and partially corrected code also observed a
+pre-start cancellation; its exact cause remains unproven and is not represented as
+fixed solely by the passing rerun. Temporary diagnostic instrumentation was removed.
+GitHub CI on the final pushed head remains the release gate.

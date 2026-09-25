@@ -41,6 +41,13 @@ defmodule FavnOrchestrator.RunServer do
 
   @execution_persist_retry_ms 1_000
 
+  # Keep the gate closed until queued events have been replayed. A mailbox DOWN
+  # must not overtake the result that its waiter already delivered.
+  defguardp execution_events_deferred?(state)
+            when is_map_key(state, :execution_persist_pending) or
+                   (is_map_key(state, :deferred_drain_scheduled) and
+                      :erlang.map_get(:deferred_drain_scheduled, state) == true)
+
   @doc "Starts an unregistered process for one run snapshot and manifest version."
   @spec start_link(init_arg()) :: GenServer.on_start()
   def start_link(args) when is_map(args), do: GenServer.start_link(__MODULE__, args)
@@ -299,13 +306,13 @@ defmodule FavnOrchestrator.RunServer do
       ),
       do: {:noreply, state |> Map.put(:cancel_latched, message) |> defer_execution_event(message)}
 
-  def handle_info(:recover_next, %{execution_persist_pending: _} = state),
+  def handle_info(:recover_next, state) when execution_events_deferred?(state),
     do: {:noreply, defer_execution_event(state, :recover_next)}
 
   def handle_info(:recover_next, state), do: handle_execution_event(state, :recover_next)
 
   @impl true
-  def handle_info(:continue_execution, %{execution_persist_pending: _} = state),
+  def handle_info(:continue_execution, state) when execution_events_deferred?(state),
     do: {:noreply, defer_execution_event(state, :continue_execution)}
 
   def handle_info(:continue_execution, state), do: continue_execution(state)
@@ -386,40 +393,46 @@ defmodule FavnOrchestrator.RunServer do
     handle_execution_result(state, Execution.retry_persistence(execution_state, retry))
   end
 
-  def handle_info({:runner_result, _, _} = message, %{execution_persist_pending: _} = state),
+  def handle_info({:runner_result, _, _} = message, state) when execution_events_deferred?(state),
     do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info(
         {:runner_task_result, _, _, _} = message,
-        %{execution_persist_pending: _} = state
-      ),
+        state
+      )
+      when execution_events_deferred?(state),
       do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info(
         {:runner_task_started, _, _, _} = message,
-        %{execution_persist_pending: _} = state
-      ),
+        state
+      )
+      when execution_events_deferred?(state),
       do: {:noreply, defer_execution_event(state, message)}
 
-  def handle_info({:DOWN, _, :process, _, _} = message, %{execution_persist_pending: _} = state),
-    do: {:noreply, defer_execution_event(state, message)}
+  def handle_info({:DOWN, _, :process, _, _} = message, state)
+      when execution_events_deferred?(state),
+      do: {:noreply, defer_execution_event(state, message)}
 
-  def handle_info({:attempt_timeout, _, _} = message, %{execution_persist_pending: _} = state),
-    do: {:noreply, defer_execution_event(state, message)}
+  def handle_info({:attempt_timeout, _, _} = message, state)
+      when execution_events_deferred?(state),
+      do: {:noreply, defer_execution_event(state, message)}
 
-  def handle_info({:retry_attempt, _} = message, %{execution_persist_pending: _} = state),
+  def handle_info({:retry_attempt, _} = message, state) when execution_events_deferred?(state),
     do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info(
         {:stage_admission_timeout, _} = message,
-        %{execution_persist_pending: _} = state
-      ),
+        state
+      )
+      when execution_events_deferred?(state),
       do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info(
         {:execution_admission_wakeup, _, _} = message,
-        %{execution_persist_pending: _} = state
-      ),
+        state
+      )
+      when execution_events_deferred?(state),
       do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info({:runner_result, execution_id, result}, state),
@@ -458,6 +471,12 @@ defmodule FavnOrchestrator.RunServer do
 
   def handle_info({:execution_admission_wakeup, waiter_id, generation}, state),
     do: handle_execution_event(state, {:execution_admission_wakeup, waiter_id, generation})
+
+  def handle_info(
+        {:favn_run_cancel_requested, _reason} = message,
+        %{deferred_drain_scheduled: true} = state
+      ),
+      do: {:noreply, defer_execution_event(state, message)}
 
   def handle_info(
         {:favn_run_cancel_requested, _reason} = message,
@@ -874,9 +893,15 @@ defmodule FavnOrchestrator.RunServer do
     queue = if message in queue, do: queue, else: queue ++ [message]
     next = Map.put(state, :deferred_execution_events, queue)
 
+    run =
+      case state.execution_state do
+        %RunExecutionState{run: run} -> run
+        nil -> state.run_state
+      end
+
     case account_helper_memory(
            next,
-           state.execution_state.run,
+           run,
            {state.execution_state, Map.get(state, :execution_persist_pending), queue}
          ) do
       :ok -> next
